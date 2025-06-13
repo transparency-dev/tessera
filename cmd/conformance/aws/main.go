@@ -131,6 +131,9 @@ func main() {
 		Addr:    *listen,
 		Handler: h2c.NewHandler(http.DefaultServeMux, h2s),
 	}
+	if err := http2.ConfigureServer(h1s, h2s); err != nil {
+		klog.Exitf("http2.ConfigureServer: %v", err)
+	}
 
 	if err := h1s.ListenAndServe(); err != nil {
 		if err := shutdown(ctx); err != nil {

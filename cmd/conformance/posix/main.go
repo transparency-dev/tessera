@@ -29,6 +29,8 @@ import (
 	"time"
 
 	"golang.org/x/mod/sumdb/note"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/storage/posix"
@@ -119,7 +121,16 @@ func main() {
 		"export WRITE_URL=http://localhost%s/ \n"+
 		"export READ_URL=http://localhost%s/ \n", *listen, *listen)
 	// Run the HTTP server with the single handler and block until this is terminated
-	if err := http.ListenAndServe(*listen, http.DefaultServeMux); err != nil {
+	h2s := &http2.Server{}
+	h1s := &http.Server{
+		Addr:    *listen,
+		Handler: h2c.NewHandler(http.DefaultServeMux, h2s),
+	}
+	if err := http2.ConfigureServer(h1s, h2s); err != nil {
+		klog.Exitf("http2.ConfigureServer: %v", err)
+	}
+
+	if err := h1s.ListenAndServe(); err != nil {
 		if err := shutdown(ctx); err != nil {
 			klog.Exit(err)
 		}
