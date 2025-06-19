@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"iter"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -35,7 +34,6 @@ import (
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/internal/migrate"
-	"github.com/transparency-dev/tessera/internal/stream"
 	storage "github.com/transparency-dev/tessera/storage/internal"
 	"k8s.io/klog/v2"
 )
@@ -203,15 +201,6 @@ func (l *logResourceStorage) IntegratedSize(_ context.Context) (uint64, error) {
 
 func (l *logResourceStorage) NextIndex(ctx context.Context) (uint64, error) {
 	return l.IntegratedSize(ctx)
-}
-
-func (l *logResourceStorage) StreamEntries(ctx context.Context, startEntry, N uint64) iter.Seq2[stream.Bundle, error] {
-	// TODO(al): Consider making this configurable.
-	// The performance of different levels of concurrency here will depend very much on the nature of the underlying storage infra,
-	// e.g. NVME will likely respond well to some concurrency, HDD less so.
-	// For now, we'll just stick to a safe default.
-	numWorkers := uint(1)
-	return stream.EntryBundles(ctx, numWorkers, l.IntegratedSize, l.ReadEntryBundle, startEntry, N)
 }
 
 // sequenceBatch writes the entries from the provided batch into the entry bundle files of the log.
