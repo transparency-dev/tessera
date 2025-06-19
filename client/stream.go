@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package stream provides support for streaming contiguous entries from logs.
-package stream
+package client
 
 import (
 	"context"
