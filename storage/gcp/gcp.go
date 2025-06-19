@@ -35,7 +35,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"iter"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -56,7 +55,6 @@ import (
 	"github.com/transparency-dev/tessera/internal/migrate"
 	"github.com/transparency-dev/tessera/internal/otel"
 	"github.com/transparency-dev/tessera/internal/parse"
-	"github.com/transparency-dev/tessera/internal/stream"
 	storage "github.com/transparency-dev/tessera/storage/internal"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/api/googleapi"
@@ -185,18 +183,6 @@ func (lr *LogReader) NextIndex(ctx context.Context) (uint64, error) {
 	defer span.End()
 
 	return lr.nextIndex(ctx)
-}
-
-func (lr *LogReader) StreamEntries(ctx context.Context, startEntry, N uint64) iter.Seq2[stream.Bundle, error] {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.StreamEntries")
-	defer span.End()
-
-	klog.Infof("StreamEntries from %d", startEntry)
-
-	// TODO(al): Consider making this configurable.
-	// Requests to GCS can go super parallel without too much issue, but even just 10 concurrent requests seems to provide pretty good throughput.
-	numWorkers := uint(10)
-	return stream.EntryBundles(ctx, numWorkers, lr.integratedSize, lr.lrs.getEntryBundle, startEntry, N)
 }
 
 // Appender creates a new tessera.Appender lifecycle object.

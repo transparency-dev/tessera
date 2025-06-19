@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"iter"
 	"net/http"
 	"os"
 	"strings"
@@ -35,7 +34,6 @@ import (
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/internal/migrate"
-	"github.com/transparency-dev/tessera/internal/stream"
 	storage "github.com/transparency-dev/tessera/storage/internal"
 	"k8s.io/klog/v2"
 )
@@ -339,93 +337,6 @@ func (s *Storage) IntegratedSize(ctx context.Context) (uint64, error) {
 // This is part of the tessera LogReader contract.
 func (s *Storage) NextIndex(ctx context.Context) (uint64, error) {
 	return s.IntegratedSize(ctx)
-}
-
-// StreamEntries() returns functions `next` and `cancel` which act like a pull iterator for
-// consecutive entry bundles, starting with the entry bundle which contains the requested entry
-// index.
-//
-// This is part of the tessera LogReader contract.
-func (s *Storage) StreamEntries(ctx context.Context, startEntry, N uint64) iter.Seq2[stream.Bundle, error] {
-	type riBundle struct {
-		ri  layout.RangeInfo
-		b   []byte
-		err error
-	}
-	// c is a channel which carries elements which ultimately will be returned via the next function.
-	// TODO(al): Figure out what a good channel capacity is here.
-	c := make(chan riBundle, 10)
-	// done signals that we should stop any background processing when it's closed.
-	// This happens when the returned cancel func is called.
-	done := make(chan struct{})
-
-	go func() {
-		defer close(c)
-		ts, err := s.readTreeState(ctx)
-		if err != nil {
-			klog.Warningf("Failed to read tree state: %v", err)
-			c <- riBundle{err: err}
-			return
-		}
-
-		rows, err := s.db.QueryContext(ctx, streamTiledLeavesSQL, startEntry/layout.EntryBundleWidth)
-		if err != nil {
-			klog.Warningf("Failed to read entry bundle @%d: %v", startEntry/layout.EntryBundleWidth, err)
-			c <- riBundle{err: err}
-			return
-		}
-		defer func() {
-			if err := rows.Close(); err != nil {
-				klog.Warningf("Failed to Close rows: %v", err)
-			}
-		}()
-
-		nextRange, stopRange := iter.Pull(layout.Range(startEntry, N, ts.size))
-		defer stopRange()
-
-		for rows.Next() {
-			select {
-			case <-done:
-				return
-			default:
-			}
-
-			ri, ok := nextRange()
-			if !ok {
-				return
-			}
-
-			// Now we can iterate over the streams we've set up above, and turn the data into the right form
-			// for sending over c, to be returned to the caller via the next func.
-			var idx, size uint64
-			var data []byte
-			// Parse a bundle from the DB.
-			if err := rows.Scan(&idx, &size, &data); err != nil {
-				c <- riBundle{err: err}
-				return
-			}
-			// The bundle data and the range info MUST refer to the same entry bundle index, so assert that they do.
-			if idx != ri.Index {
-				// Something's gone wonky - our rangeinfo and entry bundle streams are no longer lined up.
-				// Bail and set up the streams again.
-				klog.Infof("Out of sync, got entrybundle index %d, but rangeinfo for index %d", idx, ri.Index)
-				return
-			}
-			// All good, so queue up the data to be returned via calls to next.
-			klog.V(1).Infof("Sending %v", ri)
-			c <- riBundle{ri: ri, b: data}
-		}
-		klog.V(1).Infof("StreamEntries: no more entry bundle rows, exiting")
-	}()
-
-	return func(yield func(stream.Bundle, error) bool) {
-		defer close(done)
-		for r := range c {
-			if !yield(stream.Bundle{RangeInfo: r.ri, Data: r.b}, r.err) {
-				return
-			}
-		}
-	}
 }
 
 // dbExecContext describes something which can support the sql ExecContext function.

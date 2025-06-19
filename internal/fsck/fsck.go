@@ -26,7 +26,7 @@ import (
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
-	"github.com/transparency-dev/tessera/internal/stream"
+	"github.com/transparency-dev/tessera/client"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
@@ -81,7 +81,7 @@ func Check(ctx context.Context, origin string, verifier note.Verifier, f Fetcher
 	getSize := func(_ context.Context) (uint64, error) { return cp.Size, nil }
 	// Consume the stream of bundles to re-derive the other log resources.
 	// TODO(al): consider chunking the log and doing each in parallel.
-	for b, err := range stream.EntryBundles(ctx, N, getSize, f.ReadEntryBundle, 0, cp.Size) {
+	for b, err := range client.EntryBundles(ctx, N, getSize, f.ReadEntryBundle, 0, cp.Size) {
 		if err != nil {
 			return fmt.Errorf("error while streaming bundles: %v", err)
 		}
