@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1750430083326,
+  "lastUpdate": 1750431809277,
   "repoUrl": "https://github.com/transparency-dev/tessera",
   "entries": {
     "Benchmark": [
@@ -32040,6 +32040,174 @@ window.BENCHMARK_DATA = {
             "value": 31810,
             "unit": "allocs/op",
             "extra": "466 times\n4 procs"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a6f9d835308bbe67494d76d05ffd84cc0636580d",
+          "message": "Bump the all-go-deps group across 1 directory with 9 updates (#695)\n\nBumps the all-go-deps group with 7 updates in the / directory:\n\n| Package | From | To |\n| --- | --- | --- |\n| [github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric](https://github.com/GoogleCloudPlatform/opentelemetry-operations-go) | `0.52.0` | `0.53.0` |\n| [github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace](https://github.com/GoogleCloudPlatform/opentelemetry-operations-go) | `1.28.0` | `1.29.0` |\n| [github.com/aws/aws-sdk-go-v2](https://github.com/aws/aws-sdk-go-v2) | `1.36.3` | `1.36.5` |\n| [github.com/aws/aws-sdk-go-v2/config](https://github.com/aws/aws-sdk-go-v2) | `1.29.15` | `1.29.17` |\n| [github.com/aws/aws-sdk-go-v2/service/s3](https://github.com/aws/aws-sdk-go-v2) | `1.80.1` | `1.81.0` |\n| [google.golang.org/api](https://github.com/googleapis/google-api-go-client) | `0.236.0` | `0.238.0` |\n| [github.com/go-sql-driver/mysql](https://github.com/go-sql-driver/mysql) | `1.9.2` | `1.9.3` |\n\n\n\nUpdates `github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric` from 0.52.0 to 0.53.0\n- [Release notes](https://github.com/GoogleCloudPlatform/opentelemetry-operations-go/releases)\n- [Commits](https://github.com/GoogleCloudPlatform/opentelemetry-operations-go/compare/v0.52.0...v0.53.0)\n\nUpdates `github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace` from 1.28.0 to 1.29.0\n- [Release notes](https://github.com/GoogleCloudPlatform/opentelemetry-operations-go/releases)\n- [Commits](https://github.com/GoogleCloudPlatform/opentelemetry-operations-go/compare/detectors/gcp/v1.28.0...detectors/gcp/v1.29.0)\n\nUpdates `github.com/aws/aws-sdk-go-v2` from 1.36.3 to 1.36.5\n- [Release notes](https://github.com/aws/aws-sdk-go-v2/releases)\n- [Changelog](https://github.com/aws/aws-sdk-go-v2/blob/main/changelog-template.json)\n- [Commits](https://github.com/aws/aws-sdk-go-v2/compare/v1.36.3...v1.36.5)\n\nUpdates `github.com/aws/aws-sdk-go-v2/config` from 1.29.15 to 1.29.17\n- [Release notes](https://github.com/aws/aws-sdk-go-v2/releases)\n- [Changelog](https://github.com/aws/aws-sdk-go-v2/blob/main/changelog-template.json)\n- [Commits](https://github.com/aws/aws-sdk-go-v2/compare/config/v1.29.15...config/v1.29.17)\n\nUpdates `github.com/aws/aws-sdk-go-v2/credentials` from 1.17.68 to 1.17.70\n- [Release notes](https://github.com/aws/aws-sdk-go-v2/releases)\n- [Changelog](https://github.com/aws/aws-sdk-go-v2/blob/main/changelog-template.json)\n- [Commits](https://github.com/aws/aws-sdk-go-v2/compare/credentials/v1.17.68...credentials/v1.17.70)\n\nUpdates `github.com/aws/aws-sdk-go-v2/service/s3` from 1.80.1 to 1.81.0\n- [Release notes](https://github.com/aws/aws-sdk-go-v2/releases)\n- [Changelog](https://github.com/aws/aws-sdk-go-v2/blob/main/changelog-template.json)\n- [Commits](https://github.com/aws/aws-sdk-go-v2/compare/service/s3/v1.80.1...service/s3/v1.81.0)\n\nUpdates `github.com/aws/smithy-go` from 1.22.3 to 1.22.4\n- [Release notes](https://github.com/aws/smithy-go/releases)\n- [Changelog](https://github.com/aws/smithy-go/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/aws/smithy-go/compare/v1.22.3...v1.22.4)\n\nUpdates `google.golang.org/api` from 0.236.0 to 0.238.0\n- [Release notes](https://github.com/googleapis/google-api-go-client/releases)\n- [Changelog](https://github.com/googleapis/google-api-go-client/blob/main/CHANGES.md)\n- [Commits](https://github.com/googleapis/google-api-go-client/compare/v0.236.0...v0.238.0)\n\nUpdates `github.com/go-sql-driver/mysql` from 1.9.2 to 1.9.3\n- [Release notes](https://github.com/go-sql-driver/mysql/releases)\n- [Changelog](https://github.com/go-sql-driver/mysql/blob/v1.9.3/CHANGELOG.md)\n- [Commits](https://github.com/go-sql-driver/mysql/compare/v1.9.2...v1.9.3)\n\n---\nupdated-dependencies:\n- dependency-name: github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric\n  dependency-version: 0.53.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace\n  dependency-version: 1.29.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: github.com/aws/aws-sdk-go-v2\n  dependency-version: 1.36.5\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: all-go-deps\n- dependency-name: github.com/aws/aws-sdk-go-v2/config\n  dependency-version: 1.29.17\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: all-go-deps\n- dependency-name: github.com/aws/aws-sdk-go-v2/credentials\n  dependency-version: 1.17.70\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: all-go-deps\n- dependency-name: github.com/aws/aws-sdk-go-v2/service/s3\n  dependency-version: 1.81.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: github.com/aws/smithy-go\n  dependency-version: 1.22.4\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: all-go-deps\n- dependency-name: google.golang.org/api\n  dependency-version: 0.238.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: github.com/go-sql-driver/mysql\n  dependency-version: 1.9.3\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: all-go-deps\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2025-06-20T16:01:57+01:00",
+          "tree_id": "247ec2c17a5e0098f21c268bf255e93bb22f333f",
+          "url": "https://github.com/transparency-dev/tessera/commit/a6f9d835308bbe67494d76d05ffd84cc0636580d"
+        },
+        "date": 1750431807777,
+        "tool": "go",
+        "benches": [
+          {
+            "name": "BenchmarkDedupe",
+            "value": 4145067,
+            "unit": "ns/op\t  988279 B/op\t   23895 allocs/op",
+            "extra": "292 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedupe - ns/op",
+            "value": 4145067,
+            "unit": "ns/op",
+            "extra": "292 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedupe - B/op",
+            "value": 988279,
+            "unit": "B/op",
+            "extra": "292 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedupe - allocs/op",
+            "value": 23895,
+            "unit": "allocs/op",
+            "extra": "292 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction",
+            "value": 235494,
+            "unit": "ns/op\t    3152 B/op\t      36 allocs/op",
+            "extra": "4596 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - ns/op",
+            "value": 235494,
+            "unit": "ns/op",
+            "extra": "4596 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - B/op",
+            "value": 3152,
+            "unit": "B/op",
+            "extra": "4596 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - allocs/op",
+            "value": 36,
+            "unit": "allocs/op",
+            "extra": "4596 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText",
+            "value": 7716,
+            "unit": "ns/op\t    6528 B/op\t       1 allocs/op",
+            "extra": "166760 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - ns/op",
+            "value": 7716,
+            "unit": "ns/op",
+            "extra": "166760 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - B/op",
+            "value": 6528,
+            "unit": "B/op",
+            "extra": "166760 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - allocs/op",
+            "value": 1,
+            "unit": "allocs/op",
+            "extra": "166760 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe",
+            "value": 222.5,
+            "unit": "ns/op\t     224 B/op\t       5 allocs/op",
+            "extra": "5401561 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - ns/op",
+            "value": 222.5,
+            "unit": "ns/op",
+            "extra": "5401561 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - B/op",
+            "value": 224,
+            "unit": "B/op",
+            "extra": "5401561 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - allocs/op",
+            "value": 5,
+            "unit": "allocs/op",
+            "extra": "5401561 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate",
+            "value": 342426,
+            "unit": "ns/op\t  278824 B/op\t    3078 allocs/op",
+            "extra": "3706 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - ns/op",
+            "value": 342426,
+            "unit": "ns/op",
+            "extra": "3706 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - B/op",
+            "value": 278824,
+            "unit": "B/op",
+            "extra": "3706 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - allocs/op",
+            "value": 3078,
+            "unit": "allocs/op",
+            "extra": "3706 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue",
+            "value": 2767131,
+            "unit": "ns/op\t 1538340 B/op\t   31810 allocs/op",
+            "extra": "460 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - ns/op",
+            "value": 2767131,
+            "unit": "ns/op",
+            "extra": "460 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - B/op",
+            "value": 1538340,
+            "unit": "B/op",
+            "extra": "460 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - allocs/op",
+            "value": 31810,
+            "unit": "allocs/op",
+            "extra": "460 times\n4 procs"
           }
         ]
       }
