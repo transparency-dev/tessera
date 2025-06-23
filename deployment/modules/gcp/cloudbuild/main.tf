@@ -158,8 +158,7 @@ resource "google_cloudbuild_trigger" "docker" {
             --num_writers=1100 \
             --max_write_ops=1500 \
             --leaf_min_size=1024 \
-            --leaf_write_goal=50000 \
-            --force_http2
+            --leaf_write_goal=50000
       EOT
       wait_for = ["terraform_outputs", "generate_keys", "access"]
     }
