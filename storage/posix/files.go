@@ -34,6 +34,7 @@ import (
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/internal/migrate"
+	"github.com/transparency-dev/tessera/internal/parse"
 	storage "github.com/transparency-dev/tessera/storage/internal"
 	"k8s.io/klog/v2"
 )
@@ -89,20 +90,31 @@ func New(ctx context.Context, path string) (tessera.Driver, error) {
 }
 
 func (s *Storage) Appender(ctx context.Context, opts *tessera.AppendOptions) (*tessera.Appender, tessera.LogReader, error) {
-	if opts.CheckpointInterval() < minCheckpointInterval {
-		return nil, nil, fmt.Errorf("requested CheckpointInterval (%v) is less than minimum permitted %v", opts.CheckpointInterval(), minCheckpointInterval)
-	}
-
 	logStorage := &logResourceStorage{
 		s:           s,
 		entriesPath: opts.EntriesPath(),
 	}
 
+	a, lr, err := s.newAppender(ctx, logStorage, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return &tessera.Appender{
+		Add: a.Add,
+	}, lr, nil
+}
+
+func (s *Storage) newAppender(ctx context.Context, o *logResourceStorage, opts *tessera.AppendOptions) (*appender, tessera.LogReader, error) {
+	if opts.CheckpointInterval() < minCheckpointInterval {
+		return nil, nil, fmt.Errorf("requested CheckpointInterval (%v) is less than minimum permitted %v", opts.CheckpointInterval(), minCheckpointInterval)
+	}
+
 	a := &appender{
 		s:          s,
-		logStorage: logStorage,
+		logStorage: o,
 		cpUpdated:  make(chan struct{}),
-		newCP:      opts.CheckpointPublisher(logStorage, http.DefaultClient),
+		newCP:      opts.CheckpointPublisher(o, http.DefaultClient),
 	}
 	if err := a.initialise(ctx); err != nil {
 		return nil, nil, err
@@ -122,10 +134,11 @@ func (s *Storage) Appender(ctx context.Context, opts *tessera.AppendOptions) (*t
 			}
 		}
 	}(ctx, opts.CheckpointInterval())
+	if i := opts.GarbageCollectionInterval(); i > 0 {
+		go a.garbageCollectorJob(ctx, i)
+	}
 
-	return &tessera.Appender{
-		Add: a.Add,
-	}, a.logStorage, nil
+	return a, a.logStorage, nil
 }
 
 // lockFile creates/opens a lock file at the specified path, and flocks it.
@@ -428,6 +441,14 @@ func (lrs *logResourceStorage) writeBundle(_ context.Context, index uint64, part
 	return nil
 }
 
+// removePartials will delete any existing partial versions associated with the provided "full" resource path.
+func (lrs *logResourceStorage) removePartials(_ context.Context, resourcePath string) error {
+	if err := lrs.s.removeDirAll(resourcePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 // initialise ensures that the storage location is valid by loading the checkpoint from this location, or
 // creating a zero-sized one if it doesn't already exist.
 func (a *appender) initialise(ctx context.Context) error {
@@ -582,6 +603,150 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStaleness time.Dura
 	return nil
 }
 
+// garbageCollectorJob is a long-running function which handles the removal of obsolete partial tiles
+// and entry bundles.
+// Blocks until ctx is done.
+func (a *appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
+	t := time.NewTicker(i)
+	defer t.Stop()
+
+	// Entirely arbitrary number.
+	maxBundlesPerRun := uint(100)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+
+		// Figure out the size of the latest published checkpoint - we can't be removing partial tiles implied by
+		// that checkpoint just because we've done an integration and know about a larger (but as yet unpublished)
+		// checkpoint!
+		cp, err := a.logStorage.ReadCheckpoint(ctx)
+		if err != nil {
+			klog.Warningf("Failed to get published checkpoint: %v", err)
+			continue
+		}
+		_, pubSize, _, err := parse.CheckpointUnsafe(cp)
+		if err != nil {
+			klog.Warningf("Failed to parse published checkpoint: %v", err)
+			continue
+		}
+
+		if err := a.s.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStorage.removePartials); err != nil {
+			klog.Warningf("GarbageCollect failed: %v", err)
+			continue
+		}
+	}
+}
+
+// gcState represents a snapshot of how much of the log tree has been garbage collected.
+// This state structure is serialized into a private (but not sensitive) file in the log's .state directory.
+type gcState struct {
+	FromSize uint64 `json:"fromSize"`
+}
+
+// writeGCState stores the high water mark below which garbage collection has successfully completed.
+func (s *Storage) writeGCState(size uint64) error {
+	raw, err := json.Marshal(gcState{FromSize: size})
+	if err != nil {
+		return fmt.Errorf("error in Marshal: %v", err)
+	}
+
+	if err := s.createOverwrite(filepath.Join(stateDir, "gcState"), raw); err != nil {
+		return fmt.Errorf("failed to create private GC state file: %w", err)
+	}
+	return nil
+}
+
+// readGCState reads and returns the currently stored GC state, if any.
+//
+// If no GC state is stored, no GC run has completed successfully, so zero is returned to indicate
+// that GC should start from the beginning of the log.
+func (s *Storage) readGCState() (uint64, error) {
+	p := filepath.Join(s.path, stateDir, "gcState")
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// gcState file doesn't exist yet - we've probably just not completed a GC run before so start from index 0.
+			return 0, nil
+		}
+		return 0, fmt.Errorf("error in ReadFile(%q): %w", p, err)
+	}
+	gs := &gcState{}
+	if err := json.Unmarshal(raw, gs); err != nil {
+		return 0, fmt.Errorf("error in Unmarshal: %v", err)
+	}
+	return gs.FromSize, nil
+}
+
+func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint, removeDirAll func(ctx context.Context, prefix string) error) error {
+	// Lock the gc location:
+	lockPath := "gc.lock"
+	unlock, err := s.lockFile(lockPath)
+	if err != nil {
+		return fmt.Errorf("lockFile(%s): %v", lockPath, err)
+	}
+	defer func() {
+		if err := unlock(); err != nil {
+			klog.Warningf("unlock(%s): %v", lockPath, err)
+		}
+	}()
+
+	fromSize, err := s.readGCState()
+	if err != nil {
+		return err
+	}
+
+	if fromSize == treeSize {
+		// Nothing to do, nothing done.
+		return nil
+	}
+
+	d := uint(0)
+	// GC the tree in "vertical" chunks defined by entry bundles.
+	for ri := range layout.Range(fromSize, treeSize-fromSize, treeSize) {
+		// Only known-full bundles are in-scope for for GC, so exit if the current bundle is partial or
+		// we've reached our limit of chunks.
+		if ri.Partial > 0 || d > maxBundles {
+			break
+		}
+
+		// GC any partial versions of the entry bundle itself and the tile which sits immediately above it.
+		if err := removeDirAll(ctx, layout.EntriesPath(ri.Index, 0)+".p/"); err != nil {
+			return err
+		}
+		if err := removeDirAll(ctx, layout.TilePath(0, ri.Index, 0)+".p/"); err != nil {
+			return err
+		}
+		fromSize += uint64(ri.N)
+		d++
+
+		// Now consider (only) the part of the tree which sits above the bundle.
+		// We'll walk up the parent tiles for as a long as we're tracing the right-hand
+		// edge of a perfect subtree.
+		// This gives the property we'll only visit each parent tile once, rather than up to 256 times.
+		pL, pIdx := uint64(0), ri.Index
+		for isLastLeafInParent(pIdx) {
+			// Move our coordinates up to the parent
+			pL, pIdx = pL+1, pIdx>>layout.TileHeight
+			// GC any partial versions of the parent tile.
+			if err := removeDirAll(ctx, layout.TilePath(pL, pIdx, 0)+".p/"); err != nil {
+				return err
+			}
+
+		}
+	}
+	return s.writeGCState(fromSize)
+}
+
+// isLastLeafInParent returns true if a tile with the provided index is the final child node of a
+// (hypothetical) full parent tile.
+func isLastLeafInParent(i uint64) bool {
+	return i%layout.TileWidth == layout.TileWidth-1
+}
+
 // createExclusive atomically creates a file at the given path, relative to the root of the log, containing the provided data.
 //
 // It will error if a file already exists at the specified location, or it's unable to fully write the
@@ -605,6 +770,14 @@ func (s *Storage) readAll(p string) ([]byte, error) {
 func (s *Storage) stat(p string) (os.FileInfo, error) {
 	p = filepath.Join(s.path, p)
 	return os.Stat(p)
+}
+
+// removeDirAll removes the named directory and anything it contains.
+// The provided path is interpreted relative to the log root.
+func (s *Storage) removeDirAll(p string) error {
+	p = filepath.Join(s.path, p)
+	klog.V(3).Infof("rm %s", p)
+	return os.RemoveAll(p)
 }
 
 // MigrationWriter creates a new POSIX storage for the MigrationTarget lifecycle mode.
