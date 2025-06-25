@@ -355,14 +355,17 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 			cp, err := a.logStore.getCheckpoint(ctx)
 			if err != nil {
 				klog.Warningf("Failed to get published checkpoint: %v", err)
+				return
 			}
 			_, pubSize, _, err := parse.CheckpointUnsafe(cp)
 			if err != nil {
 				klog.Warningf("Failed to parse published checkpoint: %v", err)
+				return
 			}
 
 			if err := a.sequencer.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStore.objStore.deleteObjectsWithPrefix); err != nil {
 				klog.Warningf("GarbageCollect failed: %v", err)
+				return
 			}
 		}()
 	}
