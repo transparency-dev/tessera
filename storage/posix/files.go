@@ -47,7 +47,18 @@ const (
 	// that were created before we introduced this.
 	compatibilityVersion = 1
 
+	// stateDir holds any private (but not secret) internal state needed to maintain/operate the log.
 	stateDir = ".state"
+	// gcStateFile contains the state of the garbage collection operations.
+	gcStateFile = "gcState"
+	// gcStateLock must be held when performing GC operations and updating the gcState file.
+	gcStateLock = gcStateFile + ".lock"
+	// publishLock must be held when checking/updating the published checkpoint.
+	publishLock = "publish.lock"
+	// treeStateFile contains the integrated (but not necessarily published) state of the tree.
+	treeStateFile = "treeState"
+	// treeStateLock must be held when integrating entries into the tree or writing to the treeState file.
+	treeStateLock = treeStateFile + ".lock"
 
 	minCheckpointInterval = time.Second
 )
@@ -227,7 +238,7 @@ func (a *appender) sequenceBatch(ctx context.Context, entries []*tessera.Entry) 
 	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
 	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
 	a.s.mu.Lock()
-	unlock, err := a.s.lockFile("treeState.lock")
+	unlock, err := a.s.lockFile(treeStateLock)
 	if err != nil {
 		panic(err)
 	}
@@ -452,7 +463,7 @@ func (a *appender) initialise(ctx context.Context) error {
 	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
 	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
 	a.s.mu.Lock()
-	unlock, err := a.s.lockFile("treeState.lock")
+	unlock, err := a.s.lockFile(treeStateLock)
 	if err != nil {
 		panic(err)
 	}
@@ -530,15 +541,15 @@ func (s *Storage) writeTreeState(size uint64, root []byte) error {
 		return fmt.Errorf("error in Marshal: %v", err)
 	}
 
-	if err := s.createOverwrite(filepath.Join(stateDir, "treeState"), raw); err != nil {
-		return fmt.Errorf("failed to create private tree state file: %w", err)
+	if err := s.createOverwrite(filepath.Join(stateDir, treeStateFile), raw); err != nil {
+		return fmt.Errorf("failed to create/overwrite private tree state file: %w", err)
 	}
 	return nil
 }
 
 // readTreeState reads and returns the currently stored tree state.
 func (s *Storage) readTreeState() (uint64, []byte, error) {
-	p := filepath.Join(s.path, stateDir, "treeState")
+	p := filepath.Join(s.path, stateDir, treeStateFile)
 	raw, err := os.ReadFile(p)
 	if err != nil {
 		return 0, nil, fmt.Errorf("error in ReadFile(%q): %w", p, err)
@@ -555,14 +566,13 @@ func (s *Storage) readTreeState() (uint64, []byte, error) {
 // stored tree state.
 func (a *appender) publishCheckpoint(ctx context.Context, minStaleness time.Duration) error {
 	// Lock the destination "published" checkpoint location:
-	lockPath := "publish.lock"
-	unlock, err := a.s.lockFile(lockPath)
+	unlock, err := a.s.lockFile(publishLock)
 	if err != nil {
-		return fmt.Errorf("lockFile(%s): %v", lockPath, err)
+		return fmt.Errorf("lockFile(%s): %v", publishLock, err)
 	}
 	defer func() {
 		if err := unlock(); err != nil {
-			klog.Warningf("unlock(%s): %v", lockPath, err)
+			klog.Warningf("unlock(%s): %v", publishLock, err)
 		}
 	}()
 
@@ -646,8 +656,8 @@ func (s *Storage) writeGCState(size uint64) error {
 		return fmt.Errorf("error in Marshal: %v", err)
 	}
 
-	if err := s.createOverwrite(filepath.Join(stateDir, "gcState"), raw); err != nil {
-		return fmt.Errorf("failed to create private GC state file: %w", err)
+	if err := s.createOverwrite(filepath.Join(stateDir, gcStateFile), raw); err != nil {
+		return fmt.Errorf("failed to create/overwrite private GC state file: %w", err)
 	}
 	return nil
 }
@@ -657,7 +667,7 @@ func (s *Storage) writeGCState(size uint64) error {
 // If no GC state is stored, no GC run has completed successfully, so zero is returned to indicate
 // that GC should start from the beginning of the log.
 func (s *Storage) readGCState() (uint64, error) {
-	p := filepath.Join(s.path, stateDir, "gcState")
+	p := filepath.Join(s.path, stateDir, gcStateFile)
 	raw, err := os.ReadFile(p)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -675,20 +685,19 @@ func (s *Storage) readGCState() (uint64, error) {
 
 func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint) error {
 	// Lock the gc location:
-	lockPath := "gc.lock"
-	unlock, err := s.lockFile(lockPath)
+	unlock, err := s.lockFile(gcStateLock)
 	if err != nil {
-		return fmt.Errorf("lockFile(%s): %v", lockPath, err)
+		return fmt.Errorf("lockFile(%s): %v", gcStateLock, err)
 	}
 	defer func() {
 		if err := unlock(); err != nil {
-			klog.Warningf("unlock(%s): %v", lockPath, err)
+			klog.Warningf("unlock(%s): %v", gcStateLock, err)
 		}
 	}()
 
 	fromSize, err := s.readGCState()
 	if err != nil {
-		return err
+		return fmt.Errorf("readGCState: %v", err)
 	}
 
 	if fromSize == treeSize {
@@ -730,7 +739,10 @@ func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundle
 
 		}
 	}
-	return s.writeGCState(fromSize)
+	if err := s.writeGCState(fromSize); err != nil {
+		return fmt.Errorf("writeGCState: %v", err)
+	}
+	return nil
 }
 
 // isLastLeafInParent returns true if a tile with the provided index is the final child node of a
@@ -832,7 +844,7 @@ func (m *MigrationStorage) initialise() error {
 	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
 	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
 	m.s.mu.Lock()
-	unlock, err := m.s.lockFile("treeState.lock")
+	unlock, err := m.s.lockFile(treeStateLock)
 	if err != nil {
 		panic(err)
 	}
@@ -877,7 +889,7 @@ func (m *MigrationStorage) buildTree(ctx context.Context, targetSize uint64) err
 	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
 	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
 	m.s.mu.Lock()
-	unlock, err := m.s.lockFile("treeState.lock")
+	unlock, err := m.s.lockFile(treeStateLock)
 	if err != nil {
 		panic(err)
 	}
