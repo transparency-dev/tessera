@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1750849917321,
+  "lastUpdate": 1750868684290,
   "repoUrl": "https://github.com/transparency-dev/tessera",
   "entries": {
     "Benchmark": [
@@ -32712,6 +32712,174 @@ window.BENCHMARK_DATA = {
             "value": 31810,
             "unit": "allocs/op",
             "extra": "460 times\n4 procs"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "al@google.com",
+            "name": "Al Cutter",
+            "username": "AlCutter"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "159446822ba8539e7bbc43eecfa8178eb64fe3e9",
+          "message": "Garbage collection for POSIX (#700)\n\nThis PR adds support for removing obsolete partial tiles/entry bundles to the POSIX storage implementation.\n\nTowards #670, fixes #699.",
+          "timestamp": "2025-06-25T17:23:58+01:00",
+          "tree_id": "40eb9f039ca6f2abd0d924127cdea4d920cac207",
+          "url": "https://github.com/transparency-dev/tessera/commit/159446822ba8539e7bbc43eecfa8178eb64fe3e9"
+        },
+        "date": 1750868683292,
+        "tool": "go",
+        "benches": [
+          {
+            "name": "BenchmarkDedupe",
+            "value": 4558015,
+            "unit": "ns/op\t  986945 B/op\t   23881 allocs/op",
+            "extra": "252 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedupe - ns/op",
+            "value": 4558015,
+            "unit": "ns/op",
+            "extra": "252 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedupe - B/op",
+            "value": 986945,
+            "unit": "B/op",
+            "extra": "252 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedupe - allocs/op",
+            "value": 23881,
+            "unit": "allocs/op",
+            "extra": "252 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction",
+            "value": 220507,
+            "unit": "ns/op\t    3152 B/op\t      36 allocs/op",
+            "extra": "5460 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - ns/op",
+            "value": 220507,
+            "unit": "ns/op",
+            "extra": "5460 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - B/op",
+            "value": 3152,
+            "unit": "B/op",
+            "extra": "5460 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - allocs/op",
+            "value": 36,
+            "unit": "allocs/op",
+            "extra": "5460 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText",
+            "value": 7253,
+            "unit": "ns/op\t    6528 B/op\t       1 allocs/op",
+            "extra": "168208 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - ns/op",
+            "value": 7253,
+            "unit": "ns/op",
+            "extra": "168208 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - B/op",
+            "value": 6528,
+            "unit": "B/op",
+            "extra": "168208 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - allocs/op",
+            "value": 1,
+            "unit": "allocs/op",
+            "extra": "168208 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe",
+            "value": 248.1,
+            "unit": "ns/op\t     224 B/op\t       5 allocs/op",
+            "extra": "5150403 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - ns/op",
+            "value": 248.1,
+            "unit": "ns/op",
+            "extra": "5150403 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - B/op",
+            "value": 224,
+            "unit": "B/op",
+            "extra": "5150403 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - allocs/op",
+            "value": 5,
+            "unit": "allocs/op",
+            "extra": "5150403 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate",
+            "value": 357804,
+            "unit": "ns/op\t  278881 B/op\t    3079 allocs/op",
+            "extra": "3817 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - ns/op",
+            "value": 357804,
+            "unit": "ns/op",
+            "extra": "3817 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - B/op",
+            "value": 278881,
+            "unit": "B/op",
+            "extra": "3817 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - allocs/op",
+            "value": 3079,
+            "unit": "allocs/op",
+            "extra": "3817 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue",
+            "value": 2784970,
+            "unit": "ns/op\t 1538325 B/op\t   31810 allocs/op",
+            "extra": "465 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - ns/op",
+            "value": 2784970,
+            "unit": "ns/op",
+            "extra": "465 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - B/op",
+            "value": 1538325,
+            "unit": "B/op",
+            "extra": "465 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - allocs/op",
+            "value": 31810,
+            "unit": "allocs/op",
+            "extra": "465 times\n4 procs"
           }
         ]
       }
