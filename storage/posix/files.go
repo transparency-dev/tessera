@@ -441,14 +441,6 @@ func (lrs *logResourceStorage) writeBundle(_ context.Context, index uint64, part
 	return nil
 }
 
-// removePartials will delete any existing partial versions associated with the provided "full" resource path.
-func (lrs *logResourceStorage) removePartials(_ context.Context, resourcePath string) error {
-	if err := lrs.s.removeDirAll(resourcePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
-}
-
 // initialise ensures that the storage location is valid by loading the checkpoint from this location, or
 // creating a zero-sized one if it doesn't already exist.
 func (a *appender) initialise(ctx context.Context) error {
@@ -634,7 +626,7 @@ func (a *appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 			continue
 		}
 
-		if err := a.s.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStorage.removePartials); err != nil {
+		if err := a.s.garbageCollect(ctx, pubSize, maxBundlesPerRun); err != nil {
 			klog.Warningf("GarbageCollect failed: %v", err)
 			continue
 		}
@@ -681,7 +673,7 @@ func (s *Storage) readGCState() (uint64, error) {
 	return gs.FromSize, nil
 }
 
-func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint, removeDirAll func(ctx context.Context, prefix string) error) error {
+func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint) error {
 	// Lock the gc location:
 	lockPath := "gc.lock"
 	unlock, err := s.lockFile(lockPath)
@@ -714,10 +706,10 @@ func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundle
 		}
 
 		// GC any partial versions of the entry bundle itself and the tile which sits immediately above it.
-		if err := removeDirAll(ctx, layout.EntriesPath(ri.Index, 0)+".p/"); err != nil {
+		if err := s.removeDirAll(layout.EntriesPath(ri.Index, 0) + ".p/"); err != nil {
 			return err
 		}
-		if err := removeDirAll(ctx, layout.TilePath(0, ri.Index, 0)+".p/"); err != nil {
+		if err := s.removeDirAll(layout.TilePath(0, ri.Index, 0) + ".p/"); err != nil {
 			return err
 		}
 		fromSize += uint64(ri.N)
@@ -732,7 +724,7 @@ func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundle
 			// Move our coordinates up to the parent
 			pL, pIdx = pL+1, pIdx>>layout.TileHeight
 			// GC any partial versions of the parent tile.
-			if err := removeDirAll(ctx, layout.TilePath(pL, pIdx, 0)+".p/"); err != nil {
+			if err := s.removeDirAll(layout.TilePath(pL, pIdx, 0) + ".p/"); err != nil {
 				return err
 			}
 
@@ -777,7 +769,10 @@ func (s *Storage) stat(p string) (os.FileInfo, error) {
 func (s *Storage) removeDirAll(p string) error {
 	p = filepath.Join(s.path, p)
 	klog.V(3).Infof("rm %s", p)
-	return os.RemoveAll(p)
+	if err := os.RemoveAll(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // MigrationWriter creates a new POSIX storage for the MigrationTarget lifecycle mode.
