@@ -43,7 +43,7 @@ import (
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
-	"github.com/transparency-dev/tessera/internal/fsck"
+	"github.com/transparency-dev/tessera/fsck"
 	storage "github.com/transparency-dev/tessera/storage/internal"
 	"golang.org/x/mod/sumdb/note"
 	"k8s.io/klog/v2"
