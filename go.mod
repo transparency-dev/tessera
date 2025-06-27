@@ -14,6 +14,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.70
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.81.0
 	github.com/aws/smithy-go v1.22.4
+	github.com/cenkalti/backoff/v5 v5.0.2
 	github.com/dgraph-io/badger/v4 v4.7.0
 	github.com/gdamore/tcell/v2 v2.8.1
 	github.com/globocom/go-buffer v1.2.2
@@ -58,7 +59,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.30.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.34.0 // indirect
 	github.com/brunoscheufler/aws-ecs-metadata-go v0.0.0-20221221133751-67e37ae746cd // indirect
-	github.com/cenkalti/backoff/v5 v5.0.2 // indirect
 	github.com/dgraph-io/ristretto/v2 v2.2.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.32.4 // indirect
