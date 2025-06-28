@@ -773,7 +773,7 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 
 	_, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 		// First we need to grab the next available sequence number from the SeqCoord table.
-		row, err := txn.ReadRowWithOptions(ctx, "SeqCoord", spanner.Key{0}, []string{"id", "next"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+		row, err := txn.ReadRow(ctx, "SeqCoord", spanner.Key{0}, []string{"id", "next"})
 		if err != nil {
 			return fmt.Errorf("failed to read SeqCoord: %w", err)
 		}
@@ -810,7 +810,8 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 
 		// TODO(al): think about whether aligning bundles to tile boundaries would be a good idea or not.
 		m := []*spanner.Mutation{
-			// Insert our newly sequenced batch of entries into Seq,
+			// Insert our newly sequenced batch of entries into Seq, this will cause the TX to abort if
+			// someone else has put a batch there.
 			spanner.Insert("Seq", []string{"id", "seq", "v"}, []any{0, int64(next), data}),
 			// and update the next-available sequence number row in SeqCoord.
 			spanner.Update("SeqCoord", []string{"id", "next"}, []any{0, int64(next) + int64(num)}),
