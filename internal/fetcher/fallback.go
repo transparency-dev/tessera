@@ -34,7 +34,7 @@ func PartialOrFullResource(ctx context.Context, p uint8, f func(context.Context,
 		// falling back to that.
 		sRaw, err = f(ctx, 0)
 		if err != nil {
-			return sRaw, fmt.Errorf("neither partial nor full bundle found: %w", err)
+			return sRaw, fmt.Errorf("neither partial nor full resource found: %w", err)
 		}
 		return sRaw, nil
 	case err != nil:

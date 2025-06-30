@@ -55,6 +55,7 @@ import (
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
+	"github.com/transparency-dev/tessera/internal/fetcher"
 	"github.com/transparency-dev/tessera/internal/migrate"
 	"github.com/transparency-dev/tessera/internal/parse"
 	storage "github.com/transparency-dev/tessera/storage/internal"
@@ -679,11 +680,15 @@ func (lr *logResourceStore) ReadCheckpoint(ctx context.Context) ([]byte, error) 
 }
 
 func (lr *logResourceStore) ReadTile(ctx context.Context, l, i uint64, p uint8) ([]byte, error) {
-	return lr.get(ctx, layout.TilePath(l, i, p))
+	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
+		return lr.get(ctx, layout.TilePath(l, i, p))
+	})
 }
 
 func (lr *logResourceStore) ReadEntryBundle(ctx context.Context, i uint64, p uint8) ([]byte, error) {
-	return lr.get(ctx, lr.entriesPath(i, p))
+	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
+		return lr.get(ctx, lr.entriesPath(i, p))
+	})
 }
 
 func (lr *logResourceStore) IntegratedSize(ctx context.Context) (uint64, error) {
