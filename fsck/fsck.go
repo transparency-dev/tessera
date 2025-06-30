@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	f_log "github.com/transparency-dev/formats/log"
 	"github.com/transparency-dev/merkle/compact"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
@@ -49,16 +48,13 @@ type Fetcher interface {
 // The checking will use the provided N parameter to control the number of concurrent workers undertaking
 // this process.
 func Check(ctx context.Context, origin string, verifier note.Verifier, f Fetcher, N uint, bundleHasher func([]byte) ([][]byte, error)) error {
-	cpRaw, err := f.ReadCheckpoint(ctx)
+	cp, cpRaw, _, err := client.FetchCheckpoint(ctx, f.ReadCheckpoint, verifier, origin)
 	if err != nil {
-		return fmt.Errorf("fetch initial source checkpoint: %v", err)
-	}
-	klog.V(1).Infof("Fsck: checkpoint:\n%s", cpRaw)
-	cp, _, _, err := f_log.ParseCheckpoint(cpRaw, origin, verifier)
-	if err != nil {
-		klog.Exitf("Failed to parse checkpoint: %v", err)
+		klog.Exitf("Failed to fetch and verify checkpoint: %v", err)
 	}
 	klog.Infof("Fsck: checking log of size %d", cp.Size)
+
+	klog.V(1).Infof("Fsck: checkpoint:\n%s", cpRaw)
 
 	fTree := fsckTree{
 		fetcher:           f,
