@@ -33,6 +33,7 @@ import (
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
+	"github.com/transparency-dev/tessera/internal/fetcher"
 	"github.com/transparency-dev/tessera/internal/migrate"
 	"github.com/transparency-dev/tessera/internal/parse"
 	storage "github.com/transparency-dev/tessera/storage/internal"
@@ -210,12 +211,16 @@ func (l *logResourceStorage) ReadCheckpoint(_ context.Context) ([]byte, error) {
 }
 
 // ReadEntryBundle retrieves the Nth entries bundle for a log of the given size.
-func (l *logResourceStorage) ReadEntryBundle(_ context.Context, index uint64, p uint8) ([]byte, error) {
-	return os.ReadFile(filepath.Join(l.s.path, l.entriesPath(index, p)))
+func (l *logResourceStorage) ReadEntryBundle(ctx context.Context, index uint64, p uint8) ([]byte, error) {
+	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
+		return os.ReadFile(filepath.Join(l.s.path, l.entriesPath(index, p)))
+	})
 }
 
-func (l *logResourceStorage) ReadTile(_ context.Context, level, index uint64, p uint8) ([]byte, error) {
-	return os.ReadFile(filepath.Join(l.s.path, layout.TilePath(level, index, p)))
+func (l *logResourceStorage) ReadTile(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
+	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
+		return os.ReadFile(filepath.Join(l.s.path, layout.TilePath(level, index, p)))
+	})
 }
 
 func (l *logResourceStorage) IntegratedSize(_ context.Context) (uint64, error) {

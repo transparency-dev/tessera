@@ -52,6 +52,7 @@ import (
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
+	"github.com/transparency-dev/tessera/internal/fetcher"
 	"github.com/transparency-dev/tessera/internal/migrate"
 	"github.com/transparency-dev/tessera/internal/otel"
 	"github.com/transparency-dev/tessera/internal/parse"
@@ -161,14 +162,18 @@ func (lr *LogReader) ReadTile(ctx context.Context, l, i uint64, p uint8) ([]byte
 	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.ReadTile")
 	defer span.End()
 
-	return lr.lrs.getTile(ctx, l, i, p)
+	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
+		return lr.lrs.getTile(ctx, l, i, p)
+	})
 }
 
 func (lr *LogReader) ReadEntryBundle(ctx context.Context, i uint64, p uint8) ([]byte, error) {
 	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.ReadEntryBundle")
 	defer span.End()
 
-	return lr.lrs.getEntryBundle(ctx, i, p)
+	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
+		return lr.lrs.getEntryBundle(ctx, i, p)
+	})
 }
 
 func (lr *LogReader) IntegratedSize(ctx context.Context) (uint64, error) {

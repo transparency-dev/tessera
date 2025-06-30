@@ -258,13 +258,6 @@ func TestGetEntryBundleAddressing(t *testing.T) {
 			actualLogSize:       layout.TileWidth*2 + 45,
 			wantPartialTileSize: 0,
 		},
-		{
-			name:                "works - request partial but fallback to full tile",
-			idx:                 3,                       // Request the partial bundle at the end of the log
-			clientLogSize:       layout.TileWidth*2 + 45, // bundle 3 is partial according to client's PoV
-			actualLogSize:       layout.TileWidth * 3,    // but the log has grown and bundle 3 is now full.
-			wantPartialTileSize: 0,                       // so we expect the last call to the fetcher to be for a full bundle.
-		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			gotIdx := uint64(0)
@@ -314,13 +307,6 @@ func TestNodeFetcherAddressing(t *testing.T) {
 			clientLogSize:       layout.TileWidth*2 + 45,
 			actualLogSize:       layout.TileWidth*2 + 45,
 			wantPartialTileSize: 0,
-		},
-		{
-			name:                "works - request partial but fallback to full tile",
-			nodeIdx:             3*layout.TileWidth + 23, // Request node from the partial tile at the end of the log
-			clientLogSize:       layout.TileWidth*2 + 45, // tile 3 is partial according to client's PoV
-			actualLogSize:       layout.TileWidth * 3,    // but the log has grown and tile 3 is now full.
-			wantPartialTileSize: 0,                       // so we expect the last call to the fetcher to be for a full tile.
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
