@@ -17,6 +17,7 @@ package fsck
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"sync/atomic"
@@ -222,9 +223,13 @@ func (f *fsckTree) resourceCheckWorker(ctx context.Context) func() error {
 			if err != nil {
 				return err
 			}
+			if l, e := uint(len(data)), uint(r.partial)*sha256.Size; r.partial != 0 && l > e {
+				// We were likely given a full tile rather than a partial tile, so trim it to the expected size.
+				data = data[:e]
+			}
 			p := layout.TilePath(r.level, r.index, r.partial)
 			if !bytes.Equal(data, r.content) {
-				return fmt.Errorf("%s: log has %x expected %x", p, data, r.content)
+				return fmt.Errorf("%s: log has:\n%x\nexpected:\n%x", p, data, r.content)
 			}
 			klog.V(2).Infof("%s: %s ok", id, p)
 		}
