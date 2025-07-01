@@ -222,7 +222,7 @@ Now the fun part - writing to the log!
 		panic(err)
 	}
 
-	future, err := appender.Add(ctx, tessera.NewEntry(data))()
+	index, err := appender.Add(ctx, tessera.NewEntry(data))()
 ```
 
 The `AppendOptions` allow Tessera behaviour to be tuned.

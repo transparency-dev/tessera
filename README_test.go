@@ -77,12 +77,12 @@ func constructAndUseAppender() {
 		panic(err)
 	}
 
-	future, err := appender.Add(ctx, tessera.NewEntry(data))()
+	index, err := appender.Add(ctx, tessera.NewEntry(data))()
 	// #endregion
 
 	// use the vars so the compiler/linter doesn't complain.
 	_, _, _, _ = appender, shutdown, reader, err
-	_, _ = future, err
+	_, _ = index, err
 }
 
 func TestConstructAndUseAppender(t *testing.T) {
