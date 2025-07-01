@@ -29,7 +29,7 @@ import (
 	"time"
 
 	"github.com/transparency-dev/tessera"
-	"github.com/transparency-dev/tessera/internal/stream"
+	"github.com/transparency-dev/tessera/client"
 	"k8s.io/klog/v2"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -233,7 +233,7 @@ func (d *AntispamStorage) Decorator() func(f tessera.AddFn) tessera.AddFn {
 // Follower returns a follower which knows how to populate the antispam index.
 //
 // This implements tessera.Antispam.
-func (d *AntispamStorage) Follower(b func([]byte) ([][]byte, error)) stream.Follower {
+func (d *AntispamStorage) Follower(b func([]byte) ([][]byte, error)) tessera.Follower {
 	return &follower{
 		as:           d,
 		bundleHasher: b,
@@ -252,12 +252,12 @@ func (f *follower) Name() string {
 }
 
 // Follow uses entry data from the log to populate the antispam storage.
-func (f *follower) Follow(ctx context.Context, lr stream.Streamer) {
+func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 	errOutOfSync := errors.New("out-of-sync")
 
 	t := time.NewTicker(time.Second)
 	var (
-		next func() (stream.Entry[[]byte], error, bool)
+		next func() (client.Entry[[]byte], error, bool)
 		stop func()
 	)
 	for {
@@ -311,7 +311,11 @@ func (f *follower) Follow(ctx context.Context, lr stream.Streamer) {
 				// If this is the first time around the loop we need to start the stream of entries now that we know where we want to
 				// start reading from:
 				if next == nil {
-					next, stop = iter.Pull2(stream.Entries(lr.StreamEntries(ctx, followFrom, size-followFrom), f.bundleHasher))
+					sizeFn := func(_ context.Context) (uint64, error) {
+						return size, nil
+					}
+					numFetchers := uint(10)
+					next, stop = iter.Pull2(client.Entries(client.EntryBundles(ctx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, size-followFrom), f.bundleHasher))
 				}
 
 				bs := uint64(f.as.opts.MaxBatchSize)

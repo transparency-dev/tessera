@@ -98,7 +98,7 @@ func (q *Queue) Add(ctx context.Context, e *tessera.Entry) tessera.IndexFuture {
 	_, span := tracer.Start(ctx, "tessera.storage.queue.Add")
 	defer span.End()
 
-	qi := newEntry(e)
+	qi := newEntry(ctx, e)
 
 	if err := q.buf.Push(qi); err != nil {
 		qi.notify(err)
@@ -135,12 +135,15 @@ type queueItem struct {
 }
 
 // newEntry creates a new entry for the provided data.
-func newEntry(data *tessera.Entry) *queueItem {
+func newEntry(ctx context.Context, data *tessera.Entry) *queueItem {
+	_, span := tracer.Start(ctx, "tessera.storage.queue.future")
+
 	e := &queueItem{
 		entry: data,
 		c:     make(chan tessera.IndexFuture, 1),
 	}
 	e.f = sync.OnceValues(func() (tessera.Index, error) {
+		defer span.End()
 		return (<-e.c)()
 	})
 	return e

@@ -38,7 +38,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"iter"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -56,8 +55,9 @@ import (
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
+	"github.com/transparency-dev/tessera/internal/fetcher"
 	"github.com/transparency-dev/tessera/internal/migrate"
-	"github.com/transparency-dev/tessera/internal/stream"
+	"github.com/transparency-dev/tessera/internal/parse"
 	storage "github.com/transparency-dev/tessera/storage/internal"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
@@ -95,6 +95,7 @@ type objStore interface {
 	getObject(ctx context.Context, obj string) ([]byte, error)
 	setObject(ctx context.Context, obj string, data []byte, contType string, cacheControl string) error
 	setObjectIfNoneMatch(ctx context.Context, obj string, data []byte, contType string, cacheControl string) error
+	deleteObjectsWithPrefix(ctx context.Context, prefix string) error
 }
 
 // sequencer describes a type which knows how to sequence entries.
@@ -117,6 +118,9 @@ type sequencer interface {
 
 	// publishCheckpoint coordinates the publication of new checkpoints based on the current integrated tree.
 	publishCheckpoint(ctx context.Context, minAge time.Duration, f func(ctx context.Context, size uint64, root []byte) error) error
+
+	// garbageCollect coordinates the removal of unneeded partial tiles/entry bundles for the provided tree size, up to a maximum number of deletes per invocation.
+	garbageCollect(ctx context.Context, treeSize uint64, maxDeletes uint, removePrefix func(ctx context.Context, prefix string) error) error
 }
 
 // consumeFunc is the signature of a function which can consume entries from the sequencer.
@@ -173,26 +177,36 @@ func New(ctx context.Context, cfg Config) (tessera.Driver, error) {
 	}, nil
 }
 
+// Appender creates a new tessera.Appender lifecycle object.
 func (s *Storage) Appender(ctx context.Context, opts *tessera.AppendOptions) (*tessera.Appender, tessera.LogReader, error) {
-	pb := uint64(opts.PushbackMaxOutstanding())
-	if pb == 0 {
-		pb = DefaultPushbackMaxOutstanding
-	}
-	if opts.CheckpointInterval() < minCheckpointInterval {
-		return nil, nil, fmt.Errorf("requested CheckpointInterval (%v) is less than minimum permitted %v", opts.CheckpointInterval(), minCheckpointInterval)
-	}
-
-	seq, err := newMySQLSequencer(ctx, s.cfg.DSN, pb, s.cfg.MaxOpenConns, s.cfg.MaxIdleConns)
+	seq, err := newMySQLSequencer(ctx, s.cfg.DSN, uint64(opts.PushbackMaxOutstanding()), s.cfg.MaxOpenConns, s.cfg.MaxIdleConns)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create MySQL sequencer: %v", err)
 	}
 
+	s3Store := &s3Storage{
+		s3Client:     s3.NewFromConfig(*s.cfg.SDKConfig, s.cfg.S3Options),
+		bucket:       s.cfg.Bucket,
+		bucketPrefix: s.cfg.BucketPrefix,
+	}
+
+	a, lr, err := s.newAppender(ctx, s3Store, seq, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &tessera.Appender{
+		Add: a.Add,
+	}, lr, nil
+}
+
+// newAppender creates and initialises an Appender struct with the provided underlying storage implementations.
+func (s *Storage) newAppender(ctx context.Context, o objStore, seq sequencer, opts *tessera.AppendOptions) (*Appender, tessera.LogReader, error) {
+	if opts.CheckpointInterval() < minCheckpointInterval {
+		return nil, nil, fmt.Errorf("requested CheckpointInterval (%v) is less than minimum permitted %v", opts.CheckpointInterval(), minCheckpointInterval)
+	}
+
 	logStore := &logResourceStore{
-		objStore: &s3Storage{
-			s3Client:     s3.NewFromConfig(*s.cfg.SDKConfig, s.cfg.S3Options),
-			bucket:       s.cfg.Bucket,
-			bucketPrefix: s.cfg.BucketPrefix,
-		},
+		objStore:    o,
 		entriesPath: opts.EntriesPath(),
 		integratedSize: func(context.Context) (uint64, error) {
 			s, _, err := seq.currentTree(ctx)
@@ -202,13 +216,14 @@ func (s *Storage) Appender(ctx context.Context, opts *tessera.AppendOptions) (*t
 			return seq.nextIndex(ctx)
 		},
 	}
+
 	r := &Appender{
 		logStore:    logStore,
 		sequencer:   seq,
+		queue:       storage.NewQueue(ctx, opts.BatchMaxAge(), opts.BatchMaxSize(), seq.assignEntries),
 		newCP:       opts.CheckpointPublisher(logStore, http.DefaultClient),
 		treeUpdated: make(chan struct{}),
 	}
-	r.queue = storage.NewQueue(ctx, opts.BatchMaxAge(), opts.BatchMaxSize(), r.sequencer.assignEntries)
 
 	if err := r.init(ctx); err != nil {
 		return nil, nil, fmt.Errorf("failed to initialise log storage: %v", err)
@@ -220,9 +235,11 @@ func (s *Storage) Appender(ctx context.Context, opts *tessera.AppendOptions) (*t
 	// Kick off go-routine which handles the publication of checkpoints.
 	go r.publishCheckpointJob(ctx, opts.CheckpointInterval())
 
-	return &tessera.Appender{
-		Add: r.Add,
-	}, r.logStore, nil
+	if i := opts.GarbageCollectionInterval(); i > 0 {
+		go r.garbageCollectorJob(ctx, i)
+	}
+
+	return r, r.logStore, nil
 }
 
 // Appender is an implementation of the Tessera appender lifecycle contract.
@@ -285,6 +302,49 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, interval time.Durat
 			klog.Warningf("publishCheckpoint: %v", err)
 		}
 	}
+}
+
+// garbageCollectorJob is a long-running function which handles the removal of obsolete partial tiles
+// and entry bundles.
+// Blocks until ctx is done.
+func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
+	t := time.NewTicker(i)
+	defer t.Stop()
+
+	// Entirely arbitrary number.
+	maxBundlesPerRun := uint(100)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		func() {
+			ctx, span := tracer.Start(ctx, "tessera.storage.aws.garbageCollectJob")
+			defer span.End()
+
+			// Figure out the size of the latest published checkpoint - we can't be removing partial tiles implied by
+			// that checkpoint just because we've done an integration and know about a larger (but as yet unpublished)
+			// checkpoint!
+			cp, err := a.logStore.ReadCheckpoint(ctx)
+			if err != nil {
+				klog.Warningf("Failed to get published checkpoint: %v", err)
+				return
+			}
+			_, pubSize, _, err := parse.CheckpointUnsafe(cp)
+			if err != nil {
+				klog.Warningf("Failed to parse published checkpoint: %v", err)
+				return
+			}
+
+			if err := a.sequencer.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStore.objStore.deleteObjectsWithPrefix); err != nil {
+				klog.Warningf("GarbageCollect failed: %v", err)
+				return
+			}
+		}()
+	}
+
 }
 
 // Add is the entrypoint for adding entries to a sequencing log.
@@ -620,11 +680,15 @@ func (lr *logResourceStore) ReadCheckpoint(ctx context.Context) ([]byte, error) 
 }
 
 func (lr *logResourceStore) ReadTile(ctx context.Context, l, i uint64, p uint8) ([]byte, error) {
-	return lr.get(ctx, layout.TilePath(l, i, p))
+	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
+		return lr.get(ctx, layout.TilePath(l, i, p))
+	})
 }
 
 func (lr *logResourceStore) ReadEntryBundle(ctx context.Context, i uint64, p uint8) ([]byte, error) {
-	return lr.get(ctx, lr.entriesPath(i, p))
+	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
+		return lr.get(ctx, lr.entriesPath(i, p))
+	})
 }
 
 func (lr *logResourceStore) IntegratedSize(ctx context.Context) (uint64, error) {
@@ -633,16 +697,6 @@ func (lr *logResourceStore) IntegratedSize(ctx context.Context) (uint64, error) 
 
 func (lr *logResourceStore) NextIndex(ctx context.Context) (uint64, error) {
 	return lr.nextIndex(ctx)
-}
-
-func (lr *logResourceStore) StreamEntries(ctx context.Context, startEntry, N uint64) iter.Seq2[stream.Bundle, error] {
-	klog.Infof("StreamEntries [%d, %d)", startEntry, startEntry+N)
-
-	// TODO(al): Consider making this configurable.
-	// Reads to S3 should be able to go highly concurrent without issue, but some performance testing should probably be undertaken.
-	// 10 works well for GCP, so start with that as a default.
-	numWorkers := uint(10)
-	return stream.EntryBundles(ctx, numWorkers, lr.IntegratedSize, lr.ReadEntryBundle, startEntry, N)
 }
 
 // get returns the requested object.
@@ -889,6 +943,15 @@ func (s *mySQLSequencer) initDB(ctx context.Context) error {
 		return err
 	}
 
+	if _, err := s.dbPool.ExecContext(ctx,
+		`CREATE TABLE IF NOT EXISTS GCCoord(
+			id INT UNSIGNED NOT NULL,
+			fromSize BIGINT NOT NULL,
+			PRIMARY KEY (id)
+		)`); err != nil {
+		return err
+	}
+
 	// Set default values for a newly initialised schema - these rows being present are a precondition for
 	// sequencing and integration to occur.
 	// Note that this will only succeed if no row exists, so there's no danger
@@ -907,6 +970,10 @@ func (s *mySQLSequencer) initDB(ctx context.Context) error {
 	}
 	if _, err := s.dbPool.ExecContext(ctx,
 		`INSERT IGNORE INTO PubCoord (id, publishedAt) VALUES (0, 0)`); err != nil {
+		return err
+	}
+	if _, err := s.dbPool.ExecContext(ctx,
+		`INSERT IGNORE INTO GCCoord (id, fromSize) VALUES (0, 0)`); err != nil {
 		return err
 	}
 	return nil
@@ -1163,6 +1230,81 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minAge time.Dura
 	return nil
 }
 
+// garbageCollect will identify up to maxBundles unneeded partial entry bundles (and any unneeded partial tiles which sit above them in the tree) and
+// call the provided function to remove them.
+//
+// Uses the `GCCoord` table to ensure that only one binary is actively garbage collecting at any given time, and to track progress so that we don't
+// needlessly attempt to GC over regions which have already been cleaned.
+func (s *mySQLSequencer) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint, deleteWithPrefix func(ctx context.Context, prefix string) error) error {
+	tx, err := s.dbPool.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	pRow := tx.QueryRowContext(ctx, "SELECT fromSize FROM GCCoord WHERE id = ? FOR UPDATE", 0)
+	var fromSize uint64
+	if err := pRow.Scan(&fromSize); err != nil {
+		return fmt.Errorf("failed to parse publishedAt: %v", err)
+	}
+
+	if fromSize == treeSize {
+		return nil
+	}
+
+	d := uint(0)
+	eg := errgroup.Group{}
+	// GC the tree in "vertical" chunks defined by entry bundles.
+	for ri := range layout.Range(fromSize, treeSize-fromSize, treeSize) {
+		// Only known-full bundles are in-scope for for GC, so exit if the current bundle is partial or
+		// we've reached our limit of chunks.
+		if ri.Partial > 0 || d > maxBundles {
+			break
+		}
+
+		// GC any partial versions of the entry bundle itself and the tile which sits immediately above it.
+		eg.Go(func() error { return deleteWithPrefix(ctx, layout.EntriesPath(ri.Index, 0)+".p/") })
+		eg.Go(func() error { return deleteWithPrefix(ctx, layout.TilePath(0, ri.Index, 0)+".p/") })
+		fromSize += uint64(ri.N)
+		d++
+
+		// Now consider (only) the part of the tree which sits above the bundle.
+		// We'll walk up the parent tiles for as a long as we're tracing the right-hand
+		// edge of a perfect subtree.
+		// This gives the property we'll only visit each parent tile once, rather than up to 256 times.
+		pL, pIdx := uint64(0), ri.Index
+		for isLastLeafInParent(pIdx) {
+			// Move our coordinates up to the parent
+			pL, pIdx = pL+1, pIdx>>layout.TileHeight
+			// GC any partial versions of the parent tile.
+			eg.Go(func() error { return deleteWithPrefix(ctx, layout.TilePath(pL, pIdx, 0)+".p/") })
+
+		}
+	}
+	if err := eg.Wait(); err != nil {
+		return fmt.Errorf("failed to delete one or more objects: %v", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, "UPDATE GCCoord SET fromSize=? WHERE id=?", fromSize, 0); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	tx = nil
+
+	return nil
+}
+
+// isLastLeafInParent returns true if a tile with the provided index is the final child node of a
+// (hypothetical) full parent tile.
+func isLastLeafInParent(i uint64) bool {
+	return i%layout.TileWidth == layout.TileWidth-1
+}
+
 func placeholder(n int) string {
 	places := make([]string, n)
 	for i := range n {
@@ -1261,6 +1403,39 @@ func (s *s3Storage) setObjectIfNoneMatch(ctx context.Context, objName string, da
 		}
 
 		return fmt.Errorf("failed to write object %q to bucket %q: %w", objName, s.bucket, err)
+	}
+	return nil
+}
+
+// deleteObjectsWithPrefix removes any objects with the provided prefix from S3.
+func (s *s3Storage) deleteObjectsWithPrefix(ctx context.Context, objPrefix string) error {
+	ctx, span := tracer.Start(ctx, "tessera.storage.aws.deleteObject")
+	defer span.End()
+
+	if s.bucketPrefix != "" {
+		objPrefix = filepath.Join(s.bucketPrefix, objPrefix)
+	}
+	span.SetAttributes(objectPathKey.String(objPrefix))
+
+	l, err := s.s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(objPrefix),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list objects with prefix %q: %v", objPrefix, err)
+	}
+	di := &s3.DeleteObjectsInput{
+		Bucket: aws.String(s.bucket),
+		Delete: &types.Delete{
+			Objects: make([]types.ObjectIdentifier, 0, len(l.Contents)),
+		},
+	}
+	for _, k := range l.Contents {
+		klog.V(2).Infof("Deleting object %s", *k.Key)
+		di.Delete.Objects = append(di.Delete.Objects, types.ObjectIdentifier{Key: k.Key})
+	}
+	if _, err := s.s3Client.DeleteObjects(ctx, di); err != nil {
+		return fmt.Errorf("failed to delete objects: %v", err)
 	}
 	return nil
 }

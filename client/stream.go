@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package stream provides support for streaming contiguous entries from logs.
-package stream
+package client
 
 import (
 	"context"
@@ -24,11 +24,8 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// GetBundleFn is a function which knows how to fetch a single entry bundle from the specified address.
-type GetBundleFn func(ctx context.Context, bundleIdx uint64, partial uint8) ([]byte, error)
-
-// GetTreeSizeFn is a function which knows how to return a tree size.
-type GetTreeSizeFn func(ctx context.Context) (uint64, error)
+// TreeSizeFunc is a function which knows how to return the current tree size of a log.
+type TreeSizeFunc func(ctx context.Context) (uint64, error)
 
 // Bundle represents an entry bundle in a log, along with some metadata about which parts of the bundle
 // are relevent.
@@ -36,6 +33,8 @@ type Bundle struct {
 	// RangeInfo decribes which of the entries in this bundle are relevent.
 	RangeInfo layout.RangeInfo
 	// Data is the raw serialised bundle, as fetched from the log.
+	//
+	// For a tlog-tiles compliant log, this can be unmarshaled using api.EntryBundle.
 	Data []byte
 }
 
@@ -48,7 +47,7 @@ type Bundle struct {
 // requests to getBundle. The request parallelism is set by the value of the numWorkers paramemter, which can be tuned
 // to balance throughput against consumption of resources, but such balancing needs to be mindful of the nature of the
 // source infrastructure, and how concurrent requests affect performance (e.g. GCS buckets vs. files on a single disk).
-func EntryBundles(ctx context.Context, numWorkers uint, getSize GetTreeSizeFn, getBundle GetBundleFn, fromEntry uint64, N uint64) iter.Seq2[Bundle, error] {
+func EntryBundles(ctx context.Context, numWorkers uint, getSize TreeSizeFunc, getBundle EntryBundleFetcherFunc, fromEntry uint64, N uint64) iter.Seq2[Bundle, error] {
 	ctx, span := tracer.Start(ctx, "tessera.storage.StreamAdaptor")
 	defer span.End()
 
@@ -144,17 +143,17 @@ type Entry[T any] struct {
 	Entry T
 }
 
-// Entries creates a new stream reader which uses the provided bundleFn to process bundles into processed entries of type T.
+// Entries consumes an iterator of Bundle structs and transforms it using the provided unbundle function, and returns an iterator over the transformed data.
 //
-// Different bundleFn implementations can be provided to return raw entry bytes, parsed entry structs, or derivations of entries (e.g. hashes) as needed.
-func Entries[T any](bundles iter.Seq2[Bundle, error], bundleFn func([]byte) ([]T, error)) iter.Seq2[Entry[T], error] {
+// Different unbundle implementations can be provided to return raw entry bytes, parsed entry structs, or derivations of entries (e.g. hashes) as needed.
+func Entries[T any](bundles iter.Seq2[Bundle, error], unbundle func([]byte) ([]T, error)) iter.Seq2[Entry[T], error] {
 	return func(yield func(Entry[T], error) bool) {
 		for b, err := range bundles {
 			if err != nil {
 				yield(Entry[T]{}, err)
 				return
 			}
-			es, err := bundleFn(b.Data)
+			es, err := unbundle(b.Data)
 			if err != nil {
 				yield(Entry[T]{}, err)
 				return

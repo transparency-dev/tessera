@@ -17,16 +17,16 @@ package fsck
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"sync/atomic"
 
-	f_log "github.com/transparency-dev/formats/log"
 	"github.com/transparency-dev/merkle/compact"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
-	"github.com/transparency-dev/tessera/internal/stream"
+	"github.com/transparency-dev/tessera/client"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
@@ -49,16 +49,13 @@ type Fetcher interface {
 // The checking will use the provided N parameter to control the number of concurrent workers undertaking
 // this process.
 func Check(ctx context.Context, origin string, verifier note.Verifier, f Fetcher, N uint, bundleHasher func([]byte) ([][]byte, error)) error {
-	cpRaw, err := f.ReadCheckpoint(ctx)
+	cp, cpRaw, _, err := client.FetchCheckpoint(ctx, f.ReadCheckpoint, verifier, origin)
 	if err != nil {
-		return fmt.Errorf("fetch initial source checkpoint: %v", err)
-	}
-	klog.V(1).Infof("Fsck: checkpoint:\n%s", cpRaw)
-	cp, _, _, err := f_log.ParseCheckpoint(cpRaw, origin, verifier)
-	if err != nil {
-		klog.Exitf("Failed to parse checkpoint: %v", err)
+		klog.Exitf("Failed to fetch and verify checkpoint: %v", err)
 	}
 	klog.Infof("Fsck: checking log of size %d", cp.Size)
+
+	klog.V(1).Infof("Fsck: checkpoint:\n%s", cpRaw)
 
 	fTree := fsckTree{
 		fetcher:           f,
@@ -81,7 +78,7 @@ func Check(ctx context.Context, origin string, verifier note.Verifier, f Fetcher
 	getSize := func(_ context.Context) (uint64, error) { return cp.Size, nil }
 	// Consume the stream of bundles to re-derive the other log resources.
 	// TODO(al): consider chunking the log and doing each in parallel.
-	for b, err := range stream.EntryBundles(ctx, N, getSize, f.ReadEntryBundle, 0, cp.Size) {
+	for b, err := range client.EntryBundles(ctx, N, getSize, f.ReadEntryBundle, 0, cp.Size) {
 		if err != nil {
 			return fmt.Errorf("error while streaming bundles: %v", err)
 		}
@@ -226,9 +223,13 @@ func (f *fsckTree) resourceCheckWorker(ctx context.Context) func() error {
 			if err != nil {
 				return err
 			}
+			if l, e := uint(len(data)), uint(r.partial)*sha256.Size; r.partial != 0 && l > e {
+				// We were likely given a full tile rather than a partial tile, so trim it to the expected size.
+				data = data[:e]
+			}
 			p := layout.TilePath(r.level, r.index, r.partial)
 			if !bytes.Equal(data, r.content) {
-				return fmt.Errorf("%s: log has %x expected %x", p, data, r.content)
+				return fmt.Errorf("%s: log has:\n%x\nexpected:\n%x", p, data, r.content)
 			}
 			klog.V(2).Infof("%s: %s ok", id, p)
 		}

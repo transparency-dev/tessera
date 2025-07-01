@@ -28,8 +28,8 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/transparency-dev/tessera"
+	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/internal/otel"
-	"github.com/transparency-dev/tessera/internal/stream"
 	"k8s.io/klog/v2"
 )
 
@@ -187,7 +187,7 @@ func (d *AntispamStorage) Decorator() func(f tessera.AddFn) tessera.AddFn {
 // Follower returns a follower which knows how to populate the antispam index.
 //
 // This implements tessera.Antispam.
-func (d *AntispamStorage) Follower(b func([]byte) ([][]byte, error)) stream.Follower {
+func (d *AntispamStorage) Follower(b func([]byte) ([][]byte, error)) tessera.Follower {
 	f := &follower{
 		as:           d,
 		bundleHasher: b,
@@ -209,12 +209,12 @@ func (f *follower) Name() string {
 }
 
 // Follow uses entry data from the log to populate the antispam storage.
-func (f *follower) Follow(ctx context.Context, lr stream.Streamer) {
+func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 	errOutOfSync := errors.New("out-of-sync")
 
 	t := time.NewTicker(time.Second)
 	var (
-		next func() (stream.Entry[[]byte], error, bool)
+		next func() (client.Entry[[]byte], error, bool)
 		stop func()
 
 		curEntries [][]byte
@@ -271,7 +271,11 @@ func (f *follower) Follow(ctx context.Context, lr stream.Streamer) {
 				// start reading from:
 				if next == nil {
 					span.AddEvent("Start streaming entries")
-					next, stop = iter.Pull2(stream.Entries(lr.StreamEntries(ctx, followFrom, size-followFrom), f.bundleHasher))
+					sizeFn := func(_ context.Context) (uint64, error) {
+						return size, nil
+					}
+					numFetchers := uint(10)
+					next, stop = iter.Pull2(client.Entries(client.EntryBundles(ctx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, size-followFrom), f.bundleHasher))
 				}
 
 				if curIndex == followFrom && curEntries != nil {

@@ -12,14 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package stream
+package aws
 
 import (
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
-const name = "github.com/transparency-dev/tessera/internal/stream"
+const name = "github.com/transparency-dev/tessera/storage/aws"
 
 var (
 	tracer = otel.Tracer(name)
+)
+
+var (
+	objectPathKey = attribute.Key("tessera.objectPath")
 )

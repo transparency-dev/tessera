@@ -31,6 +31,8 @@ import (
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/storage/mysql"
 	"golang.org/x/mod/sumdb/note"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 	"k8s.io/klog/v2"
 )
 
@@ -98,8 +100,17 @@ func main() {
 	klog.Infof("Environment variables useful for accessing this log:\n"+
 		"export WRITE_URL=http://localhost%s/ \n"+
 		"export READ_URL=http://localhost%s/ \n", *listen, *listen)
-	// Serve HTTP requests until the process is terminated
-	if err := http.ListenAndServe(*listen, http.DefaultServeMux); err != nil {
+	// Run the HTTP server with the single handler and block until this is terminated
+	h2s := &http2.Server{}
+	h1s := &http.Server{
+		Addr:    *listen,
+		Handler: h2c.NewHandler(http.DefaultServeMux, h2s),
+	}
+	if err := http2.ConfigureServer(h1s, h2s); err != nil {
+		klog.Exitf("http2.ConfigureServer: %v", err)
+	}
+
+	if err := h1s.ListenAndServe(); err != nil {
 		if err := shutdown(ctx); err != nil {
 			klog.Exit(err)
 		}

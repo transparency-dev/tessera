@@ -26,7 +26,7 @@ import (
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/client"
-	"github.com/transparency-dev/tessera/internal/fsck"
+	"github.com/transparency-dev/tessera/fsck"
 	"golang.org/x/mod/sumdb/note"
 	"k8s.io/klog/v2"
 )

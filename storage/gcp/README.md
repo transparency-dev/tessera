@@ -38,6 +38,10 @@ This table is used to coordinate integration of sequenced batches in the `Seq` t
 This table is used to coordinate publication of new checkpoints, ensuring that checkpoints are not published
 more frequently than configured.
 
+### `GCCoord`
+This table is used to coordinate garbage collection of partial tiles and entry bundles which have been
+make obsolete by the continued growth of the log.
+
 ## Life of a leaf
 
 1. Leaves are submitted by the binary built using Tessera via a call the storage's `Add` func.

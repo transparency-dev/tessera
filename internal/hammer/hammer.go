@@ -23,7 +23,9 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"strconv"
@@ -71,23 +73,30 @@ var (
 	httpTimeout = flag.Duration("http_timeout", 30*time.Second, "Timeout for HTTP requests")
 	forceHTTP2  = flag.Bool("force_http2", false, "Use HTTP/2 connections *only*")
 
-	hc = &http.Client{
-		Transport: &http.Transport{
-			MaxIdleConns:        256,
-			MaxIdleConnsPerHost: 256,
-			DisableKeepAlives:   false,
-		},
-		Timeout: *httpTimeout,
-	}
+	hc *http.Client
 )
 
 func main() {
 	klog.InitFlags(nil)
 	flag.Parse()
 
+	hc = &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConns:        *numWriters + *numReadersFull + *numReadersRandom,
+			MaxIdleConnsPerHost: *numWriters + *numReadersFull + *numReadersRandom,
+			DisableKeepAlives:   false,
+		},
+		Timeout: *httpTimeout,
+	}
 	if *forceHTTP2 {
 		hc.Transport = &http2.Transport{
-			TLSClientConfig: &tls.Config{},
+			// So http2.Transport doesn't complain the URL scheme isn't 'https'
+			AllowHTTP: true,
+			// Pretend we are dialing a TLS endpoint. (Note, we ignore the passed tls.Config)
+			DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, network, addr)
+			},
 		}
 	}
 
@@ -237,7 +246,7 @@ func mustCreateReaders(us []string) loadtest.LogReader {
 
 		switch rURL.Scheme {
 		case "http", "https":
-			c, err := client.NewHTTPFetcher(rURL, http.DefaultClient)
+			c, err := client.NewHTTPFetcher(rURL, hc)
 			if err != nil {
 				klog.Exitf("Failed to create HTTP fetcher for %q: %v", u, err)
 			}
@@ -265,12 +274,15 @@ func mustCreateWriters(us []string) loadtest.LeafWriter {
 		if err != nil {
 			klog.Exitf("Invalid log writer URL %q: %v", u, err)
 		}
-		w = append(w, httpWriter(wURL, http.DefaultClient, *bearerTokenWrite))
+		w = append(w, httpWriter(wURL, hc, *bearerTokenWrite))
 	}
 	return loadtest.NewRoundRobinWriter(w)
 }
 
 func httpWriter(u *url.URL, hc *http.Client, bearerToken string) loadtest.LeafWriter {
+	cTrace := &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) { klog.Infof("connection established %#v", info) },
+	}
 	return func(ctx context.Context, newLeaf []byte) (uint64, error) {
 		req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(newLeaf))
 		if err != nil {
@@ -279,7 +291,11 @@ func httpWriter(u *url.URL, hc *http.Client, bearerToken string) loadtest.LeafWr
 		if bearerToken != "" {
 			req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", bearerToken))
 		}
-		resp, err := hc.Do(req.WithContext(ctx))
+		reqCtx := req.Context()
+		if klog.V(2).Enabled() {
+			reqCtx = httptrace.WithClientTrace(req.Context(), cTrace)
+		}
+		resp, err := hc.Do(req.WithContext(reqCtx))
 		if err != nil {
 			return 0, fmt.Errorf("failed to write leaf: %v", err)
 		}
