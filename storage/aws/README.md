@@ -20,26 +20,15 @@ noting that all tree derivations are therefore idempotent.
 ## Transactional storage
 
 The transactional storage is implemented with Aurora MySQL, and uses a schema with the following tables:
-
-### `Tessera`
-This table is used to identify the current schema version.
-
-### `SeqCoord`
-A table with a single row which is used to keep track of the next assignable sequence number.
-
-### `Seq`
-This holds batches of entries keyed by the sequence number assigned to the first entry in the batch.
-
-### `IntCoord`
-This table is used to coordinate integration of sequenced batches in the `Seq` table, and keep track of the current tree state.
-
-### `PubCoord`
-This table is used to coordinate publication of new checkpoints, ensuring that checkpoints are not published
-more frequently than configured.
-
-### `GCCoord`
-This table is used to coordinate garbage collection of partial tiles and entry bundles which have been
-made obsolete by the continued growth of the log.
+   * `Tessera`: This table is used to identify the current schema version.
+   * `SeqCoord`: A table with a single row which is used to keep track of the next assignable sequence number.
+   * `Seq`: This holds batches of entries keyed by the sequence number assigned to the first entry in the batch.
+   * `IntCoord`: This table is used to coordinate integration of sequenced batches in the `Seq` table, and keeps
+               track of the current tree state.
+   * `PubCoord`: This table is used to coordinate publication of new checkpoints, ensuring that checkpoints
+               are not published more frequently than configured.
+   * `GCCoord`: This table is used to coordinate garbage collection of partial tiles and entry bundles which
+               have been made obsolete by the continued growth of the log.
 
 ## Life of a leaf
 
@@ -62,7 +51,7 @@ made obsolete by the continued growth of the log.
    1. Update `IntCoord` with `seq+=num_entries_integrated` and the latest `rootHash`
 1. Checkpoints representing the latest state of the tree are published at the configured interval.
 
-## Deduplication
+## Antispam
 
 Two experimental implementations have been tested which uses either Aurora MySQL,
 or a local bbolt database to store the `<identity_hash>` --> `sequence` mapping.

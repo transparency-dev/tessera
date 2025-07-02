@@ -276,7 +276,7 @@ In some scenarios, particularly where logs are publicly writable such as Certifi
 whether maliciously or accidentally, to add entries they already contain. Generally, this is undesirable, and so Tessera provides an
 optional mechanism to try to detect and ignore duplicate entries on a best-effort basis.
 
-Logs that do not allow public submissions directly to the log may want to operate without deduplication, instead relying on the
+Logs that do not allow public submissions directly to the log may want to operate without this optional antispam measure, instead relying on the
 personality to never generate duplicates. This can allow for significantly cheaper operation and faster write throughput.
 
 The antispam mechanism consists of two layers which sit in front of the underlying `Add` implementation of the storage:
@@ -298,7 +298,7 @@ These layes are configured by the `WithAntispam` method of the
 
 > [!Note]
 > Tessera's antispam mechanism is _best effort_; there is no guarantee that all duplicate entries will be suppressed.
-> This is a trade-off; fully-atomic "strong" deduplication is _extremely_ expensive in terms of throughput and compute costs, and
+> This is a trade-off; fully-atomic "strong" de-duplication is _extremely_ expensive in terms of throughput and compute costs, and
 > would limit Tessera to only being able to use transactional type storage backends.
 
 ### Witnessing

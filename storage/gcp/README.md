@@ -61,7 +61,7 @@ made obsolete by the continued growth of the log.
    1. Update `IntCoord` with `seq+=num_entries_integrated` and the latest `rootHash`
 1. Checkpoints representing the latest state of the tree are published at the configured interval.
 
-## Deduplication
+## Antispam
 
 An experimental implementation has been tested which uses Spanner to store the `<identity_hash>` --> `sequence`
 mapping. This works well using "slack" Spanner CPU available in the smallest possible footprint, and consequently

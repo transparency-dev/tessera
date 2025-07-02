@@ -121,7 +121,7 @@ storage implementations:
   etc.) SHOULD be supported where possible.
 
 
-### [`Appender`](./lifecycle.md#appender) lifecycle
+### [`Appender`](./lifecycle.md#appender) Lifecycle
 
 This lifecycle mode is the typical "left-dense, right-hand append only" mode we typically think of as
 append-only logs.
