@@ -1,10 +1,10 @@
-# MySQL Storage for Tessera
+# Tessera on MySQL
 
 This directory contains the implementation of a storage backend for Tessera using MySQL. This allows Tessera to leverage MySQL as its underlying database for storing checkpoint, entry hashes and data in tiles format.
 
 ## Design
 
-See [MySQL storage design documentation](/storage/mysql/DESIGN.md).
+See [MySQL storage design documentation](./DESIGN.md).
 
 ### Requirements
 
@@ -39,7 +39,7 @@ func main() {
 }
 ```
 
-### Example personality
+### Example Personality
 
 See [MySQL conformance example](/cmd/conformance/mysql/).
 

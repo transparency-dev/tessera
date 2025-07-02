@@ -1,9 +1,16 @@
-# Design docs
+# Design Docs
 
 This directory contains design documentation for Tessera.
 
 It's probably wise to start with the [philosophy](philosophy.md) doc first in order to establish
 the context around the approach and design trade-offs made herein.
+
+The following documents are available:
+
+- [philosophy.md](./philosophy.md): The guiding principles and rationale behind Tessera's design.
+- [lifecycle.md](./lifecycle.md): The various states a Tessera log can be in.
+- [antispam.md](./antispam.md): How Tessera handles duplicate entries.
+- [performance.md](../performance.md): A high-level overview of the performance characteristics of the different storage backends.
 
 ## Objective
 
@@ -37,7 +44,7 @@ The major changes from Trillian v1 are that Tessera:
 * Is a library rather than a collection of microservices.
 * Is strongly opinionated on how t-logs are to be exposed and served.
   + For example, Tessera will only support building t-logs which conform to [tlog-tiles][] or [static-ct-api][]
-    specs, and enforces the use of [checkpoint][] spec commitments to the state of the log.
+    specs, and enforces the use of [tlog-checkpoint][] spec commitments to the state of the log.
 * Has a clear scope of responsibility: Tessera is only concerned with managing t-logs, anything beyond
   that is the responsibility of the application.
 * Implements its storage layer much more "natively"; a much simpler abstraction which pushes more responsibility
@@ -98,26 +105,48 @@ a detailed explanation of how it works:
 * [MySQL](/storage/mysql/DESIGN.md)
 * [POSIX filesystem](/storage/posix/README.md)
 
-Every storage implementation is required to expose a small number of fairly high-level APIs:
+Every storage implementation is required to expose a small number of fairly high-level APIs which
+support the modes listed in the [lifecycle doc](./lifecycle.md). These storage APIs are intended
+to be high-level enough to allow implementations flexibility to act in the most native way for the
+infrastructure they're targeting, rather than assuming e.g. a transactional model which can rule out
+entire classes of storage or make optimisation difficult/impossible.
 
-* Add(): durably assign a leaf to an index in the log, return its durably assigned index
-* TODO: Set(): durably assign one or more leaves to user-specified positions in the log
-
-in addition to meeting some additional contracts:
+The individual lifecycle APIs are covered below, but these more broad general guidelines apply to all
+storage implementations:
 
 * If the storage infrastructure is capable of being directly exposed to client (e.g. S3/GCS
   via HTTP, etc.), the Merkle tree internal node data and leaves MUST be stored according to
   the [tlog-tiles][] or [static-ct-api][] specs.
 * The small number of "With Options" defined by Tessera (e.g. `WithBatching`, `WithCheckpointSigner`,
   etc.) SHOULD be supported where possible.
-* Entries with assigned indices contiguous to the existing tree SHOULD be integrated into the
-  t-log within single-digit seconds.
 
-These storage APIs are intended to be high-level enough to allow implementations flexibility to act
-in the most native way for the infrastructure they're targeting, rather than assuming e.g. a
-transactional model which can rule out entire classes of storage or make optimisation
-difficult/impossible.
 
+### [`Appender`](./lifecycle.md#appender) Lifecycle
+
+This lifecycle mode is the typical "left-dense, right-hand append only" mode we typically think of as
+append-only logs.
+
+#### [`Add`](https://pkg.go.dev/github.com/transparency-dev/tessera#AddFn)
+
+*Durably* assigns an entry to an index in the log, and returns an
+[`IndexFuture`](https://pkg.go.dev/github.com/transparency-dev/tessera#IndexFuture) which will resolve
+either to the assigned index or an error.
+
+Implementations MUST NOT return a future which resolves to an index value which is not yet durably
+flushed/committed to the storage. 
+
+To give some freedom for performance trade-offs, implementations MAY delay and group concurrent calls
+in this method in order to take advantage of batching strategies.
+
+While implementations can chose to integrate entries into the log by the time the future resolves,
+implementations MAY perform integration asynchronously but SHOULD target integrating such entries into
+the log within low single-digit seconds.
+
+#### [`LogReader`](https://pkg.go.dev/github.com/transparency-dev/tessera#LogReader)
+
+This interface is intended to provide the application with access to static log resources, e.g. for
+building proofs to be returned to the caller, using entries committed to by the log to derive other
+data structures (e.g. a verifiable index), etc.
 
 
 [tlog-tiles]: https://c2sp.org/tlog-tiles

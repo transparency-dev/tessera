@@ -1,7 +1,6 @@
-# POSIX Design
+# Tessera on POSIX Filesystems
 
-This document describes how the storage implementation for running Tessera on a POSIX-compliant filesystem
-is intended to work.
+This document describes the storage implementation for running Tessera on a POSIX-compliant filesystem.
 
 ## Overview
 
@@ -18,7 +17,7 @@ The implementation uses a `.state/` directory to coordinate operation.
 This directory does _not_ need to be visible to log clients, but it does not contain sensitive
 data and so it isn't a problem if it is made visible.
 
-## Life of a leaf
+## Life of a Leaf
 
 In the description below, when we talk about writing to files - either appending or creating new ones,
 the _actual_ process used always follows the following pattern:

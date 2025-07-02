@@ -161,17 +161,27 @@ func init() {
 
 }
 
-// AddFn adds a new entry to be sequenced.
-// This method quickly returns an IndexFuture, which will return the index assigned
-// to the new leaf. Until this index is obtained from the future, the leaf is not durably
-// added to the log, and terminating the process may lead to this leaf being lost.
-// Once the future resolves and returns an index, the leaf is durably sequenced and will
-// be preserved even in the process terminates.
+// AddFn adds a new entry to be sequenced by the storage implementation.
 //
-// Once a leaf is sequenced, it will be integrated into the tree soon (generally single digit
-// seconds). Until it is integrated and published, clients of the log will not be able to
-// verifiably access this value. Personalities that require blocking until the leaf is integrated
-// can use the PublicationAwaiter to wrap the call to this method.
+// This method should quickly return an IndexFuture, which can be called to resolve to the
+// index **durably** assigned to the new entry (or an error).
+//
+// Implementations MUST NOT allow the future to resolve to an index value unless/until it has
+// been durably committed by the storage.
+//
+// Callers MUST NOT assume that an entry has been accepted or durably stored until they have
+// successfully resolved the future.
+//
+// Once the future resolves and returns an index, the entry can be considered to have been
+// durably sequenced and will be preserved even in the event that the process terminates.
+//
+// Once an entry is sequenced, the storage implementation MUST integrate it into the tree soon
+// (how long this is expected to take is left unspecified, but as a guideline it should happen
+// within single digit seconds). Until the entry is integrated and published, clients of the log
+// will not be able to verifiably access this value.
+//
+// Personalities which require blocking until the entry is integrated (e.g. because they wish
+// to return an inclusion proof) may use the PublicationAwaiter to wrap the call to this method.
 type AddFn func(ctx context.Context, entry *Entry) IndexFuture
 
 // IndexFuture is the signature of a function which can return an assigned index or error.

@@ -23,13 +23,14 @@ of the machine(s) running the personality binary, network speed and weather, etc
 tests on infrastructure which is as close as possible to that which will ultimately be used to run the log in production.
 The [conformance binaries](/cmd/conformance) and [hammer tool](/internal/hammer) are designed for this kind of performance testing.
 
-### Deduplication
+### Antispam
 
-Deduplicating incoming entries is a somewhat expensive operation in terms of both storage and throughput.
+Antispam is a feature which does best effort deduplication of incoming entries. While cheaper than _strong atomic_ deduplication would
+be, it is still a somewhat expensive operation in terms of both storage and throughput.
 Not all personality designs will require it, so Tessera is built such that you only incur these costs if they are necessary
 for your design.
 
-Leaving deduplication disabled will greatly increase the throughput of the log, and decrease CPU and storage costs.
+Leaving antispam disabled will greatly increase the throughput of the log, and decrease CPU and storage costs.
 
 
 ## Backends
@@ -44,7 +45,7 @@ PUs can be allocated in blocks of 100, and 1000 PUs is equivalent to 1 Spanner S
 
 The table below shows some rough numbers of measured performance:
 
-| Spanner PUs | Num FEs | QPS no-dedup | QPS dedup |
+| Spanner PUs | Num FEs | QPS no-antispam | QPS antispam |
 |-------------|---------|--------------|-----------|
 | 100         | 1       | > 3,000      | > 800     |
 | 200         | 1       | not done     | > 1500    |
