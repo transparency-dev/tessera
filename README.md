@@ -55,12 +55,28 @@ into any other API, this strategy will lose a lot of the read scaling that Tesse
 
 ## Status
 
-Tessera is under active development, with an [alpha 3 release](https://github.com/transparency-dev/tessera/releases/tag/v0.1.2) available now.
+Tessera is under active development, and is considered production ready since the
+[Beta release](https://github.com/transparency-dev/tessera/releases/tag/v0.2.0).
+See the table below for details.
+
+### Storage drivers
+
+| Driver                  | Appender | Migration | Antispam | Garbage Collection | Notes                                         |
+| ----------------------- | :------: | :-------: | :------: | :----------------: | --------------------------------------------- |
+| Amazon Web Services     |    ✅    |     ⚠️    |    ✅    |          ✅        |                                               |
+| Google Cloud Platform   |    ✅    |     ⚠️    |    ✅    |          ✅        |                                               |
+| POSIX filesystem        |    ✅    |     ⚠️    |    ✅    |          ✅        |                                               |
+| MySQL                   |    ⚠️    |     ⚠️    |    ❌    |          N/A       | MySQL will remain in BETA for the time being. |
+
+
+> [!Note]
+> Please get in touch if you are interested in using any of the features or drivers held back in BETA above.
+
 Users of GCP, AWS, MySQL, and POSIX are welcome to try the relevant [Getting Started](#getting-started) guide.
 
 ## Roadmap
 
-Beta in Q2 2025, and production ready around mid 2025.
+Production ready around mid 2025.
 
 |  #  | Step                                                      | Status |
 | :-: | --------------------------------------------------------- | :----: |

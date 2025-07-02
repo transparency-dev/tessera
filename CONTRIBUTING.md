@@ -12,12 +12,10 @@ Before you start coding, you'll need to set up your development environment.
 This project uses Go, so you'll need to have a recent version of Go installed.
 You can find instructions on how to do that [here](https://golang.org/doc/install).
 
-Once you have Go installed, you can clone the repository and install the dependencies:
+Once you have Go installed, you can clone the repository:
 
 ```bash
 git clone https://github.com/transparency-dev/tessera.git
-cd tessera
-go mod download
 ```
 
 ## Contributor License Agreement
