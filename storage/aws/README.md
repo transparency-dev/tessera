@@ -1,12 +1,11 @@
-# AWS Design
+# Tessera on Amazon Web Services
 
-This document describes how the storage implementation for running Tessera on Amazon Web Services
-is intended to work.
+This document describes the storage implementation for running Tessera on Amazon Web Services (AWS).
 
 ## Overview
 
-This design takes advantage of S3 for long term storage and low cost & complexity serving of read traffic,
-but leverages something more transactional for coordinating writes.
+This design takes advantage of Amazon S3 for long-term storage and low-cost, low-complexity serving of read traffic.
+It uses Amazon Aurora (MySQL) for coordinating writes.
 
 New entries flow in from the binary built with Tessera into transactional storage, where they're held
 temporarily to batch them up, and then assigned sequence numbers as each batch is flushed.
@@ -63,7 +62,7 @@ made obsolete by the continued growth of the log.
    1. Update `IntCoord` with `seq+=num_entries_integrated` and the latest `rootHash`
 1. Checkpoints representing the latest state of the tree are published at the configured interval.
 
-## Dedup
+## Deduplication
 
 Two experimental implementations have been tested which uses either Aurora MySQL,
 or a local bbolt database to store the `<identity_hash>` --> `sequence` mapping.

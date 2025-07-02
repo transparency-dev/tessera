@@ -39,6 +39,20 @@ The main non-goal is to support transparency logs using anything other than the 
 While it is possible to deploy a custom personality in front of Tessera that adapts the tlog-tiles API
 into any other API, this strategy will lose a lot of the read scaling that Tessera is designed for.
 
+## Table of Contents
+
+- [Status](#status)
+- [Roadmap](#roadmap)
+- [Concepts](#concepts)
+- [Usage](#usage)
+  - [Getting Started](#getting-started)
+  - [Writing Personalities](#writing-personalities)
+- [Features](#features)
+- [Lifecycles](#lifecycles)
+- [Contributing](#contributing)
+- [License](#license)
+- [Contact](#contact)
+
 ## Status
 
 Tessera is under active development, with an [alpha 3 release](https://github.com/transparency-dev/tessera/releases/tag/v0.1.2) available now.

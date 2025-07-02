@@ -1,9 +1,16 @@
-# Design docs
+# Design Docs
 
 This directory contains design documentation for Tessera.
 
 It's probably wise to start with the [philosophy](philosophy.md) doc first in order to establish
 the context around the approach and design trade-offs made herein.
+
+The following documents are available:
+
+- [philosophy.md](./philosophy.md): The guiding principles and rationale behind Tessera's design.
+- [lifecycle.md](./lifecycle.md): The various states a Tessera log can be in.
+- [antispam.md](./antispam.md): How Tessera handles duplicate entries.
+- [performance.md](../performance.md): A high-level overview of the performance characteristics of the different storage backends.
 
 ## Objective
 
