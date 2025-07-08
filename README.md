@@ -430,7 +430,7 @@ This repo is licensed under the Apache 2.0 license, see [LICENSE](/LICENSE) for 
 
 ## Contact
 
-- Slack: https://transparency-dev.slack.com/ ([invitation](https://join.slack.com/t/transparency-dev/shared_invite/zt-2jt6643n4-I5wLUo90_tvTVd4nfmfDug))
+- Slack: https://transparency-dev.slack.com/ ([invitation](https://transparency.dev/slack/))
 - Mailing list: https://groups.google.com/forum/#!forum/trillian-transparency
 
 ## Acknowledgements
