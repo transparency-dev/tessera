@@ -42,10 +42,10 @@ func TestEntryBundles(t *testing.T) {
 		}
 	}()
 
-	if _, err := populateEntries(ctx, tl, logSize1, "first"); err != nil {
+	if _, err := populateEntries(t, tl, logSize1, "first"); err != nil {
 		t.Fatalf("populateEntries(first): %v", err)
 	}
-	if _, err := populateEntries(ctx, tl, logSize2-logSize1, "second"); err != nil {
+	if _, err := populateEntries(t, tl, logSize2-logSize1, "second"); err != nil {
 		t.Fatalf("populateEntries(second): %v", err)
 	}
 
@@ -95,7 +95,7 @@ func TestEntries(t *testing.T) {
 	}()
 
 	// Put some entries into a log.
-	es, err := populateEntries(ctx, tl, logSize, "first")
+	es, err := populateEntries(t, tl, logSize, "first")
 	if err != nil {
 		t.Fatalf("populateEntries(): %v", err)
 	}
@@ -140,18 +140,21 @@ func TestEntries(t *testing.T) {
 	}
 }
 
-func populateEntries(ctx context.Context, tl *testonly.TestLog, N uint64, ep string) ([][]byte, error) {
+func populateEntries(t *testing.T, tl *testonly.TestLog, N uint64, ep string) ([][]byte, error) {
+	t.Helper()
+
 	es := make([][]byte, 0, N)
 	fs := make([]tessera.IndexFuture, 0, N)
 	for i := range N {
 		e := fmt.Appendf(nil, "%s-%d", ep, i)
 		es = append(es, e)
-		fs = append(fs, tl.Appender.Add(ctx, tessera.NewEntry(e)))
+		fs = append(fs, tl.Appender.Add(t.Context(), tessera.NewEntry(e)))
 	}
+	t.Logf("Added %d entries", N)
 
-	a := tessera.NewPublicationAwaiter(ctx, tl.LogReader.ReadCheckpoint, time.Second)
+	a := tessera.NewPublicationAwaiter(t.Context(), tl.LogReader.ReadCheckpoint, time.Second)
 	for _, f := range fs {
-		if _, _, err := a.Await(ctx, f); err != nil {
+		if _, _, err := a.Await(t.Context(), f); err != nil {
 			return nil, err
 		}
 	}

@@ -258,9 +258,26 @@ func NewAppender(ctx context.Context, d Driver, opts *AppendOptions) (*Appender,
 		ctx, span := tracer.Start(ctx, "tessera.Appender.Add")
 		defer span.End()
 
-		return t.Add(ctx, entry)
+		// NOTE: We memoize the returned value here so that repeated calls to the returned
+		//		 future don't result in unexpected side-effects from inner AddFn functions
+		//		 being called multiple times.
+		//		 Currently this is the outermost wrapping of Add so we do the memoization
+		//		 here, if this changes, ensure that we move the memoization call so that
+		//		 this remains true.
+		return memoizeFuture(t.Add(ctx, entry))
 	}
 	return a, t.Shutdown, r, nil
+}
+
+// memoizeFuture wraps an AddFn delegate with logic to ensure that the delegate is called at most
+// once.
+func memoizeFuture(delegate IndexFuture) IndexFuture {
+	f := sync.OnceValues(func() (Index, error) {
+		return delegate()
+	})
+	return func() (Index, error) {
+		return f()
+	}
 }
 
 func followerStats(ctx context.Context, f Follower, size func(context.Context) (uint64, error)) {
