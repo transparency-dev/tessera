@@ -226,11 +226,10 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 			return
 		case <-t.C:
 		}
-		size, err := lr.IntegratedSize(ctx)
-		if err != nil {
-			klog.Errorf("Populate: IntegratedSize(): %v", err)
-			continue
-		}
+
+		// logSize is the latest known size of the log we're following.
+		// This will get initialised below, inside the loop.
+		var logSize uint64
 
 		// Busy loop while there's work to be done
 		for workDone := true; workDone; {
@@ -257,13 +256,34 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 
 				span.SetAttributes(followFromKey.Int64(otel.Clamp64(followFrom)))
 
-				if followFrom >= size {
+				if followFrom > logSize {
 					// Our view of the log is out of date, exit the busy loop and refresh it.
 					workDone = false
 					return nil
 				}
+				var err error
+				if followFrom >= logSize {
+					// Our view of the log is out of date, update it
+					logSize, err = lr.IntegratedSize(ctx)
+					if err != nil {
+						workDone = true
+						return fmt.Errorf("populate: IntegratedSize(): %v", err)
+					}
+					switch {
+					case followFrom > logSize:
+						workDone = true
+						return fmt.Errorf("followFrom %d > size %d", followFrom, logSize)
+					case followFrom == logSize:
+						// We're caught up, so unblock pushback and go back to sleep
+						workDone = true
+						f.as.pushBack.Store(false)
+						return nil
+					default:
+						// size > followFrom, so there's more work to be done!
+					}
+				}
 
-				pushback := size-followFrom > uint64(f.as.opts.PushbackThreshold)
+				pushback := logSize-followFrom > uint64(f.as.opts.PushbackThreshold)
 				span.SetAttributes(pushbackKey.Bool(pushback))
 				f.as.pushBack.Store(pushback)
 
@@ -272,10 +292,10 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 				if next == nil {
 					span.AddEvent("Start streaming entries")
 					sizeFn := func(_ context.Context) (uint64, error) {
-						return size, nil
+						return logSize, nil
 					}
 					numFetchers := uint(10)
-					next, stop = iter.Pull2(client.Entries(client.EntryBundles(ctx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, size-followFrom), f.bundleHasher))
+					next, stop = iter.Pull2(client.Entries(client.EntryBundles(ctx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
 				}
 
 				if curIndex == followFrom && curEntries != nil {
@@ -285,7 +305,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 					// than continue reading entries which will take us out of sync.
 				} else {
 					bs := uint64(f.as.opts.MaxBatchSize)
-					if r := size - followFrom; r < bs {
+					if r := logSize - followFrom; r < bs {
 						bs = r
 					}
 					batch := make([][]byte, 0, bs)

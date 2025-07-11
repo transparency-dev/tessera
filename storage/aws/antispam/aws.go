@@ -266,11 +266,10 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 			return
 		case <-t.C:
 		}
-		size, err := lr.IntegratedSize(ctx)
-		if err != nil {
-			klog.Errorf("Populate: IntegratedSize(): %v", err)
-			continue
-		}
+
+		// logSize is the latest known size of the log we're following.
+		// This will get initialised below, inside the loop.
+		var logSize uint64
 
 		// Busy loop while there's work to be done
 		for streamDone := false; !streamDone; {
@@ -279,7 +278,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 				return
 			default:
 			}
-			err = func() error {
+			err := func() error {
 				tx, err := f.as.dbPool.BeginTx(ctx, &sql.TxOptions{
 					ReadOnly: false,
 				})
@@ -300,26 +299,41 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 					return err
 				}
 
-				if followFrom >= size {
-					// Our view of the log is out of date, exit the busy loop and refresh it.
-					streamDone = true
-					return nil
+				if followFrom >= logSize {
+					// Our view of the log is out of date, update it
+					logSize, err = lr.IntegratedSize(ctx)
+					if err != nil {
+						streamDone = true
+						return fmt.Errorf("populate: IntegratedSize(): %v", err)
+					}
+					switch {
+					case followFrom > logSize:
+						streamDone = true
+						return fmt.Errorf("followFrom %d > size %d", followFrom, logSize)
+					case followFrom == logSize:
+						// We're caught up, so unblock pushback and go back to sleep
+						streamDone = true
+						f.as.pushBack.Store(false)
+						return nil
+					default:
+						// size > followFrom, so there's more work to be done!
+					}
 				}
 
-				f.as.pushBack.Store(size-followFrom > uint64(f.as.opts.PushbackThreshold))
+				f.as.pushBack.Store(logSize-followFrom > uint64(f.as.opts.PushbackThreshold))
 
 				// If this is the first time around the loop we need to start the stream of entries now that we know where we want to
 				// start reading from:
 				if next == nil {
 					sizeFn := func(_ context.Context) (uint64, error) {
-						return size, nil
+						return logSize, nil
 					}
 					numFetchers := uint(10)
-					next, stop = iter.Pull2(client.Entries(client.EntryBundles(ctx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, size-followFrom), f.bundleHasher))
+					next, stop = iter.Pull2(client.Entries(client.EntryBundles(ctx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
 				}
 
 				bs := uint64(f.as.opts.MaxBatchSize)
-				if r := size - followFrom; r < bs {
+				if r := logSize - followFrom; r < bs {
 					bs = r
 				}
 				curEntries := make([][]byte, 0, bs)
@@ -345,7 +359,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 					return nil
 				}
 
-				klog.V(1).Infof("Inserting %d entries into antispam database (follow from %d of size %d)", len(curEntries), followFrom, size)
+				klog.V(1).Infof("Inserting %d entries into antispam database (follow from %d of size %d)", len(curEntries), followFrom, logSize)
 
 				args := make([]string, 0, len(curEntries))
 				vals := make([]any, 0, 2*len(curEntries))
