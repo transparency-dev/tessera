@@ -107,7 +107,7 @@ func TestAntispam(t *testing.T) {
 	}
 }
 
-func TestAntispamPushback(t *testing.T) {
+func TestAntispamPushbackRecovers(t *testing.T) {
 	ctx := t.Context()
 	if canSkipMySQLTest(t, ctx) {
 		klog.Warningf("MySQL not available, skipping %s", t.Name())
@@ -150,7 +150,8 @@ func TestAntispamPushback(t *testing.T) {
 		}
 	}
 
-	// Give the follower some time to do its thing and notice that it's caught up.
+	// Ensure that the follower gets itself _out_ of pushback mode once it's caught up.
+	// We'll give the follower some time to do its thing and notice.
 	// It runs onces a second, so this should be plenty of time.
 	for i := range 5 {
 		time.Sleep(time.Second)
