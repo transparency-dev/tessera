@@ -256,11 +256,6 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 
 				span.SetAttributes(followFromKey.Int64(otel.Clamp64(followFrom)))
 
-				if followFrom > logSize {
-					// Our view of the log is out of date, exit the busy loop and refresh it.
-					workDone = false
-					return nil
-				}
 				var err error
 				if followFrom >= logSize {
 					// Our view of the log is out of date, update it
