@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package aws_test
+package aws
 
 import (
 	"context"
@@ -25,7 +25,6 @@ import (
 
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
-	aws "github.com/transparency-dev/tessera/storage/aws/antispam"
 	"github.com/transparency-dev/tessera/testonly"
 	"k8s.io/klog/v2"
 )
@@ -49,7 +48,7 @@ func TestAntispam(t *testing.T) {
 		t.Skip("MySQL not available, skipping test")
 	}
 	mustDropTables(t, ctx)
-	antispam, err := aws.NewAntispam(ctx, *mySQLURI, aws.AntispamOpts{})
+	as, err := NewAntispam(ctx, *mySQLURI, AntispamOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,8 +58,8 @@ func TestAntispam(t *testing.T) {
 			t.Logf("shutdown: %v", err)
 		}
 	}()
-	addFn := antispam.Decorator()(fl.Appender.Add)
-	follower := antispam.Follower(testBundleHasher)
+	addFn := as.Decorator()(fl.Appender.Add)
+	follower := as.Follower(testBundleHasher)
 	go follower.Follow(ctx, fl.LogReader)
 
 	pos, err := follower.EntriesProcessed(ctx)
@@ -106,6 +105,61 @@ func TestAntispam(t *testing.T) {
 	if dupIdx.Index != idx1.Index {
 		t.Errorf("expected idx %d but got %d", idx1.Index, dupIdx.Index)
 	}
+}
+
+func TestAntispamPushback(t *testing.T) {
+	ctx := t.Context()
+	if canSkipMySQLTest(t, ctx) {
+		klog.Warningf("MySQL not available, skipping %s", t.Name())
+		t.Skip("MySQL not available, skipping test")
+	}
+	mustDropTables(t, ctx)
+	as, err := NewAntispam(ctx, *mySQLURI, AntispamOpts{
+		PushbackThreshold: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fl, shutdown := testonly.NewTestLog(t, tessera.NewAppendOptions().WithCheckpointInterval(time.Second))
+	defer func() {
+		if err := shutdown(t.Context()); err != nil {
+			t.Logf("shutdown: %v", err)
+		}
+	}()
+	addFn := as.Decorator()(fl.Appender.Add)
+	follower := as.Follower(testBundleHasher)
+	a := tessera.NewPublicationAwaiter(t.Context(), fl.LogReader.ReadCheckpoint, time.Second)
+	idxf1 := addFn(ctx, tessera.NewEntry([]byte("one")))
+	if _, _, err := a.Await(t.Context(), idxf1); err != nil {
+		t.Fatalf("Await(1): %v", err)
+	}
+
+	idxf2 := addFn(ctx, tessera.NewEntry([]byte("two")))
+	if _, _, err := a.Await(t.Context(), idxf2); err != nil {
+		t.Fatalf("Await(2): %v", err)
+	}
+
+	go follower.Follow(ctx, fl.LogReader)
+
+	for {
+		time.Sleep(time.Second)
+		if idx, err := follower.EntriesProcessed(ctx); err != nil {
+			t.Fatal(err)
+		} else if idx == 2 {
+			break
+		}
+	}
+
+	// Give the follower some time to do its thing and notice that it's caught up.
+	// It runs onces a second, so this should be plenty of time.
+	for i := range 5 {
+		time.Sleep(time.Second)
+		if !as.pushBack.Load() {
+			t.Logf("Antispam caught up and out of pushback in %ds", i)
+			return
+		}
+	}
+	t.Fatalf("pushBack remains true after 5 seconds despite being caught up!")
 }
 
 // canSkipMySQLTest checks if the test MySQL db is available and, if not, if the test can be skipped.

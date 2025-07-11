@@ -1,4 +1,4 @@
-// Copyright 2024 The Tessera authors. All Rights Reserved.
+// Copyright 2025 The Tessera authors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,17 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package gcp
+package badger
 
 import (
-	"context"
 	"crypto/sha256"
-	"os"
 	"testing"
 	"time"
 
-	"cloud.google.com/go/spanner"
-	"cloud.google.com/go/spanner/spannertest"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/testonly"
@@ -35,6 +31,7 @@ type testLookup struct {
 }
 
 func TestAntispamStorage(t *testing.T) {
+
 	for _, test := range []struct {
 		name          string
 		opts          AntispamOpts
@@ -63,9 +60,7 @@ func TestAntispamStorage(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			closeDB := newSpannerDB(t)
-			defer closeDB()
-			as, err := NewAntispam(t.Context(), "projects/p/instances/i/databases/d", test.opts)
+			as, err := NewAntispam(t.Context(), t.TempDir(), test.opts)
 			if err != nil {
 				t.Fatalf("NewAntispam: %v", err)
 			}
@@ -78,8 +73,6 @@ func TestAntispamStorage(t *testing.T) {
 			}()
 
 			f := as.Follower(testBundleHasher)
-			// Hack in a workaround for spannertest not supporting BatchWrites
-			f.(*follower).updateIndex = updateIndexTx
 
 			go f.Follow(t.Context(), fl.LogReader)
 
@@ -153,9 +146,7 @@ func TestAntispamPushback(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			closeDB := newSpannerDB(t)
-			defer closeDB()
-			as, err := NewAntispam(t.Context(), "projects/p/instances/i/databases/d", test.opts)
+			as, err := NewAntispam(t.Context(), t.TempDir(), test.opts)
 			if err != nil {
 				t.Fatalf("NewAntispam: %v", err)
 			}
@@ -168,8 +159,6 @@ func TestAntispamPushback(t *testing.T) {
 			}()
 
 			f := as.Follower(testBundleHasher)
-			// Hack in a workaround for spannertest not supporting BatchWrites
-			f.(*follower).updateIndex = updateIndexTx
 
 			entryIndex := make(map[string]uint64)
 			a := tessera.NewPublicationAwaiter(t.Context(), fl.LogReader.ReadCheckpoint, 100*time.Millisecond)
@@ -219,18 +208,6 @@ func TestAntispamPushback(t *testing.T) {
 	}
 }
 
-func newSpannerDB(t *testing.T) func() {
-	t.Helper()
-	srv, err := spannertest.NewServer("localhost:0")
-	if err != nil {
-		t.Fatalf("Failed to set up test spanner: %v", err)
-	}
-	if err := os.Setenv("SPANNER_EMULATOR_HOST", srv.Addr); err != nil {
-		t.Fatalf("Setenv: %v", err)
-	}
-	return srv.Close
-}
-
 func testIDHash(d []byte) []byte {
 	r := sha256.Sum256(d)
 	return r[:]
@@ -247,11 +224,4 @@ func testBundleHasher(b []byte) ([][]byte, error) {
 		r[i] = testIDHash(e)
 	}
 	return r, err
-}
-
-// updateIndexTx is a workaround for spannertest not supporting BatchWrites.
-// We use this func as a replacement for follower's updateIndex hook, and simply commit the index
-// updates inline with the larger transaction.
-func updateIndexTx(_ context.Context, txn *spanner.ReadWriteTransaction, ms []*spanner.Mutation) error {
-	return txn.BufferWrite(ms)
 }
