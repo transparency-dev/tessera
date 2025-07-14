@@ -21,24 +21,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/globocom/go-buffer"
 	"github.com/transparency-dev/tessera"
 )
 
-// Queue knows how to queue up a number of entries in order, taking care of deduplication as they're added.
+// Queue knows how to queue up a number of entries in order.
 //
 // When the buffered queue grows past a defined size, or the age of the oldest entry in the
 // queue reaches a defined threshold, the queue will call a provided FlushFunc with
 // a slice containing all queued entries in the same order as they were added.
-//
-// If multiple identical entries are added to the queue between flushes, the queue will deduplicate them by
-// passing only the first through to the FlushFunc, and returning the index assigned to that entry to all
-// duplicate add calls.
-// Note that this deduplication only applies to "in-flight" entries currently in the queue; entries added
-// after a flush will not be deduped against those added before the flush.
 type Queue struct {
-	buf   *buffer.Buffer
-	flush FlushFunc
+	maxSize uint
+	maxAge  time.Duration
+
+	timer *time.Timer
+	work  chan []*queueItem
+
+	mu    sync.Mutex
+	items []*queueItem
 }
 
 // FlushFunc is the signature of a function which will receive the slice of queued entries.
@@ -55,29 +54,11 @@ type FlushFunc func(ctx context.Context, entries []*tessera.Entry) error
 // for maxAge, or the size of the queue reaches maxSize.
 func NewQueue(ctx context.Context, maxAge time.Duration, maxSize uint, f FlushFunc) *Queue {
 	q := &Queue{
-		flush: f,
+		maxSize: maxSize,
+		maxAge:  maxAge,
+		work:    make(chan []*queueItem, 1),
+		items:   make([]*queueItem, 0, maxSize),
 	}
-
-	// The underlying queue implementation blocks additions during a flush.
-	// This blocks the filling of the next batch unnecessarily, so we'll
-	// decouple the queue flush and storage write by handling the latter in
-	// a worker goroutine.
-	// This same worker thread will also handle the callbacks to f.
-	work := make(chan []*queueItem, 1)
-	toWork := func(items []any) {
-		entries := make([]*queueItem, len(items))
-		for i, t := range items {
-			entries[i] = t.(*queueItem)
-		}
-		work <- entries
-
-	}
-
-	q.buf = buffer.New(
-		buffer.WithSize(maxSize),
-		buffer.WithFlushInterval(maxAge),
-		buffer.WithFlusher(buffer.FlusherFunc(toWork)),
-	)
 
 	// Spin off a worker thread to write the queue flushes to storage.
 	go func(ctx context.Context) {
@@ -85,8 +66,8 @@ func NewQueue(ctx context.Context, maxAge time.Duration, maxSize uint, f FlushFu
 			select {
 			case <-ctx.Done():
 				return
-			case entries := <-work:
-				q.doFlush(ctx, entries)
+			case entries := <-q.work:
+				q.doFlush(ctx, f, entries)
 			}
 		}
 	}(ctx)
@@ -100,14 +81,60 @@ func (q *Queue) Add(ctx context.Context, e *tessera.Entry) tessera.IndexFuture {
 
 	qi := newEntry(ctx, e)
 
-	if err := q.buf.Push(qi); err != nil {
-		qi.notify(err)
+	q.mu.Lock()
+
+	q.items = append(q.items, qi)
+
+	// If this is the first item, start the timer.
+	if len(q.items) == 1 {
+		q.timer = time.AfterFunc(q.maxAge, q.flush)
 	}
+
+	// If we've reached max size, flush.
+	var itemsToFlush []*queueItem
+	if len(q.items) >= int(q.maxSize) {
+		itemsToFlush = q.flushLocked()
+	}
+	q.mu.Unlock()
+
+	if itemsToFlush != nil {
+		q.work <- itemsToFlush
+	}
+
 	return qi.f
 }
 
+// flush is called by the timer to flush the buffer.
+func (q *Queue) flush() {
+	q.mu.Lock()
+	itemsToFlush := q.flushLocked()
+	q.mu.Unlock()
+
+	if itemsToFlush != nil {
+		q.work <- itemsToFlush
+	}
+}
+
+// flushLocked must be called with q.mu held.
+// It prepares items for flushing and returns them.
+func (q *Queue) flushLocked() []*queueItem {
+	if len(q.items) == 0 {
+		return nil
+	}
+
+	if q.timer != nil {
+		q.timer.Stop()
+		q.timer = nil
+	}
+
+	itemsToFlush := q.items
+	q.items = make([]*queueItem, 0, q.maxSize)
+
+	return itemsToFlush
+}
+
 // doFlush handles the queue flush, and sending notifications of assigned log indices.
-func (q *Queue) doFlush(ctx context.Context, entries []*queueItem) {
+func (q *Queue) doFlush(ctx context.Context, f FlushFunc, entries []*queueItem) {
 	ctx, span := tracer.Start(ctx, "tessera.storage.queue.doFlush")
 	defer span.End()
 
@@ -116,7 +143,7 @@ func (q *Queue) doFlush(ctx context.Context, entries []*queueItem) {
 		entriesData = append(entriesData, e.entry)
 	}
 
-	err := q.flush(ctx, entriesData)
+	err := f(ctx, entriesData)
 
 	// Send assigned indices to all the waiting Add() requests
 	for _, e := range entries {
@@ -149,7 +176,7 @@ func newEntry(ctx context.Context, data *tessera.Entry) *queueItem {
 	return e
 }
 
-// assign sets the assigned log index (or an error) to the entry.
+// notify sets the assigned log index (or an error) to the entry.
 //
 // This func must only be called once, and will cause any current or future callers of index()
 // to be given the values provided here.
@@ -165,3 +192,4 @@ func (e *queueItem) notify(err error) {
 	}
 	close(e.c)
 }
+
