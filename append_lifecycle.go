@@ -275,9 +275,7 @@ func memoizeFuture(delegate IndexFuture) IndexFuture {
 	f := sync.OnceValues(func() (Index, error) {
 		return delegate()
 	})
-	return func() (Index, error) {
-		return f()
-	}
+	return f
 }
 
 func followerStats(ctx context.Context, f Follower, size func(context.Context) (uint64, error)) {
