@@ -78,7 +78,7 @@ jobs:
       ## This might happen if a previous integration test workflow has failed.
       - name: Terragrunt destroy pre conformance test
         id: terragrunt-destroy-pre
-        uses: gruntwork-io/terragrunt-action@aee21a7df999be8b471c2a8564c6cd853cb674e1 # v2.1.8
+        uses: gruntwork-io/terragrunt-action@93eda7b2b97306ef88b517a61d8a9d0b035e7c75 # v3.0.0
         with:
           tf_version: ${{ env.TF_VERSION }}
           tg_version: ${{ env.TG_VERSION }}
@@ -113,7 +113,7 @@ jobs:
       #  consider keeping it around between tests / using Aurora Serveless
       - name: Terragrunt apply
         id: terragrunt-apply
-        uses: gruntwork-io/terragrunt-action@aee21a7df999be8b471c2a8564c6cd853cb674e1 # v2.1.8
+        uses: gruntwork-io/terragrunt-action@93eda7b2b97306ef88b517a61d8a9d0b035e7c75 # v3.0.0
         with:
           tf_version: ${{ env.TF_VERSION }}
           tg_version: ${{ env.TG_VERSION }}
@@ -148,7 +148,7 @@ jobs:
 
       - name: Terragrunt destroy post conformance test
         id: terragrunt-destroy-post
-        uses: gruntwork-io/terragrunt-action@aee21a7df999be8b471c2a8564c6cd853cb674e1 # v2.1.8
+        uses: gruntwork-io/terragrunt-action@93eda7b2b97306ef88b517a61d8a9d0b035e7c75 # v3.0.0
         with:
           tf_version: ${{ env.TF_VERSION }}
           tg_version: ${{ env.TG_VERSION }}
