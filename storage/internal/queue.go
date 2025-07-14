@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/transparency-dev/tessera"
+	"github.com/transparency-dev/tessera/internal/future"
 )
 
 // Queue knows how to queue up a number of entries in order.
@@ -34,10 +35,10 @@ type Queue struct {
 	maxAge  time.Duration
 
 	timer *time.Timer
-	work  chan []*queueItem
+	work  chan []queueItem
 
 	mu    sync.Mutex
-	items []*queueItem
+	items []queueItem
 }
 
 // FlushFunc is the signature of a function which will receive the slice of queued entries.
@@ -56,8 +57,8 @@ func NewQueue(ctx context.Context, maxAge time.Duration, maxSize uint, f FlushFu
 	q := &Queue{
 		maxSize: maxSize,
 		maxAge:  maxAge,
-		work:    make(chan []*queueItem, 1),
-		items:   make([]*queueItem, 0, maxSize),
+		work:    make(chan []queueItem, 1),
+		items:   make([]queueItem, 0, maxSize),
 	}
 
 	// Spin off a worker thread to write the queue flushes to storage.
@@ -74,12 +75,9 @@ func NewQueue(ctx context.Context, maxAge time.Duration, maxSize uint, f FlushFu
 	return q
 }
 
-// Add places e into the queue, and returns a func which may be called to retrieve the assigned index.
+// Add places e into the queue, and returns a func which should be called to retrieve the assigned index.
 func (q *Queue) Add(ctx context.Context, e *tessera.Entry) tessera.IndexFuture {
-	_, span := tracer.Start(ctx, "tessera.storage.queue.Add")
-	defer span.End()
-
-	qi := newEntry(ctx, e)
+	qi := newEntry(e)
 
 	q.mu.Lock()
 
@@ -91,7 +89,7 @@ func (q *Queue) Add(ctx context.Context, e *tessera.Entry) tessera.IndexFuture {
 	}
 
 	// If we've reached max size, flush.
-	var itemsToFlush []*queueItem
+	var itemsToFlush []queueItem
 	if len(q.items) >= int(q.maxSize) {
 		itemsToFlush = q.flushLocked()
 	}
@@ -117,7 +115,7 @@ func (q *Queue) flush() {
 
 // flushLocked must be called with q.mu held.
 // It prepares items for flushing and returns them.
-func (q *Queue) flushLocked() []*queueItem {
+func (q *Queue) flushLocked() []queueItem {
 	if len(q.items) == 0 {
 		return nil
 	}
@@ -128,13 +126,13 @@ func (q *Queue) flushLocked() []*queueItem {
 	}
 
 	itemsToFlush := q.items
-	q.items = make([]*queueItem, 0, q.maxSize)
+	q.items = make([]queueItem, 0, q.maxSize)
 
 	return itemsToFlush
 }
 
 // doFlush handles the queue flush, and sending notifications of assigned log indices.
-func (q *Queue) doFlush(ctx context.Context, f FlushFunc, entries []*queueItem) {
+func (q *Queue) doFlush(ctx context.Context, f FlushFunc, entries []queueItem) {
 	ctx, span := tracer.Start(ctx, "tessera.storage.queue.doFlush")
 	defer span.End()
 
@@ -157,22 +155,18 @@ func (q *Queue) doFlush(ctx context.Context, f FlushFunc, entries []*queueItem) 
 // hang until assign is called.
 type queueItem struct {
 	entry *tessera.Entry
-	c     chan tessera.IndexFuture
 	f     tessera.IndexFuture
+	set   func(tessera.Index, error)
 }
 
 // newEntry creates a new entry for the provided data.
-func newEntry(ctx context.Context, data *tessera.Entry) *queueItem {
-	_, span := tracer.Start(ctx, "tessera.storage.queue.future")
-
-	e := &queueItem{
+func newEntry(data *tessera.Entry) queueItem {
+	f, set := future.NewFutureErr[tessera.Index]()
+	e := queueItem{
 		entry: data,
-		c:     make(chan tessera.IndexFuture, 1),
+		f:     f.Get,
+		set:   set,
 	}
-	e.f = sync.OnceValues(func() (tessera.Index, error) {
-		defer span.End()
-		return (<-e.c)()
-	})
 	return e
 }
 
@@ -181,15 +175,8 @@ func newEntry(ctx context.Context, data *tessera.Entry) *queueItem {
 // This func must only be called once, and will cause any current or future callers of index()
 // to be given the values provided here.
 func (e *queueItem) notify(err error) {
-	e.c <- func() (tessera.Index, error) {
-		if err != nil {
-			return tessera.Index{}, err
-		}
-		if e.entry.Index() == nil {
-			panic(errors.New("logic error: flush complete, but entry was not assigned an index - did storage fail to call entry.MarshalBundleData?"))
-		}
-		return tessera.Index{Index: *e.entry.Index()}, nil
+	if e.entry.Index() == nil {
+		panic(errors.New("logic error: flush complete, but entry was not assigned an index - did storage fail to call entry.MarshalBundleData?"))
 	}
-	close(e.c)
+	e.set(tessera.Index{Index: *e.entry.Index()}, err)
 }
-
