@@ -18,7 +18,11 @@ import "sync"
 
 // FutureErr is a future which resolves to a value or an error.
 type FutureErr[T any] struct {
-	done chan struct{}
+	// done is used to block/unblock calls to resolve the future.
+	//
+	// This could be done with a channel, but that turns out to be heavier in terms of
+	// memory alloc than using a waitgroup.
+	done *sync.WaitGroup
 	val  T
 	err  error
 }
@@ -29,14 +33,15 @@ type FutureErr[T any] struct {
 // Calls to the future's Get function will block until this function is called.
 func NewFutureErr[T any]() (*FutureErr[T], func(T, error)) {
 	f := &FutureErr[T]{
-		done: make(chan struct{}),
+		done: &sync.WaitGroup{},
 	}
+	f.done.Add(1)
 	var o sync.Once
 	return f, func(t T, err error) {
 		o.Do(func() {
 			f.val = t
 			f.err = err
-			close(f.done)
+			f.done.Done()
 		})
 	}
 }
@@ -45,6 +50,6 @@ func NewFutureErr[T any]() (*FutureErr[T], func(T, error)) {
 //
 // This function will block until the future has had its value set.
 func (f *FutureErr[T]) Get() (T, error) {
-	<-f.done
+	f.done.Wait()
 	return f.val, f.err
 }
