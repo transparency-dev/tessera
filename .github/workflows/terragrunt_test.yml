@@ -6,8 +6,8 @@ permissions:
   contents: read
 
 env:
-  tf_version: '1.5.7'
-  tg_version: '0.55.1'
+  tofu_version: '1.10.0'
+  tg_version: '0.67.0'
 
 jobs:
   checks:
@@ -23,7 +23,7 @@ jobs:
       - name: Check terragrunt HCL
         uses: gruntwork-io/terragrunt-action@93eda7b2b97306ef88b517a61d8a9d0b035e7c75 # v3.0.0
         with:
-          tf_version: ${{ env.tf_version }}
+          tofu_version: ${{ env.tofu_version }}
           tg_version: ${{ env.tg_version }}
           tg_dir: 'deployment'
           tg_command: 'hclfmt --terragrunt-check --terragrunt-diff'

@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  TF_VERSION: "1.10.0"
+  TOFU_VERSION: "1.10.0"
   TG_VERSION: "0.67.0"
   TG_DIR: "deployment/live/aws/conformance/ci/"
   TESSERA_PREFIX_NAME: trillian-tessera
@@ -80,7 +80,7 @@ jobs:
         id: terragrunt-destroy-pre
         uses: gruntwork-io/terragrunt-action@93eda7b2b97306ef88b517a61d8a9d0b035e7c75 # v3.0.0
         with:
-          tf_version: ${{ env.TF_VERSION }}
+          tofu_version: ${{ env.TOFU_VERSION }}
           tg_version: ${{ env.TG_VERSION }}
           tg_dir: ${{ env.TG_DIR }}
           tg_command: "destroy"
@@ -115,7 +115,7 @@ jobs:
         id: terragrunt-apply
         uses: gruntwork-io/terragrunt-action@93eda7b2b97306ef88b517a61d8a9d0b035e7c75 # v3.0.0
         with:
-          tf_version: ${{ env.TF_VERSION }}
+          tofu_version: ${{ env.TOFU_VERSION }}
           tg_version: ${{ env.TG_VERSION }}
           tg_dir: ${{ env.TG_DIR }}
           tg_command: "apply"
@@ -150,7 +150,7 @@ jobs:
         id: terragrunt-destroy-post
         uses: gruntwork-io/terragrunt-action@93eda7b2b97306ef88b517a61d8a9d0b035e7c75 # v3.0.0
         with:
-          tf_version: ${{ env.TF_VERSION }}
+          tofu_version: ${{ env.TOFU_VERSION }}
           tg_version: ${{ env.TG_VERSION }}
           tg_dir: ${{ env.TG_DIR }}
           tg_command: "destroy"
