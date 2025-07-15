@@ -16,7 +16,7 @@ permissions:
 
 env:
   TOFU_VERSION: "1.10.0"
-  TG_VERSION: "0.67.0"
+  TG_VERSION: "0.77.22"
   TG_DIR: "deployment/live/aws/conformance/ci/"
   TESSERA_PREFIX_NAME: trillian-tessera
   ECR_REGISTRY: 864981736166.dkr.ecr.us-east-1.amazonaws.com

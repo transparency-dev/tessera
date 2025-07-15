@@ -7,7 +7,7 @@ permissions:
 
 env:
   tofu_version: '1.10.0'
-  tg_version: '0.67.0'
+  tg_version: '0.77.22'
 
 jobs:
   checks:
