@@ -1153,6 +1153,8 @@ func (s *gcsStorage) setObject(ctx context.Context, objName string, data []byte,
 	}
 	w.ContentType = contType
 	w.CacheControl = cacheCtl
+	// Limit the amount of memory used for buffers, see https://pkg.go.dev/cloud.google.com/go/storage#Writer
+	w.ChunkSize = len(data) + 1024
 	if _, err := w.Write(data); err != nil {
 		return fmt.Errorf("failed to write object %q to bucket %q: %w", objName, s.bucket, err)
 	}
