@@ -248,7 +248,6 @@ func BenchmarkAwait(b *testing.B) {
 	f := func() (Index, error) {
 		return Index{Index: cpSize.Load()}, nil
 	}
-
 	for b.Loop() {
 		_, _, _ = a.Await(b.Context(), f)
 	}
