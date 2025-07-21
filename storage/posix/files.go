@@ -67,8 +67,8 @@ const (
 // Storage implements storage functions for a POSIX filesystem.
 // It leverages the POSIX atomic operations where needed.
 type Storage struct {
-	mu   sync.Mutex
-	path string
+	mu  sync.Mutex
+	cfg Config
 }
 
 // appender implements the Tessera append lifecycle.
@@ -93,11 +93,22 @@ type logResourceStorage struct {
 // NewTreeFunc is the signature of a function which receives information about newly integrated trees.
 type NewTreeFunc func(size uint64, root []byte) error
 
+type Config struct {
+	// HTTPClient will be used for other HTTP requests. If unset, Tessera wil use the net/http DefaultClient.
+	HTTPClient *http.Client
+
+	// Path is the path to a directory in which the log should be stored.
+	Path string
+}
+
 // New creates a new POSIX storage.
-// - path is a directory in which the log should be stored
-func New(ctx context.Context, path string) (tessera.Driver, error) {
+func New(ctx context.Context, cfg Config) (tessera.Driver, error) {
+	if cfg.HTTPClient == nil {
+		cfg.HTTPClient = http.DefaultClient
+	}
+
 	return &Storage{
-		path: path,
+		cfg: cfg,
 	}, nil
 }
 
@@ -126,7 +137,7 @@ func (s *Storage) newAppender(ctx context.Context, o *logResourceStorage, opts *
 		s:          s,
 		logStorage: o,
 		cpUpdated:  make(chan struct{}),
-		newCP:      opts.CheckpointPublisher(o, http.DefaultClient),
+		newCP:      opts.CheckpointPublisher(o, s.cfg.HTTPClient),
 	}
 	if err := a.initialise(ctx); err != nil {
 		return nil, nil, err
@@ -162,7 +173,7 @@ func (s *Storage) newAppender(ctx context.Context, o *logResourceStorage, opts *
 // (*any* `Close` operation on this file (even if it's a different FD) from
 // this PID, or overwriting of the file by *any* process breaks the lock.)
 func (s *Storage) lockFile(p string) (func() error, error) {
-	p = filepath.Join(s.path, stateDir, p)
+	p = filepath.Join(s.cfg.Path, stateDir, p)
 	f, err := os.OpenFile(p, syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC, filePerm)
 	if err != nil {
 		return nil, err
@@ -203,7 +214,7 @@ func (a *appender) Add(ctx context.Context, e *tessera.Entry) tessera.IndexFutur
 }
 
 func (l *logResourceStorage) ReadCheckpoint(_ context.Context) ([]byte, error) {
-	r, err := os.ReadFile(filepath.Join(l.s.path, layout.CheckpointPath))
+	r, err := os.ReadFile(filepath.Join(l.s.cfg.Path, layout.CheckpointPath))
 	if errors.Is(err, fs.ErrNotExist) {
 		return r, os.ErrNotExist
 	}
@@ -213,13 +224,13 @@ func (l *logResourceStorage) ReadCheckpoint(_ context.Context) ([]byte, error) {
 // ReadEntryBundle retrieves the Nth entries bundle for a log of the given size.
 func (l *logResourceStorage) ReadEntryBundle(ctx context.Context, index uint64, p uint8) ([]byte, error) {
 	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
-		return os.ReadFile(filepath.Join(l.s.path, l.entriesPath(index, p)))
+		return os.ReadFile(filepath.Join(l.s.cfg.Path, l.entriesPath(index, p)))
 	})
 }
 
 func (l *logResourceStorage) ReadTile(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
 	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
-		return os.ReadFile(filepath.Join(l.s.path, layout.TilePath(level, index, p)))
+		return os.ReadFile(filepath.Join(l.s.cfg.Path, layout.TilePath(level, index, p)))
 	})
 }
 
@@ -461,7 +472,7 @@ func (lrs *logResourceStorage) writeBundle(_ context.Context, index uint64, part
 // creating a zero-sized one if it doesn't already exist.
 func (a *appender) initialise(ctx context.Context) error {
 	// Idempotent: If folder exists, nothing happens.
-	if err := mkdirAll(filepath.Join(a.s.path, stateDir), dirPerm); err != nil {
+	if err := mkdirAll(filepath.Join(a.s.cfg.Path, stateDir), dirPerm); err != nil {
 		return fmt.Errorf("failed to create log directory: %q", err)
 	}
 	// Double locking:
@@ -488,7 +499,7 @@ func (a *appender) initialise(ctx context.Context) error {
 			return fmt.Errorf("failed to load checkpoint for log: %v", err)
 		}
 		// Create the directory structure and write out an empty checkpoint
-		klog.Infof("Initializing directory for POSIX log at %q (this should only happen ONCE per log!)", a.s.path)
+		klog.Infof("Initializing directory for POSIX log at %q (this should only happen ONCE per log!)", a.s.cfg.Path)
 		if err := a.s.writeTreeState(0, rfc6962.DefaultHasher.EmptyRoot()); err != nil {
 			return fmt.Errorf("failed to write tree-state checkpoint: %v", err)
 		}
@@ -554,7 +565,7 @@ func (s *Storage) writeTreeState(size uint64, root []byte) error {
 
 // readTreeState reads and returns the currently stored tree state.
 func (s *Storage) readTreeState() (uint64, []byte, error) {
-	p := filepath.Join(s.path, stateDir, treeStateFile)
+	p := filepath.Join(s.cfg.Path, stateDir, treeStateFile)
 	raw, err := os.ReadFile(p)
 	if err != nil {
 		return 0, nil, fmt.Errorf("error in ReadFile(%q): %w", p, err)
@@ -672,7 +683,7 @@ func (s *Storage) writeGCState(size uint64) error {
 // If no GC state is stored, no GC run has completed successfully, so zero is returned to indicate
 // that GC should start from the beginning of the log.
 func (s *Storage) readGCState() (uint64, error) {
-	p := filepath.Join(s.path, stateDir, gcStateFile)
+	p := filepath.Join(s.cfg.Path, stateDir, gcStateFile)
 	raw, err := os.ReadFile(p)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -761,30 +772,30 @@ func isLastLeafInParent(i uint64) bool {
 // It will error if a file already exists at the specified location, or it's unable to fully write the
 // data & close the file.
 func (s *Storage) createExclusive(p string, d []byte) error {
-	return createEx(filepath.Join(s.path, p), d)
+	return createEx(filepath.Join(s.cfg.Path, p), d)
 }
 
 // createOverwrite atomically creates or overwrites a file at the given path with the provided data.
 func (s *Storage) createOverwrite(p string, d []byte) error {
-	return overwrite(filepath.Join(s.path, p), d)
+	return overwrite(filepath.Join(s.cfg.Path, p), d)
 }
 
 func (s *Storage) readAll(p string) ([]byte, error) {
-	p = filepath.Join(s.path, p)
+	p = filepath.Join(s.cfg.Path, p)
 	return os.ReadFile(p)
 
 }
 
 // stat returns os.Stat info for the speficied file relative to the log root.
 func (s *Storage) stat(p string) (os.FileInfo, error) {
-	p = filepath.Join(s.path, p)
+	p = filepath.Join(s.cfg.Path, p)
 	return os.Stat(p)
 }
 
 // removeDirAll removes the named directory and anything it contains.
 // The provided path is interpreted relative to the log root.
 func (s *Storage) removeDirAll(p string) error {
-	p = filepath.Join(s.path, p)
+	p = filepath.Join(s.cfg.Path, p)
 	klog.V(3).Infof("rm %s", p)
 	if err := os.RemoveAll(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -842,7 +853,7 @@ func (m *MigrationStorage) AwaitIntegration(ctx context.Context, sourceSize uint
 
 func (m *MigrationStorage) initialise() error {
 	// Idempotent: If folder exists, nothing happens.
-	if err := mkdirAll(filepath.Join(m.s.path, stateDir), dirPerm); err != nil {
+	if err := mkdirAll(filepath.Join(m.s.cfg.Path, stateDir), dirPerm); err != nil {
 		return fmt.Errorf("failed to create log directory: %q", err)
 	}
 	// Double locking:
@@ -869,7 +880,7 @@ func (m *MigrationStorage) initialise() error {
 			return fmt.Errorf("failed to load checkpoint for log: %v", err)
 		}
 		// Create the directory structure and write out an empty checkpoint
-		klog.Infof("Initializing directory for POSIX log at %q (this should only happen ONCE per log!)", m.s.path)
+		klog.Infof("Initializing directory for POSIX log at %q (this should only happen ONCE per log!)", m.s.cfg.Path)
 		if err := m.s.writeTreeState(0, rfc6962.DefaultHasher.EmptyRoot()); err != nil {
 			return fmt.Errorf("failed to write tree-state checkpoint: %v", err)
 		}

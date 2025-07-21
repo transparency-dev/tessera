@@ -48,7 +48,7 @@ func constructStorage() {
 	ctx := context.Background()
 
 	// #region construct_example
-	driver, _ := posix.New(ctx, "/tmp/mylog")
+	driver, _ := posix.New(ctx, posix.Config{Path: "/tmp/mylog"})
 	signer := createSigner()
 
 	appender, shutdown, reader, err := tessera.NewAppender(
@@ -67,7 +67,7 @@ func constructAndUseAppender() {
 	ctx := context.Background()
 	data := []byte("hello")
 
-	driver, _ := posix.New(ctx, "/tmp/mylog")
+	driver, _ := posix.New(ctx, posix.Config{Path: "/tmp/mylog"})
 	signer := createSigner()
 
 	// #region use_appender_example

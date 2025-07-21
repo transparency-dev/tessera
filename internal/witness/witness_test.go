@@ -174,7 +174,7 @@ func TestWitnessGateway_Update(t *testing.T) {
 
 func TestWitness_UpdateRequest(t *testing.T) {
 	logSignedCheckpoint, _ := loadCheckpoint(t, 9)
-	d, err := posix.New(context.Background(), "../../testdata/log/")
+	d, err := posix.New(context.Background(), posix.Config{Path: "../../testdata/log/"})
 	if err != nil {
 		t.Fatal(err)
 	}

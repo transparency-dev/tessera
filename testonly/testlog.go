@@ -46,7 +46,7 @@ func NewTestLog(t *testing.T, opts *tessera.AppendOptions) (*TestLog, func(conte
 	}
 
 	root := t.TempDir()
-	driver, err := posix.New(t.Context(), root)
+	driver, err := posix.New(t.Context(), posix.Config{Path: root})
 	if err != nil {
 		t.Fatalf("posix.New: %v", err)
 	}
