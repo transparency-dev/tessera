@@ -542,7 +542,7 @@ func (a *appender) appendEntries(ctx context.Context, tx *sql.Tx, fromSeq uint64
 		return fmt.Errorf("writeCheckpoint: %w", err)
 	}
 
-	klog.Infof("New tree: %d, %x", newSize, newRoot)
+	klog.V(1).Infof("New tree: %d, %x", newSize, newRoot)
 	return nil
 }
 
