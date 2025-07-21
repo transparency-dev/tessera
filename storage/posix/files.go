@@ -94,7 +94,7 @@ type logResourceStorage struct {
 type NewTreeFunc func(size uint64, root []byte) error
 
 type Config struct {
-	// HTTPClient will be used for other HTTP requests. If unset, Tessera wil use the net/http DefaultClient.
+	// HTTPClient will be used for outgoing HTTP requests. If unset, Tessera will use the net/http DefaultClient.
 	HTTPClient *http.Client
 
 	// Path is the path to a directory in which the log should be stored.
