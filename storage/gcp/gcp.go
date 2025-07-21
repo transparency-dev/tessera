@@ -127,7 +127,7 @@ type Config struct {
 	GCSClient *gcs.Client
 	// SpannerClient will be used to interact with Spanner. If unset, Tessera will create one.
 	SpannerClient *spanner.Client
-	// HTTPClient will be used for other HTTP requests. If unset, Tessera wil use the net/http DefaultClient.
+	// HTTPClient will be used for other HTTP requests. If unset, Tessera will use the net/http DefaultClient.
 	HTTPClient *http.Client
 
 	// Bucket is the name of the GCS bucket to use for storing log state.
