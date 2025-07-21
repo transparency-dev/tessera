@@ -151,6 +151,9 @@ type Config struct {
 	MaxOpenConns int
 	// Maximum idle database connections in the connection pool.
 	MaxIdleConns int
+
+	// HTTPClient will be used for other HTTP requests. If unset, Tessera wil use the net/http DefaultClient.
+	HTTPClient *http.Client
 }
 
 // New creates a new instance of the AWS based Storage.
@@ -221,7 +224,7 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq sequencer, op
 		logStore:    logStore,
 		sequencer:   seq,
 		queue:       storage.NewQueue(ctx, opts.BatchMaxAge(), opts.BatchMaxSize(), seq.assignEntries),
-		newCP:       opts.CheckpointPublisher(logStore, http.DefaultClient),
+		newCP:       opts.CheckpointPublisher(logStore, s.cfg.HTTPClient),
 		treeUpdated: make(chan struct{}),
 	}
 
