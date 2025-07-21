@@ -152,7 +152,7 @@ type Config struct {
 	// Maximum idle database connections in the connection pool.
 	MaxIdleConns int
 
-	// HTTPClient will be used for other HTTP requests. If unset, Tessera wil use the net/http DefaultClient.
+	// HTTPClient will be used for other HTTP requests. If unset, Tessera will use the net/http DefaultClient.
 	HTTPClient *http.Client
 }
 
