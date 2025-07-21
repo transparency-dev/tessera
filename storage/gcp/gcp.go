@@ -123,6 +123,13 @@ type consumeFunc func(ctx context.Context, from uint64, entries []storage.Sequen
 
 // Config holds GCP project and resource configuration for a storage instance.
 type Config struct {
+	// GCSClient will be  used to interact with GCS. If unset, Tessera will create one.
+	GCSClient *gcs.Client
+	// SpannerClient will be used to interact with Spanner. If unset, Tessera will create one.
+	SpannerClient *spanner.Client
+	// HTTPClient will be used for other HTTP requests. If unset, Tessera wil use the net/http DefaultClient.
+	HTTPClient *http.Client
+
 	// Bucket is the name of the GCS bucket to use for storing log state.
 	Bucket string
 	// BucketPrefix is an optional prefix to prepend to all log resource paths.
@@ -134,6 +141,9 @@ type Config struct {
 
 // New creates a new instance of the GCP based Storage.
 func New(ctx context.Context, cfg Config) (tessera.Driver, error) {
+	if cfg.HTTPClient == nil {
+		cfg.HTTPClient = http.DefaultClient
+	}
 	return &Storage{
 		cfg: cfg,
 	}, nil
@@ -192,17 +202,31 @@ func (lr *LogReader) NextIndex(ctx context.Context) (uint64, error) {
 
 // Appender creates a new tessera.Appender lifecycle object.
 func (s *Storage) Appender(ctx context.Context, opts *tessera.AppendOptions) (*tessera.Appender, tessera.LogReader, error) {
-	c, err := gcs.NewClient(ctx, gcs.WithJSONReads())
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create GCS client: %v", err)
+	if s.cfg.GCSClient == nil {
+		var err error
+		s.cfg.GCSClient, err = gcs.NewClient(ctx, gcs.WithJSONReads())
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create GCS client: %v", err)
+		}
 	}
 	gs := &gcsStorage{
-		gcsClient:    c,
+		gcsClient:    s.cfg.GCSClient,
 		bucket:       s.cfg.Bucket,
 		bucketPrefix: s.cfg.BucketPrefix,
 	}
 
-	seq, err := newSpannerCoordinator(ctx, s.cfg.Spanner, uint64(opts.PushbackMaxOutstanding()))
+	var err error
+	if s.cfg.SpannerClient == nil {
+		s.cfg.SpannerClient, err = spanner.NewClient(ctx, s.cfg.Spanner)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to connect to Spanner: %v", err)
+		}
+	}
+	if err := initDB(ctx, s.cfg.Spanner); err != nil {
+		return nil, nil, fmt.Errorf("failed to verify/init Spanner schema: %v", err)
+	}
+
+	seq, err := newSpannerCoordinator(ctx, s.cfg.SpannerClient, uint64(opts.PushbackMaxOutstanding()))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create Spanner coordinator: %v", err)
 	}
@@ -242,7 +266,7 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoord
 			return a.sequencer.nextIndex(ctx)
 		},
 	}
-	a.newCP = opts.CheckpointPublisher(reader, http.DefaultClient)
+	a.newCP = opts.CheckpointPublisher(reader, s.cfg.HTTPClient)
 
 	if err := a.init(ctx); err != nil {
 		return nil, nil, fmt.Errorf("failed to initialise log storage: %v", err)
@@ -681,17 +705,10 @@ type spannerCoordinator struct {
 
 // newSpannerCoordinator returns a new spannerSequencer struct which uses the provided
 // spanner resource name for its spanner connection.
-func newSpannerCoordinator(ctx context.Context, spannerDB string, maxOutstanding uint64) (*spannerCoordinator, error) {
-	dbPool, err := spanner.NewClient(ctx, spannerDB)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Spanner: %v", err)
-	}
+func newSpannerCoordinator(ctx context.Context, dbPool *spanner.Client, maxOutstanding uint64) (*spannerCoordinator, error) {
 	r := &spannerCoordinator{
 		dbPool:         dbPool,
 		maxOutstanding: maxOutstanding,
-	}
-	if err := r.initDB(ctx, spannerDB); err != nil {
-		return nil, fmt.Errorf("failed to initDB: %v", err)
 	}
 	if err := r.checkDataCompatibility(ctx); err != nil {
 		return nil, fmt.Errorf("schema is not compatible with this version of the Tessera library: %v", err)
@@ -712,7 +729,7 @@ func newSpannerCoordinator(ctx context.Context, spannerDB string, maxOutstanding
 //   - IntCoord
 //     This table coordinates integration of the batches of entries stored in
 //     Seq into the committed tree state.
-func (s *spannerCoordinator) initDB(ctx context.Context, spannerDB string) error {
+func initDB(ctx context.Context, spannerDB string) error {
 	return createAndPrepareTables(
 		ctx, spannerDB,
 		[]string{
@@ -1217,12 +1234,25 @@ func (s *gcsStorage) deleteObjectsWithPrefix(ctx context.Context, objPrefix stri
 
 // MigrationWriter creates a new GCP storage for the MigrationTarget lifecycle mode.
 func (s *Storage) MigrationWriter(ctx context.Context, opts *tessera.MigrationOptions) (migrate.MigrationWriter, tessera.LogReader, error) {
-	c, err := gcs.NewClient(ctx, gcs.WithJSONReads())
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create GCS client: %v", err)
+	var err error
+	if s.cfg.GCSClient == nil {
+		s.cfg.GCSClient, err = gcs.NewClient(ctx, gcs.WithJSONReads())
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create GCS client: %v", err)
+		}
 	}
 
-	seq, err := newSpannerCoordinator(ctx, s.cfg.Spanner, 0)
+	if s.cfg.SpannerClient == nil {
+		s.cfg.SpannerClient, err = spanner.NewClient(ctx, s.cfg.Spanner)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to connect to Spanner: %v", err)
+		}
+	}
+	if err := initDB(ctx, s.cfg.Spanner); err != nil {
+		return nil, nil, fmt.Errorf("failed to verify/init Spanner schema: %v", err)
+	}
+
+	seq, err := newSpannerCoordinator(ctx, s.cfg.SpannerClient, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create Spanner sequencer: %v", err)
 	}
@@ -1233,7 +1263,7 @@ func (s *Storage) MigrationWriter(ctx context.Context, opts *tessera.MigrationOp
 		sequencer:    seq,
 		logStore: &logResourceStore{
 			objStore: &gcsStorage{
-				gcsClient:    c,
+				gcsClient:    s.cfg.GCSClient,
 				bucket:       s.cfg.Bucket,
 				bucketPrefix: s.cfg.BucketPrefix,
 			},

@@ -41,7 +41,7 @@ import (
 	"golang.org/x/mod/sumdb/note"
 )
 
-func newSpannerDB(t *testing.T) func() {
+func newSpannerDB(t *testing.T) (*spanner.Client, func()) {
 	t.Helper()
 	srv, err := spannertest.NewServer("localhost:0")
 	if err != nil {
@@ -50,16 +50,26 @@ func newSpannerDB(t *testing.T) func() {
 	if err := os.Setenv("SPANNER_EMULATOR_HOST", srv.Addr); err != nil {
 		t.Fatalf("Setenv: %v", err)
 	}
-	return srv.Close
+
+	id := "projects/p/instances/i/databases/d"
+	if err := initDB(t.Context(), id); err != nil {
+		t.Fatalf("initDB: %v", err)
+	}
+
+	c, err := spanner.NewClient(t.Context(), id)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	return c, srv.Close
 
 }
 
 func TestSpannerSequencerAssignEntries(t *testing.T) {
 	ctx := context.Background()
-	close := newSpannerDB(t)
+	db, close := newSpannerDB(t)
 	defer close()
 
-	seq, err := newSpannerCoordinator(ctx, "projects/p/instances/i/databases/d", 1000)
+	seq, err := newSpannerCoordinator(ctx, db, 1000)
 	if err != nil {
 		t.Fatalf("newSpannerCoordinator: %v", err)
 	}
@@ -109,10 +119,10 @@ func TestSpannerSequencerPushback(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			close := newSpannerDB(t)
+			db, close := newSpannerDB(t)
 			defer close()
 
-			seq, err := newSpannerCoordinator(ctx, "projects/p/instances/i/databases/d", test.threshold)
+			seq, err := newSpannerCoordinator(ctx, db, test.threshold)
 			if err != nil {
 				t.Fatalf("newSpannerCoordinator: %v", err)
 			}
@@ -139,10 +149,10 @@ func TestSpannerSequencerPushback(t *testing.T) {
 
 func TestSpannerSequencerRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	close := newSpannerDB(t)
+	db, close := newSpannerDB(t)
 	defer close()
 
-	s, err := newSpannerCoordinator(ctx, "projects/p/instances/i/databases/d", 1000)
+	s, err := newSpannerCoordinator(ctx, db, 1000)
 	if err != nil {
 		t.Fatalf("newSpannerCoordinator: %v", err)
 	}
@@ -191,10 +201,10 @@ func TestSpannerSequencerRoundTrip(t *testing.T) {
 
 func TestCheckDataCompatibility(t *testing.T) {
 	ctx := context.Background()
-	close := newSpannerDB(t)
+	db, close := newSpannerDB(t)
 	defer close()
 
-	s, err := newSpannerCoordinator(ctx, "projects/p/instances/i/databases/d", 1000)
+	s, err := newSpannerCoordinator(ctx, db, 1000)
 	if err != nil {
 		t.Fatalf("newSpannerCoordinator: %v", err)
 	}
@@ -381,9 +391,9 @@ func TestPublishTree(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			closeDB := newSpannerDB(t)
+			db, closeDB := newSpannerDB(t)
 			defer closeDB()
-			s, err := newSpannerCoordinator(ctx, "projects/p/instances/i/databases/d", 1000)
+			s, err := newSpannerCoordinator(ctx, db, 1000)
 			if err != nil {
 				t.Fatalf("newSpannerCoordinator: %v", err)
 			}
@@ -438,10 +448,10 @@ func TestGarbageCollect(t *testing.T) {
 	batchSize := uint64(60000)
 	integrateEvery := uint64(31234)
 
-	closeDB := newSpannerDB(t)
+	db, closeDB := newSpannerDB(t)
 	defer closeDB()
 
-	s, err := newSpannerCoordinator(ctx, "projects/p/instances/i/databases/d", batchSize)
+	s, err := newSpannerCoordinator(ctx, db, batchSize)
 	if err != nil {
 		t.Fatalf("newSpannerCoordinator: %v", err)
 	}
