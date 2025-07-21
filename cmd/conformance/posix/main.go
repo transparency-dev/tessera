@@ -69,7 +69,7 @@ func main() {
 	s, a := getSignersOrDie()
 
 	// Create the Tessera POSIX storage, using the directory from the --storage_dir flag
-	driver, err := posix.New(ctx, *storageDir)
+	driver, err := posix.New(ctx, posix.Config{Path: *storageDir})
 	if err != nil {
 		klog.Exitf("Failed to construct storage: %v", err)
 	}

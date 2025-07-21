@@ -70,7 +70,9 @@ func main() {
 	// add all of these leaves without creating any intermediate checkpoints.
 	driver, err := posix.New(
 		ctx,
-		*storageDir,
+		posix.Config{
+			Path: *storageDir,
+		},
 	)
 	if err != nil {
 		klog.Exitf("Failed to construct storage: %v", err)

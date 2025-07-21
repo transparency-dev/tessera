@@ -16,6 +16,7 @@ package posix
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,7 +37,10 @@ func TestGarbageCollect(t *testing.T) {
 	integrateEvery := uint64(31343)
 
 	s := &Storage{
-		path: t.TempDir(),
+		cfg: Config{
+			HTTPClient: http.DefaultClient,
+			Path:       t.TempDir(),
+		},
 	}
 	sk, vk := mustGenerateKeys(t)
 
@@ -93,7 +97,7 @@ func TestGarbageCollect(t *testing.T) {
 		for _, p := range expectedPartialPrefixes(size) {
 			wantPartialPrefixes[p] = struct{}{}
 		}
-		allPartialDirs, err := findAllPartialDirs(t, s.path)
+		allPartialDirs, err := findAllPartialDirs(t, s.cfg.Path)
 		if err != nil {
 			t.Fatalf("findAllPartials: %v", err)
 		}

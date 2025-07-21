@@ -63,7 +63,7 @@ func main() {
 		klog.Exitf("invalid checkpoint roothash %q: %v", bits[2], err)
 	}
 
-	driver, err := posix.New(ctx, *storageDir)
+	driver, err := posix.New(ctx, posix.Config{Path: *storageDir})
 	if err != nil {
 		klog.Exitf("Failed to create new POSIX storage driver: %v", err)
 	}
