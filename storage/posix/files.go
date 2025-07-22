@@ -370,7 +370,7 @@ func doIntegrate(ctx context.Context, fromSeq uint64, leafHashes [][]byte, ls *l
 		}
 	}
 
-	klog.Infof("New tree: %d, %x", newSize, newRoot)
+	klog.V(1).Infof("New tree: %d, %x", newSize, newRoot)
 
 	return newSize, newRoot, nil
 }

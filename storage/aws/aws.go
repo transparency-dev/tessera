@@ -823,7 +823,7 @@ func integrate(ctx context.Context, fromSeq uint64, lh [][]byte, lrs *logResourc
 	if err := errG.Wait(); err != nil {
 		return nil, err
 	}
-	klog.Infof("New tree: %d, %x", newSize, newRoot)
+	klog.V(1).Infof("New tree: %d, %x", newSize, newRoot)
 	return newRoot, nil
 }
 
