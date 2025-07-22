@@ -61,6 +61,7 @@ import (
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 )
 
@@ -1180,7 +1181,16 @@ func (s *gcsStorage) setObject(ctx context.Context, objName string, data []byte,
 		// If we run into a precondition failure error, check that the object
 		// which exists contains the same content that we want to write.
 		// If so, we can consider this write to be idempotently successful.
+		preconditionFailed := false
+
+		// Helpfully, the mechanism for detecting a failed precodition differs depending
+		// on whether you're using the HTTP or gRPC GCS client, so test both.
 		if ee, ok := err.(*googleapi.Error); ok && ee.Code == http.StatusPreconditionFailed {
+			preconditionFailed = true
+		} else if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition {
+			preconditionFailed = true
+		}
+		if preconditionFailed {
 			existing, existingGen, err := s.getObject(ctx, objName)
 			if err != nil {
 				return fmt.Errorf("failed to fetch existing content for %q (@%d): %v", objName, existingGen, err)
