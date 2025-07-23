@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package tessera_test
+package tessera
 
 import (
 	"bytes"
@@ -20,13 +20,13 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"errors"
 	"testing"
 
 	"github.com/transparency-dev/formats/log"
-	"github.com/transparency-dev/tessera"
 	"golang.org/x/mod/sumdb/note"
 )
 
@@ -136,11 +136,11 @@ func TestAwait(t *testing.T) {
 				<-time.After(tC.cpDelay)
 				return tC.cpBody, tC.cpErr
 			}
-			awaiter := tessera.NewPublicationAwaiter(ctx, readCheckpoint, 10*time.Millisecond)
+			awaiter := NewPublicationAwaiter(ctx, readCheckpoint, 10*time.Millisecond)
 
-			future := func() (tessera.Index, error) {
+			future := func() (Index, error) {
 				<-time.After(tC.fDelay)
-				return tessera.Index{Index: tC.fIndex}, tC.fErr
+				return Index{Index: tC.fIndex}, tC.fErr
 			}
 			i, cp, err := awaiter.Await(ctx, future)
 			if gotErr := err != nil; gotErr != tC.wantErr {
@@ -195,14 +195,14 @@ func TestAwait_multiClient(t *testing.T) {
 		}
 		return n, nil
 	}
-	awaiter := tessera.NewPublicationAwaiter(ctx, readCheckpoint, 10*time.Millisecond)
+	awaiter := NewPublicationAwaiter(ctx, readCheckpoint, 10*time.Millisecond)
 
 	wg := sync.WaitGroup{}
 	for i := range 300 {
 		index := uint64(i)
-		future := func() (tessera.Index, error) {
+		future := func() (Index, error) {
 			<-time.After(15 * time.Millisecond)
-			return tessera.Index{Index: index}, nil
+			return Index{Index: index}, nil
 		}
 		wg.Add(1)
 		go func() {
@@ -225,4 +225,30 @@ func TestAwait_multiClient(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func BenchmarkAwait(b *testing.B) {
+	cpFormat := "origin/\n%d\nhash\n\nsig"
+	cpSize := atomic.Uint64{}
+	readCP := func(_ context.Context) ([]byte, error) {
+		return fmt.Appendf(nil, cpFormat, cpSize.Load()), nil
+	}
+	a := NewPublicationAwaiter(b.Context(), readCP, time.Millisecond)
+	t := time.NewTicker(time.Millisecond)
+	go func() {
+		for {
+			select {
+			case <-b.Context().Done():
+				return
+			case <-t.C:
+				cpSize.Add(1)
+			}
+		}
+	}()
+	f := func() (Index, error) {
+		return Index{Index: cpSize.Load()}, nil
+	}
+	for b.Loop() {
+		_, _, _ = a.Await(b.Context(), f)
+	}
 }
