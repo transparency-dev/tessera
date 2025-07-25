@@ -233,7 +233,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 		var logSize uint64
 
 		// Busy loop while there's work to be done
-		for workDone := true; workDone; {
+		for moreWork := true; moreWork; {
 			err := f.as.db.Update(func(txn *badger.Txn) error {
 				ctx, span := tracer.Start(ctx, "tessera.antispam.badger.FollowTxn")
 				defer span.End()
@@ -265,18 +265,19 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 						if errors.Is(err, os.ErrNotExist) {
 							// The log probably just hasn't completed its first integration yet, so break out of here
 							// and go back to sleep for a bit to avoid spamming errors into the log and scaring operators.
-							workDone = false
+							moreWork = false
 							return nil
 						}
 						return fmt.Errorf("populate: IntegratedSize(): %v", err)
 					}
 					switch {
 					case followFrom > logSize:
-						workDone = true
+						// Since we've got a stale view, there could be more work to do - loop and check without sleeping.
+						moreWork = true
 						return fmt.Errorf("followFrom %d > size %d", followFrom, logSize)
 					case followFrom == logSize:
 						// We're caught up, so unblock pushback and go back to sleep
-						workDone = true
+						moreWork = false
 						f.as.pushBack.Store(false)
 						return nil
 					default:
