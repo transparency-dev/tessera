@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -261,7 +262,12 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 					// Our view of the log is out of date, update it
 					logSize, err = lr.IntegratedSize(ctx)
 					if err != nil {
-						workDone = true
+						if errors.Is(err, os.ErrNotExist) {
+							// The log probably just hasn't completed its first integration yet, so break out of here
+							// and go back to sleep for a bit to avoid spamming errors into the log and scaring operators.
+							workDone = false
+							return nil
+						}
 						return fmt.Errorf("populate: IntegratedSize(): %v", err)
 					}
 					switch {
