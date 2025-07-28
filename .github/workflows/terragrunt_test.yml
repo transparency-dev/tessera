@@ -21,7 +21,7 @@ jobs:
           persist-credentials: false
 
       - name: Check terragrunt HCL
-        uses: gruntwork-io/terragrunt-action@9272fa2cc60eefcd9ff2f07b3f7b880e47e6850a # v3.0.1
+        uses: gruntwork-io/terragrunt-action@95fc057922e3c3d4cc021a81a213f088f333ddef # v3.0.2
         with:
           tofu_version: ${{ env.tofu_version }}
           tg_version: ${{ env.tg_version }}
