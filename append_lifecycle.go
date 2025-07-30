@@ -356,7 +356,7 @@ func (i *integrationStats) updateStats(ctx context.Context, r LogReader) {
 		klog.Warning("updateStates: nil logreader provided, not updating stats")
 		return
 	}
-	t := time.NewTicker(time.Second)
+	t := time.NewTicker(100 * time.Millisecond)
 	for {
 		select {
 		case <-ctx.Done():
