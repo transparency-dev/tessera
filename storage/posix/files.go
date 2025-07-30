@@ -37,6 +37,7 @@ import (
 	"github.com/transparency-dev/tessera/internal/migrate"
 	"github.com/transparency-dev/tessera/internal/parse"
 	storage "github.com/transparency-dev/tessera/storage/internal"
+	"go.opentelemetry.io/otel/metric"
 	"k8s.io/klog/v2"
 )
 
@@ -172,7 +173,9 @@ func (s *Storage) newAppender(ctx context.Context, o *logResourceStorage, opts *
 // (e.g. <something>.lock>) to avoid inherent brittleness of the `fcntrl` API
 // (*any* `Close` operation on this file (even if it's a different FD) from
 // this PID, or overwriting of the file by *any* process breaks the lock.)
-func (s *Storage) lockFile(p string) (func() error, error) {
+func (s *Storage) lockFile(ctx context.Context, p string) (func() error, error) {
+	now := time.Now()
+
 	p = filepath.Join(s.cfg.Path, stateDir, p)
 	f, err := os.OpenFile(p, syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC, filePerm)
 	if err != nil {
@@ -188,9 +191,13 @@ func (s *Storage) lockFile(p string) (func() error, error) {
 	// Keep trying until we manage to get an answer without being interrupted.
 	for {
 		if err := syscall.FcntlFlock(f.Fd(), syscall.F_SETLKW, &flockT); err != syscall.EINTR {
+			if err == nil {
+				posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String(fmt.Sprintf("lock-%s", p))))
+			}
 			return f.Close, err
 		}
 	}
+
 }
 
 // Add takes an entry and queues it for inclusion in the log.
@@ -234,8 +241,8 @@ func (l *logResourceStorage) ReadTile(ctx context.Context, level, index uint64, 
 	})
 }
 
-func (l *logResourceStorage) IntegratedSize(_ context.Context) (uint64, error) {
-	size, _, err := l.s.readTreeState()
+func (l *logResourceStorage) IntegratedSize(ctx context.Context) (uint64, error) {
+	size, _, err := l.s.readTreeState(ctx)
 	return size, err
 }
 
@@ -254,7 +261,7 @@ func (a *appender) sequenceBatch(ctx context.Context, entries []*tessera.Entry) 
 	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
 	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
 	a.s.mu.Lock()
-	unlock, err := a.s.lockFile(treeStateLock)
+	unlock, err := a.s.lockFile(ctx, treeStateLock)
 	if err != nil {
 		panic(err)
 	}
@@ -265,7 +272,7 @@ func (a *appender) sequenceBatch(ctx context.Context, entries []*tessera.Entry) 
 		a.s.mu.Unlock()
 	}()
 
-	size, _, err := a.s.readTreeState()
+	size, _, err := a.s.readTreeState(ctx)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -337,7 +344,7 @@ func (a *appender) sequenceBatch(ctx context.Context, entries []*tessera.Entry) 
 		klog.Errorf("Integrate failed: %v", err)
 		return err
 	}
-	if err := a.s.writeTreeState(newSize, newRoot); err != nil {
+	if err := a.s.writeTreeState(ctx, newSize, newRoot); err != nil {
 		return fmt.Errorf("failed to write new tree state: %v", err)
 	}
 	// Notify that we know for sure there's a new checkpoint, but don't block if there's already
@@ -391,6 +398,8 @@ func (lrs *logResourceStorage) readTiles(ctx context.Context, tileIDs []storage.
 // If no complete tile exists at that location, it will attempt to find a
 // partial tile for the given tree size at that location.
 func (lrs *logResourceStorage) readTile(ctx context.Context, level, index uint64, p uint8) (*api.HashTile, error) {
+	now := time.Now()
+
 	t, err := lrs.ReadTile(ctx, level, index, p)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -404,6 +413,8 @@ func (lrs *logResourceStorage) readTile(ctx context.Context, level, index uint64
 	if err := tile.UnmarshalText(t); err != nil {
 		return nil, fmt.Errorf("failed to parse tile: %w", err)
 	}
+
+	posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("readTile")))
 	return &tile, nil
 }
 
@@ -425,7 +436,9 @@ func (lrs *logResourceStorage) storeTile(ctx context.Context, level, index, logS
 	return lrs.writeTile(ctx, level, index, layout.PartialTileSize(level, index, logSize), t)
 }
 
-func (lrs *logResourceStorage) writeTile(_ context.Context, level, index uint64, partial uint8, t []byte) error {
+func (lrs *logResourceStorage) writeTile(ctx context.Context, level, index uint64, partial uint8, t []byte) error {
+	now := time.Now()
+
 	tPath := layout.TilePath(level, index, partial)
 
 	if err := lrs.s.createOverwrite(tPath, t); err != nil {
@@ -454,6 +467,7 @@ func (lrs *logResourceStorage) writeTile(_ context.Context, level, index uint64,
 		}
 	}
 
+	posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("writeTile")))
 	return nil
 }
 
@@ -479,7 +493,7 @@ func (a *appender) initialise(ctx context.Context) error {
 	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
 	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
 	a.s.mu.Lock()
-	unlock, err := a.s.lockFile(treeStateLock)
+	unlock, err := a.s.lockFile(ctx, treeStateLock)
 	if err != nil {
 		panic(err)
 	}
@@ -493,14 +507,14 @@ func (a *appender) initialise(ctx context.Context) error {
 	if err := a.s.ensureVersion(compatibilityVersion); err != nil {
 		return err
 	}
-	curSize, _, err := a.s.readTreeState()
+	curSize, _, err := a.s.readTreeState(ctx)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("failed to load checkpoint for log: %v", err)
 		}
 		// Create the directory structure and write out an empty checkpoint
 		klog.Infof("Initializing directory for POSIX log at %q (this should only happen ONCE per log!)", a.s.cfg.Path)
-		if err := a.s.writeTreeState(0, rfc6962.DefaultHasher.EmptyRoot()); err != nil {
+		if err := a.s.writeTreeState(ctx, 0, rfc6962.DefaultHasher.EmptyRoot()); err != nil {
 			return fmt.Errorf("failed to write tree-state checkpoint: %v", err)
 		}
 		if a.newCP != nil {
@@ -551,7 +565,9 @@ func (s *Storage) ensureVersion(version uint16) error {
 }
 
 // writeTreeState stores the current tree size and root hash on disk.
-func (s *Storage) writeTreeState(size uint64, root []byte) error {
+func (s *Storage) writeTreeState(ctx context.Context, size uint64, root []byte) error {
+	now := time.Now()
+
 	raw, err := json.Marshal(treeState{Size: size, Root: root})
 	if err != nil {
 		return fmt.Errorf("error in Marshal: %v", err)
@@ -560,11 +576,15 @@ func (s *Storage) writeTreeState(size uint64, root []byte) error {
 	if err := s.createOverwrite(filepath.Join(stateDir, treeStateFile), raw); err != nil {
 		return fmt.Errorf("failed to create/overwrite private tree state file: %w", err)
 	}
+
+	posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("writeTreeState")))
 	return nil
 }
 
 // readTreeState reads and returns the currently stored tree state.
-func (s *Storage) readTreeState() (uint64, []byte, error) {
+func (s *Storage) readTreeState(ctx context.Context) (uint64, []byte, error) {
+	now := time.Now()
+
 	p := filepath.Join(s.cfg.Path, stateDir, treeStateFile)
 	raw, err := os.ReadFile(p)
 	if err != nil {
@@ -574,6 +594,8 @@ func (s *Storage) readTreeState() (uint64, []byte, error) {
 	if err := json.Unmarshal(raw, ts); err != nil {
 		return 0, nil, fmt.Errorf("error in Unmarshal: %v", err)
 	}
+
+	posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("readTreeState")))
 	return ts.Size, ts.Root, nil
 }
 
@@ -581,8 +603,10 @@ func (s *Storage) readTreeState() (uint64, []byte, error) {
 // minStaleness old, and, if so, creates and published a fresh checkpoint from the current
 // stored tree state.
 func (a *appender) publishCheckpoint(ctx context.Context, minStaleness time.Duration) error {
+	now := time.Now()
+
 	// Lock the destination "published" checkpoint location:
-	unlock, err := a.s.lockFile(publishLock)
+	unlock, err := a.s.lockFile(ctx, publishLock)
 	if err != nil {
 		return fmt.Errorf("lockFile(%s): %v", publishLock, err)
 	}
@@ -603,7 +627,7 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStaleness time.Dura
 			return nil
 		}
 	}
-	size, root, err := a.s.readTreeState()
+	size, root, err := a.s.readTreeState(ctx)
 	if err != nil {
 		return fmt.Errorf("readTreeState: %v", err)
 	}
@@ -617,6 +641,8 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStaleness time.Dura
 	}
 
 	klog.V(2).Infof("Published latest checkpoint: %d, %x", size, root)
+
+	posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
 
 	return nil
 }
@@ -701,7 +727,7 @@ func (s *Storage) readGCState() (uint64, error) {
 
 func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint) error {
 	// Lock the gc location:
-	unlock, err := s.lockFile(gcStateLock)
+	unlock, err := s.lockFile(ctx, gcStateLock)
 	if err != nil {
 		return fmt.Errorf("lockFile(%s): %v", gcStateLock, err)
 	}
@@ -813,7 +839,7 @@ func (s *Storage) MigrationWriter(ctx context.Context, opts *tessera.MigrationOp
 		},
 		bundleHasher: opts.LeafHasher(),
 	}
-	if err := r.initialise(); err != nil {
+	if err := r.initialise(ctx); err != nil {
 		return nil, nil, err
 	}
 	return r, r.logStorage, nil
@@ -841,7 +867,7 @@ func (m *MigrationStorage) AwaitIntegration(ctx context.Context, sourceSize uint
 		if err := m.buildTree(ctx, sourceSize); err != nil {
 			klog.Warningf("buildTree: %v", err)
 		}
-		s, r, err := m.s.readTreeState()
+		s, r, err := m.s.readTreeState(ctx)
 		if err != nil {
 			klog.Warningf("readTreeState: %v", err)
 		}
@@ -851,7 +877,7 @@ func (m *MigrationStorage) AwaitIntegration(ctx context.Context, sourceSize uint
 	}
 }
 
-func (m *MigrationStorage) initialise() error {
+func (m *MigrationStorage) initialise(ctx context.Context) error {
 	// Idempotent: If folder exists, nothing happens.
 	if err := mkdirAll(filepath.Join(m.s.cfg.Path, stateDir), dirPerm); err != nil {
 		return fmt.Errorf("failed to create log directory: %q", err)
@@ -860,7 +886,7 @@ func (m *MigrationStorage) initialise() error {
 	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
 	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
 	m.s.mu.Lock()
-	unlock, err := m.s.lockFile(treeStateLock)
+	unlock, err := m.s.lockFile(ctx, treeStateLock)
 	if err != nil {
 		panic(err)
 	}
@@ -874,14 +900,14 @@ func (m *MigrationStorage) initialise() error {
 	if err := m.s.ensureVersion(compatibilityVersion); err != nil {
 		return err
 	}
-	curSize, _, err := m.s.readTreeState()
+	curSize, _, err := m.s.readTreeState(ctx)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("failed to load checkpoint for log: %v", err)
 		}
 		// Create the directory structure and write out an empty checkpoint
 		klog.Infof("Initializing directory for POSIX log at %q (this should only happen ONCE per log!)", m.s.cfg.Path)
-		if err := m.s.writeTreeState(0, rfc6962.DefaultHasher.EmptyRoot()); err != nil {
+		if err := m.s.writeTreeState(ctx, 0, rfc6962.DefaultHasher.EmptyRoot()); err != nil {
 			return fmt.Errorf("failed to write tree-state checkpoint: %v", err)
 		}
 		return nil
@@ -895,8 +921,8 @@ func (m *MigrationStorage) SetEntryBundle(ctx context.Context, index uint64, par
 	return m.logStorage.writeBundle(ctx, index, partial, bundle)
 }
 
-func (m *MigrationStorage) IntegratedSize(_ context.Context) (uint64, error) {
-	sz, _, err := m.s.readTreeState()
+func (m *MigrationStorage) IntegratedSize(ctx context.Context) (uint64, error) {
+	sz, _, err := m.s.readTreeState(ctx)
 	return sz, err
 }
 
@@ -905,7 +931,7 @@ func (m *MigrationStorage) buildTree(ctx context.Context, targetSize uint64) err
 	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
 	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
 	m.s.mu.Lock()
-	unlock, err := m.s.lockFile(treeStateLock)
+	unlock, err := m.s.lockFile(ctx, treeStateLock)
 	if err != nil {
 		panic(err)
 	}
@@ -916,7 +942,7 @@ func (m *MigrationStorage) buildTree(ctx context.Context, targetSize uint64) err
 		m.s.mu.Unlock()
 	}()
 
-	size, _, err := m.s.readTreeState()
+	size, _, err := m.s.readTreeState(ctx)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -941,7 +967,7 @@ func (m *MigrationStorage) buildTree(ctx context.Context, targetSize uint64) err
 	if err != nil {
 		return fmt.Errorf("doIntegrate(%d, ...): %v", size, err)
 	}
-	if err := m.s.writeTreeState(newSize, newRoot); err != nil {
+	if err := m.s.writeTreeState(ctx, newSize, newRoot); err != nil {
 		return fmt.Errorf("failed to write new tree state: %v", err)
 	}
 
