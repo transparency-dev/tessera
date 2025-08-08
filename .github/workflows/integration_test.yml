@@ -40,3 +40,17 @@ jobs:
       - name: Stop Docker services (tessera-conformance-posix)
         if: ${{ always() }}
         run: docker compose -f ./cmd/conformance/posix/docker/compose.yaml down
+
+  gcp-tlog-tiles-api:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+      - name: Start Docker services (tessera-conformance-gcp, tessera-conformance-gcp-spanner and tessera-conformance-gcp-gcs)
+        run: docker compose -f ./cmd/conformance/gcp/docker/compose.yaml up --build --detach
+      - name: Run integration test 
+        run: go test -v -race ./integration/... --run_integration_test=true
+      - name: Stop Docker services (tessera-conformance-gcp, tessera-conformance-gcp-spanner and tessera-conformance-gcp-gcs)
+        if: ${{ always() }}
+        run: docker compose -f ./cmd/conformance/gcp/docker/compose.yaml down

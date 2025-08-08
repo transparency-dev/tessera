@@ -1,0 +1,35 @@
+services:
+
+  tessera-conformance-gcp-spanner:
+    container_name: tessera-conformance-gcp-spanner
+    image: "gcr.io/cloud-spanner-emulator/emulator"
+    ports:
+      - "9010:9010"
+      - "9020:9020"
+
+  tessera-conformance-gcp-gcs:
+    container_name: tessera-conformance-gcp-gcs
+    image: "fsouza/fake-gcs-server"
+    ports:
+      - "4443:4443"
+    command: [
+      "-scheme http",
+    ]
+
+  tessera-conformance-gcp:
+    container_name: tessera-conformance-gcp
+    build:
+      context: ../../../../
+      dockerfile: ./cmd/conformance/gcp/Dockerfile
+    ports:
+      - "2024:2024"
+    environment:
+      - STORAGE_EMULATOR_HOST=http://localhost:4443
+    command: [
+      "--bucket=tessera-conformance-gcp",
+      "--spanner=projects/0/instances/trillian-tessera/databases/integration-test",
+      "--signer=/key",
+      "--alsologtostderr",
+      "--v=1",
+    ]
+    restart: always
