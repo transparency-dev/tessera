@@ -16,6 +16,7 @@ package storage_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -91,6 +92,59 @@ func TestQueue(t *testing.T) {
 				if got, want := assignedItems[N.Index].Data(), wantEntries[i].Data(); !reflect.DeepEqual(got, want) {
 					t.Errorf("Got item@%d %v, want %v", N.Index, got, want)
 				}
+			}
+		})
+	}
+}
+
+func TestNotify(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		setIdx  int64
+		setErr  error
+		wantErr bool
+	}{
+		{
+			name:    "just idx, no error",
+			setIdx:  200,
+			setErr:  nil,
+			wantErr: false,
+		}, {
+			name:    "just error",
+			setIdx:  -1,
+			setErr:  errors.New("expected error"),
+			wantErr: true,
+		}, {
+			name:    "error and idx",
+			setIdx:  200,
+			setErr:  errors.New("expected error"),
+			wantErr: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			// flushFunc mimics sequencing storage - it takes entries, assigns them to
+			// positions in assignedItems.
+			flushFunc := func(_ context.Context, entries []*tessera.Entry) error {
+				if got := len(entries); got != 1 {
+					t.Fatalf("expected 1 entry but got %d", got)
+				}
+				if test.setIdx >= 0 {
+					_ = entries[0].MarshalBundleData(uint64(test.setIdx))
+				}
+				return test.setErr
+			}
+
+			// Create the Queue
+			q := storage.NewQueue(ctx, time.Second, uint(1), flushFunc)
+
+			// Now submit a bunch of entries
+			added := q.Add(ctx, tessera.NewEntry([]byte(test.name)))
+
+			_, err := added()
+			if gotErr, wantErr := err != nil, test.wantErr; gotErr != wantErr {
+				t.Errorf("gotErr != wantErr (%t != %t): %v", gotErr, wantErr, err)
 			}
 		})
 	}
