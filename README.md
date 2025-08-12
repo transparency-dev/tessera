@@ -267,9 +267,13 @@ Writing to the log follows this flow:
     
 Once an index has been returned, the new data is sequenced, but not necessarily integrated into the log.
 
-As discussed above in [Integration](#integration), sequenced entries will be _asynchronously_ integrated into the log and be made available via the read API.
-Some personalities may need to block until this has been performed, e.g. because they will provide the requester with an inclusion proof, which requires integration.
-Such personalities are recommended to use [Synchronous Publication](#synchronous-publication) to perform this blocking.
+As discussed above in [Integration](#integration) and [Publishing](#publishing),
+sequenced entries will be first _asynchronously_ integrated into the log, and
+then published on the read API by a second _asynchronous_ process. Some
+personalities may need to block until this has been performed, e.g. because they
+will provide the requester with an inclusion proof, which requires integration
+and publication. Such personalities are recommended to use [Synchronous Publication](#synchronous-publication)
+to perform this blocking.
 
 #### Reading from the Log
 
