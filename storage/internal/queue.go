@@ -175,8 +175,12 @@ func newEntry(data *tessera.Entry) queueItem {
 // This func must only be called once, and will cause any current or future callers of index()
 // to be given the values provided here.
 func (e *queueItem) notify(err error) {
-	if e.entry.Index() == nil {
-		panic(errors.New("logic error: flush complete, but entry was not assigned an index - did storage fail to call entry.MarshalBundleData?"))
+	if e.entry.Index() == nil && err == nil {
+		panic(errors.New("logic error: flush complete without error, but entry was not assigned an index - did storage fail to call entry.MarshalBundleData?"))
 	}
-	e.set(tessera.Index{Index: *e.entry.Index()}, err)
+	var idx uint64
+	if e.entry.Index() != nil {
+		idx = *e.entry.Index()
+	}
+	e.set(tessera.Index{Index: idx}, err)
 }
