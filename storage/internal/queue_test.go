@@ -16,6 +16,7 @@ package storage_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -51,7 +52,7 @@ func TestQueue(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			assignMu := sync.Mutex{}
 			assignedItems := make([]*tessera.Entry, test.numItems)
 			assignedIndex := uint64(0)
@@ -96,8 +97,60 @@ func TestQueue(t *testing.T) {
 	}
 }
 
+func TestNotify(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		setIdx  int64
+		setErr  error
+		wantErr bool
+	}{
+		{
+			name:    "just idx, no error",
+			setIdx:  200,
+			setErr:  nil,
+			wantErr: false,
+		}, {
+			name:    "just error",
+			setIdx:  -1,
+			setErr:  errors.New("expected error"),
+			wantErr: true,
+		}, {
+			name:    "error and idx",
+			setIdx:  200,
+			setErr:  errors.New("expected error"),
+			wantErr: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+
+			// flushFunc mimics sequencing storage - it takes entries, assigns them to
+			// positions in assignedItems.
+			flushFunc := func(_ context.Context, entries []*tessera.Entry) error {
+				if got := len(entries); got != 1 {
+					t.Fatalf("expected 1 entry but got %d", got)
+				}
+				if test.setIdx >= 0 {
+					_ = entries[0].MarshalBundleData(uint64(test.setIdx))
+				}
+				return test.setErr
+			}
+
+			// Create the Queue
+			q := storage.NewQueue(ctx, time.Second, uint(1), flushFunc)
+
+			// Now submit the entry
+			added := q.Add(ctx, tessera.NewEntry([]byte(test.name)))
+			_, err := added()
+			if gotErr, wantErr := err != nil, test.wantErr; gotErr != wantErr {
+				t.Errorf("gotErr != wantErr (%t != %t): %v", gotErr, wantErr, err)
+			}
+		})
+	}
+}
+
 func BenchmarkQueue(b *testing.B) {
-	ctx := context.Background()
+	ctx := b.Context()
 	const count = 1024
 	// Outer loop is for benchmark calibration, inside here is each individual run of the benchmark
 	for b.Loop() {
