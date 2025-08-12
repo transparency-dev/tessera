@@ -52,7 +52,7 @@ func TestQueue(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			assignMu := sync.Mutex{}
 			assignedItems := make([]*tessera.Entry, test.numItems)
 			assignedIndex := uint64(0)
@@ -122,7 +122,7 @@ func TestNotify(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 
 			// flushFunc mimics sequencing storage - it takes entries, assigns them to
 			// positions in assignedItems.
@@ -139,9 +139,8 @@ func TestNotify(t *testing.T) {
 			// Create the Queue
 			q := storage.NewQueue(ctx, time.Second, uint(1), flushFunc)
 
-			// Now submit a bunch of entries
+			// Now submit the entry
 			added := q.Add(ctx, tessera.NewEntry([]byte(test.name)))
-
 			_, err := added()
 			if gotErr, wantErr := err != nil, test.wantErr; gotErr != wantErr {
 				t.Errorf("gotErr != wantErr (%t != %t): %v", gotErr, wantErr, err)
@@ -151,7 +150,7 @@ func TestNotify(t *testing.T) {
 }
 
 func BenchmarkQueue(b *testing.B) {
-	ctx := context.Background()
+	ctx := b.Context()
 	const count = 1024
 	// Outer loop is for benchmark calibration, inside here is each individual run of the benchmark
 	for b.Loop() {
