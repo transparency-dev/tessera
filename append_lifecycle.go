@@ -51,15 +51,16 @@ const (
 )
 
 var (
-	appenderAddsTotal        metric.Int64Counter
-	appenderAddHistogram     metric.Int64Histogram
-	appenderHighestIndex     metric.Int64Gauge
-	appenderIntegratedSize   metric.Int64Gauge
-	appenderIntegrateLatency metric.Int64Histogram
-	appenderNextIndex        metric.Int64Gauge
-	appenderSignedSize       metric.Int64Gauge
-	appenderWitnessedSize    metric.Int64Gauge
-	appenderWitnessRequests  metric.Int64Counter
+	appenderAddsTotal         metric.Int64Counter
+	appenderAddHistogram      metric.Int64Histogram
+	appenderHighestIndex      metric.Int64Gauge
+	appenderIntegratedSize    metric.Int64Gauge
+	appenderIntegrateLatency  metric.Int64Histogram
+	appenderDeadlineRemaining metric.Int64Histogram
+	appenderNextIndex         metric.Int64Gauge
+	appenderSignedSize        metric.Int64Gauge
+	appenderWitnessedSize     metric.Int64Gauge
+	appenderWitnessRequests   metric.Int64Counter
 
 	followerEntriesProcessed metric.Int64Gauge
 	followerLag              metric.Int64Gauge
@@ -110,6 +111,15 @@ func init() {
 		metric.WithExplicitBucketBoundaries(histogramBuckets...))
 	if err != nil {
 		klog.Exitf("Failed to create appenderIntegrateLatency metric: %v", err)
+	}
+
+	appenderDeadlineRemaining, err = meter.Int64Histogram(
+		"tessera.appender.deadline.remaining",
+		metric.WithDescription("Duration remaining before context cancellation when appender is invoked (only set for contexts with deadline)"),
+		metric.WithUnit("ms"),
+		metric.WithExplicitBucketBoundaries(histogramBuckets...))
+	if err != nil {
+		klog.Exitf("Failed to create appenderDeadlineRemaining metric: %v", err)
 	}
 
 	appenderNextIndex, err = meter.Int64Gauge(
@@ -255,6 +265,9 @@ func NewAppender(ctx context.Context, d Driver, opts *AppendOptions) (*Appender,
 	}
 	// TODO(mhutchinson): move this into the decorators
 	a.Add = func(ctx context.Context, entry *Entry) IndexFuture {
+		if deadline, ok := ctx.Deadline(); ok {
+			appenderDeadlineRemaining.Record(ctx, time.Until(deadline).Milliseconds())
+		}
 		ctx, span := tracer.Start(ctx, "tessera.Appender.Add")
 		defer span.End()
 
