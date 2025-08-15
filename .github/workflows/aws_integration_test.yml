@@ -12,6 +12,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  id-token: write
   contents: read
 
 env:
@@ -29,13 +30,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      ## Authenticate to AWS with the credentials stored in Github Secrets.
-      - name: Configure AWS Credentials
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
-          # TODO(phboneff): use a better form of authentication
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ vars.AWS_IAMROLE_GITHUB_CI }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Checkout code
@@ -85,6 +83,8 @@ jobs:
           tg_dir: ${{ env.TG_DIR }}
           tg_command: "destroy"
         env:
+          ECS_EXECUTION_ROLE: ${{ vars.AWS_IAMROLE_ECS_EXECUTION }}
+          ECS_CONFORMANCE_TASK_ROLE: ${{ vars.AWS_IAMROLE_ECS_CONFORMANCE_TASK }}
           TESSERA_SIGNER: unused
           TESSERA_VERIFIER: unused
 
@@ -120,6 +120,8 @@ jobs:
           tg_dir: ${{ env.TG_DIR }}
           tg_command: "apply"
         env:
+          ECS_EXECUTION_ROLE: ${{ vars.AWS_IAMROLE_ECS_EXECUTION }}
+          ECS_CONFORMANCE_TASK_ROLE: ${{ vars.AWS_IAMROLE_ECS_CONFORMANCE_TASK }}
           INPUT_POST_EXEC_1: |
             echo "ECS_CLUSTER=$(terragrunt output -raw ecs_cluster)" >> "$GITHUB_ENV"
           INPUT_POST_EXEC_2: |
@@ -154,3 +156,6 @@ jobs:
           tg_version: ${{ env.TG_VERSION }}
           tg_dir: ${{ env.TG_DIR }}
           tg_command: "destroy"
+        env:
+          ECS_EXECUTION_ROLE: ${{ vars.AWS_IAMROLE_ECS_EXECUTION }}
+          ECS_CONFORMANCE_TASK_ROLE: ${{ vars.AWS_IAMROLE_ECS_CONFORMANCE_TASK }}
