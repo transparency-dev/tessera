@@ -30,5 +30,6 @@ remote_state {
     s3_bucket_tags = {
       name = "terraform_state_storage"
     }
+    use_lockfile = true
   }
 }
