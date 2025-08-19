@@ -23,10 +23,9 @@ remote_state {
   backend = "s3"
 
   config = {
-    region         = local.region
-    bucket         = "${local.prefix_name}-${local.base_name}-terraform-state"
-    key            = "${local.env}/terraform.tfstate"
-    dynamodb_table = "${local.prefix_name}-${local.base_name}-terraform-lock"
+    region = local.region
+    bucket = "${local.prefix_name}-${local.base_name}-terraform-state"
+    key    = "${local.env}/terraform.tfstate"
     s3_bucket_tags = {
       name = "terraform_state_storage"
     }
