@@ -82,7 +82,7 @@ func main() {
 		WithCheckpointInterval(10*time.Second).
 		WithBatching(512, 300*time.Millisecond).
 		WithPushback(10*4096).
-		WithAntispam(256<<10, antispam))
+		WithAntispam(tessera.DefaultAntispamInMemorySize, antispam))
 	if err != nil {
 		klog.Exit(err)
 	}

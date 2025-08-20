@@ -86,7 +86,7 @@ func main() {
 	appender, shutdown, _, err := tessera.NewAppender(ctx, driver, tessera.NewAppendOptions().
 		WithCheckpointSigner(s, a...).
 		WithBatching(256, time.Second).
-		WithAntispam(256, antispam))
+		WithAntispam(tessera.DefaultAntispamInMemorySize, antispam))
 	if err != nil {
 		klog.Exit(err)
 	}
