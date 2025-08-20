@@ -72,7 +72,7 @@ func main() {
 	appender, shutdown, reader, err := tessera.NewAppender(ctx, driver, tessera.NewAppendOptions().
 		WithCheckpointSigner(noteSigner, additionalSigners...).
 		WithCheckpointInterval(*publishInterval).
-		WithAntispam(256, nil))
+		WithAntispam(tessera.DefaultAntispamInMemorySize, nil))
 	if err != nil {
 		klog.Exit(err)
 	}

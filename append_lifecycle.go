@@ -48,6 +48,10 @@ const (
 	DefaultPushbackMaxOutstanding = 4096
 	// DefaultGarbageCollectionInterval is the default value used if no WithGarbageCollectionInterval option is provided.
 	DefaultGarbageCollectionInterval = time.Minute
+	// DefaultAntispamInMemorySize is the recommended default limit on the number of entries in the in-memory antispam cache.
+	// The amount of data stored for each entry is small (32 bytes of hash + 8 bytes of index), so in the general case it should be fine
+	// to have a very large cache.
+	DefaultAntispamInMemorySize = 256 << 10
 )
 
 var (
@@ -514,15 +518,10 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 	}
 }
 
-func (o *AppendOptions) WithAntispam(inMemEntries uint, as Antispam) *AppendOptions {
-	o.addDecorators = append(o.addDecorators, newInMemoryDedupe(inMemEntries))
-	if as != nil {
-		o.addDecorators = append(o.addDecorators, as.Decorator())
-		o.followers = append(o.followers, as.Follower(o.bundleIDHasher))
-	}
-	return o
-}
-
+// NewAppendOptions creates a new options struct for configuring appender lifecycle instances.
+//
+// These options are configured through the use of the various `With.*` function calls on the returned
+// instance.
 func NewAppendOptions() *AppendOptions {
 	return &AppendOptions{
 		batchMaxSize:              DefaultBatchMaxSize,
@@ -568,6 +567,25 @@ func (o AppendOptions) valid() error {
 		return errors.New("invalid AppendOptions: WithCheckpointSigner must be set")
 	}
 	return nil
+}
+
+// WithAntispam configures the appender to use the antispam mechanism to reduce the number of duplicates which
+// can be added to the log.
+//
+// As a starting point, the minimum size of the of in-memory cache should be set to the configured PushbackThreshold
+// of the provided antispam implementation, multiplied by the number of concurrent front-end instances which
+// are accepting write-traffic. Data stored in the in-memory cache is relatively small (32 bytes hash, 8 bytes index),
+// so we recommend erring on the larger side as there is little downside to over-sizing the cache; consider using
+// the DefaultAntispamInMemorySize as the value here.
+//
+// For more details on how the antispam mechanism works, including tuning guidance, see docs/design/antispam.md.
+func (o *AppendOptions) WithAntispam(inMemEntries uint, as Antispam) *AppendOptions {
+	o.addDecorators = append(o.addDecorators, newInMemoryDedupe(inMemEntries))
+	if as != nil {
+		o.addDecorators = append(o.addDecorators, as.Decorator())
+		o.followers = append(o.followers, as.Follower(o.bundleIDHasher))
+	}
+	return o
 }
 
 // CheckpointPublisher returns a function which should be used to create, sign, and potentially witness a new checkpoint.
