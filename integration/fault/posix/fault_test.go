@@ -55,7 +55,7 @@ var (
 	interestingSyscalls = []string{"openat", "linkat", "mkdirat", "renameat", "fsync", "close", "read", "write"}
 )
 
-// TestFaultInjection is a test which tries to cause tree corruption by injecting faults into syscalls which are
+// runFaultInjectionTest is a test which tries to cause tree corruption by injecting faults into syscalls which are
 // ultimately used by the posix-oneshot application.
 //
 // This test builds and execs the `/cmd/examples/posix-oneshot` tool in order to manage some logs-under-test, and
@@ -68,11 +68,11 @@ var (
 //     posix-oneshat was actively managing/updating the log on disk.
 //  4. for each individual interesting syscall:
 //     4.1. create a new copy of the base log
-//     4.2. invoke posix-oneshot using `strace`'s `-e fault=' flag to inject an `EIO` failure for a single specific instance of a syscall.
+//     4.2. invoke posix-oneshot using `strace`'s `-e inject=' flag to inject the provided fauled for a single specific instance of a syscall.
 //     We don't particularly care whether this fault causes posix-oneshot to exit or retry; what's important is that the on-disk
 //     representation of the log state is never left in an inconsistent or corrupt state.
 //     4.3. run `fsck` against the log-under-test to assert that the on-disk state is, indeed, self-consistent and uncorrupted.
-func TestFaultInjection(t *testing.T) {
+func runFaultInjectionTest(t *testing.T, inject string) {
 	tmp := t.TempDir()
 	setup(t, tmp)
 	baseDir := filepath.Join(tmp, "base")
@@ -113,7 +113,7 @@ func TestFaultInjection(t *testing.T) {
 	for sc, c := range count {
 		for i := range c.N {
 			i := c.First + i
-			t.Run(fmt.Sprintf("Fault-on-%s#%d", sc, i), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s-on-%s#%d", inject, sc, i), func(t *testing.T) {
 				t.Parallel()
 
 				// Fork the base log into a new directory
@@ -127,7 +127,7 @@ func TestFaultInjection(t *testing.T) {
 				// We don't really care whether this results in an error or not, but it _MUST_ be the case that the on-disk tree is
 				// left in a self-consistent state.
 				mustWrite(t, filepath.Join(injectDir, "inject-0"), fmt.Appendf(nil, "inject-%d first", i))
-				cmd := fmt.Sprintf("strace -f -e inject=%s:error=EIO:when=%d -e quiet=all %s", sc, i, growLogCommand(injectDir, filepath.Join(injectDir, "inject-0")))
+				cmd := fmt.Sprintf("strace -f -e inject=%s:%s:when=%d -e quiet=all %s", sc, inject, i, growLogCommand(injectDir, filepath.Join(injectDir, "inject-0")))
 				if _, err := script.Exec(cmd).String(); err != nil {
 					t.Logf("Failed to growLog on %s: %v", injectDir, err)
 				}
@@ -140,6 +140,14 @@ func TestFaultInjection(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestInjectIOError(t *testing.T) {
+	runFaultInjectionTest(t, "error=EIO")
+}
+
+func TestInjectSigKill(t *testing.T) {
+	runFaultInjectionTest(t, "signal=KILL")
 }
 
 // setup configures everything necessary for running the fault test.
