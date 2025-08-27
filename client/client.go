@@ -178,6 +178,8 @@ func GetEntryBundle(ctx context.Context, f EntryBundleFetcherFunc, i, logSize ui
 // ProofBuilder knows how to build inclusion and consistency proofs from tiles.
 // Since the tiles commit only to immutable nodes, the job of building proofs is slightly
 // more complex as proofs can touch "ephemeral" nodes, so these need to be synthesized.
+// This object constructs a cache internally to make it efficient for multiple operations
+// at a given tree size.
 type ProofBuilder struct {
 	treeSize  uint64
 	nodeCache nodeCache
@@ -196,8 +198,6 @@ func NewProofBuilder(ctx context.Context, treeSize uint64, f TileFetcherFunc) (*
 
 // InclusionProof constructs an inclusion proof for the leaf at index in a tree of
 // the given size.
-// This function uses the passed-in function to retrieve tiles containing any log tree
-// nodes necessary to build the proof.
 func (pb *ProofBuilder) InclusionProof(ctx context.Context, index uint64) ([][]byte, error) {
 	ctx, span := tracer.Start(ctx, "tessera.client.InclusionProof")
 	defer span.End()
@@ -212,8 +212,6 @@ func (pb *ProofBuilder) InclusionProof(ctx context.Context, index uint64) ([][]b
 }
 
 // ConsistencyProof constructs a consistency proof between the provided tree sizes.
-// This function uses the passed-in function to retrieve tiles containing any log tree
-// nodes necessary to build the proof.
 func (pb *ProofBuilder) ConsistencyProof(ctx context.Context, smaller, larger uint64) ([][]byte, error) {
 	ctx, span := tracer.Start(ctx, "tessera.client.ConsistencyProof")
 	defer span.End()
