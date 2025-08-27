@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build linux
+
+// Package fault_test contains a (probably Linux-specific) test which uses `strace` to inject faults
+// into the Tessera posix-oneshot binary to verify that this does not result in an inconsistent or corrupt
+// tree state stored on disk.
 package fault_test
 
 import (
@@ -108,28 +113,31 @@ func TestFaultInjection(t *testing.T) {
 	for sc, c := range count {
 		for i := range c.N {
 			i := c.First + i
+			t.Run(fmt.Sprintf("Fault-on-%s#%d", sc, i), func(t *testing.T) {
+				t.Parallel()
 
-			// Fork the base log into a new directory
-			injectDir := filepath.Join(tmp, fmt.Sprintf("inject-%s-%d", sc, i))
-			_ = os.MkdirAll(injectDir, 0o755)
-			if output, err := script.Exec(fmt.Sprintf("cp -r %s/. %s/", baseDir, injectDir)).String(); err != nil {
-				t.Fatalf("Failed to copy base log into directory %q: %v\n%s", injectDir, err, output)
-			}
+				// Fork the base log into a new directory
+				injectDir := filepath.Join(tmp, fmt.Sprintf("inject-%s-%d", sc, i))
+				_ = os.MkdirAll(injectDir, 0o755)
+				if output, err := script.Exec(fmt.Sprintf("cp -r %s/. %s/", baseDir, injectDir)).String(); err != nil {
+					t.Fatalf("Failed to copy base log into directory %q: %v\n%s", injectDir, err, output)
+				}
 
-			// Now run posix-oneshot to add an entry, using strace to inject a fault on the ith call to the syscall named in sc:
-			// We don't really care whether this results in an error or not, but it _MUST_ be the case that the on-disk tree is
-			// left in a self-consistent state.
-			mustWrite(t, filepath.Join(injectDir, "inject-0"), fmt.Appendf(nil, "inject-%d first", i))
-			cmd := fmt.Sprintf("strace -f -e inject=%s:error=EIO:when=%d -e quiet=all %s", sc, i, growLogCommand(injectDir, filepath.Join(injectDir, "inject-0")))
-			if _, err := script.Exec(cmd).String(); err != nil {
-				t.Logf("Failed to growLog on %s: %v", injectDir, err)
-			}
+				// Now run posix-oneshot to add an entry, using strace to inject a fault on the ith call to the syscall named in sc:
+				// We don't really care whether this results in an error or not, but it _MUST_ be the case that the on-disk tree is
+				// left in a self-consistent state.
+				mustWrite(t, filepath.Join(injectDir, "inject-0"), fmt.Appendf(nil, "inject-%d first", i))
+				cmd := fmt.Sprintf("strace -f -e inject=%s:error=EIO:when=%d -e quiet=all %s", sc, i, growLogCommand(injectDir, filepath.Join(injectDir, "inject-0")))
+				if _, err := script.Exec(cmd).String(); err != nil {
+					t.Logf("Failed to growLog on %s: %v", injectDir, err)
+				}
 
-			// Verify that the tree on disk is self-consistent and uncorrupted by running fsck against it.
-			// Any error here is bad news.
-			if err := fsckLog(t, injectDir); err != nil {
-				t.Errorf("Fsck on %s failed: %v", injectDir, err)
-			}
+				// Verify that the tree on disk is self-consistent and uncorrupted by running fsck against it.
+				// Any error here is bad news.
+				if err := fsckLog(t, injectDir); err != nil {
+					t.Errorf("Fsck on %s failed: %v", injectDir, err)
+				}
+			})
 		}
 	}
 }
