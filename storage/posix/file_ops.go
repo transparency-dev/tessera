@@ -32,31 +32,45 @@ const (
 	filePerm = 0o644
 )
 
-// syncDir calls fsync on the provided path.
+// syncDir opens the specified directory and calls op before syncing and closing the handle on the directory.
 //
-// This is intended to be used to sync directories in which we've just created new entries.
-func syncDir(d string) error {
-	fd, err := os.Open(d)
+// This dance ensures that the inode of the specified directory cannot be evicted from the kernel inode cache while
+// the operation is underway, and so any error which occurs while updating metadata about a file operation which happens
+// _within_ that directory is detected.
+//
+// This function is intended to be used by the other functions in this file.
+func syncDir(dir string, op func() error) (err error) {
+	fd, err := os.OpenFile(dir, os.O_RDONLY|syscall.O_DIRECTORY, 0)
 	if err != nil {
-		return fmt.Errorf("failed to open %q: %v", d, err)
+		return fmt.Errorf("failed to open %q: %w", dir, err)
+	}
+	defer func() {
+		e := fd.Close()
+		if err == nil {
+			err = e
+		}
+	}()
+
+	if err := op(); err != nil {
+		return err
 	}
 
 	if err := fd.Sync(); err != nil {
-		return fmt.Errorf("failed to sync %q: %v", d, err)
+		return fmt.Errorf("failed to sync %q: %w", dir, err)
 	}
-	return fd.Close()
+	return nil
 }
 
 // mkdirAll is a reimplementation of os.mkdirAll but where we fsync the parent directory/ies
 // we modify.
-func mkdirAll(name string, perm os.FileMode) (err error) {
+func mkdirAll(name string, perm os.FileMode) error {
 	name = strings.TrimSuffix(name, string(filepath.Separator))
 	if name == "" {
 		return nil
 	}
 
 	// Finally, check and create the dir if necessary.
-	dir, _ := filepath.Split(name)
+	dir := filepath.Dir(name)
 	di, err := os.Lstat(name)
 	switch {
 	case errors.Is(err, syscall.ENOENT):
@@ -72,13 +86,14 @@ func mkdirAll(name string, perm os.FileMode) (err error) {
 		// create the final entry in the requested path.
 		fallthrough
 	case errors.Is(err, os.ErrNotExist):
-		// We'll see ErrNotExist if the final entry in the requested path doesn't exist,
-		// so we simply attempt to create it in here.
-		if err := os.Mkdir(name, perm); err != nil {
-			return fmt.Errorf("%q: %v", name, err)
-		}
-		// And be sure to sync the parent directory.
-		return syncDir(dir)
+		return syncDir(dir, func() error {
+			// We'll see ErrNotExist if the final entry in the requested path doesn't exist,
+			// so we simply attempt to create it in here.
+			if err := os.Mkdir(name, perm); err != nil {
+				return fmt.Errorf("%q: %v", name, err)
+			}
+			return nil
+		})
 	case err != nil:
 		return fmt.Errorf("lstat %q: %v", name, err)
 	case !di.IsDir():
@@ -94,47 +109,52 @@ func mkdirAll(name string, perm os.FileMode) (err error) {
 // Returns an error if a file already exists at the specified location, or it's unable to fully write the
 // data & close the file.
 func createEx(name string, d []byte) error {
-	dir, _ := filepath.Split(name)
+	dir := filepath.Dir(name)
 	if err := mkdirAll(dir, dirPerm); err != nil {
-		return fmt.Errorf("failed to make entries directory structure: %w", err)
+		return fmt.Errorf("failed to make directory structure: %w", err)
 	}
-
-	tmpName, err := createTemp(name, d)
-	if err != nil {
-		return fmt.Errorf("failed to create temp file: %v", err)
-	}
-	defer func() {
-		if err := os.Remove(tmpName); err != nil {
-			klog.Warningf("Failed to remove temporary file %q: %v", tmpName, err)
+	return syncDir(dir, func() error {
+		tmpName, err := createTemp(name, d)
+		if err != nil {
+			return fmt.Errorf("failed to create temp file: %v", err)
 		}
-	}()
+		defer func() {
+			if err := os.Remove(tmpName); err != nil {
+				klog.Warningf("Failed to remove temporary file %q: %v", tmpName, err)
+			}
+		}()
 
-	if err := os.Link(tmpName, name); err != nil {
-		// Wrap the error here because we need to know if it's os.ErrExists at higher levels.
-		return fmt.Errorf("failed to link temporary file to target %q: %w", name, err)
-	}
-
-	return syncDir(dir)
+		if err := os.Link(tmpName, name); err != nil {
+			// Wrap the error here because we need to know if it's os.ErrExists at higher levels.
+			return fmt.Errorf("failed to link temporary file to target %q: %w", name, err)
+		}
+		return nil
+	})
 }
 
 // overwrite atomically creates/overwrites a file at the given path containing the provided data, and syncs
 // the directory containing the overwritten/created file.
 func overwrite(name string, d []byte) error {
-	dir, _ := filepath.Split(name)
+	dir := filepath.Dir(name)
 	if err := mkdirAll(dir, dirPerm); err != nil {
-		return fmt.Errorf("failed to make entries directory structure: %w", err)
+		return fmt.Errorf("failed to make directory structure: %w", err)
 	}
+	return syncDir(dir, func() error {
+		dir, _ := filepath.Split(name)
+		if err := mkdirAll(dir, dirPerm); err != nil {
+			return fmt.Errorf("failed to make entries directory structure: %w", err)
+		}
 
-	tmpName, err := createTemp(name, d)
-	if err != nil {
-		return fmt.Errorf("failed to create temp file: %v", err)
-	}
+		tmpName, err := createTemp(name, d)
+		if err != nil {
+			return fmt.Errorf("failed to create temp file: %v", err)
+		}
 
-	if err := os.Rename(tmpName, name); err != nil {
-		return fmt.Errorf("failed to rename temporary file to target %q: %w", name, err)
-	}
-
-	return syncDir(dir)
+		if err := os.Rename(tmpName, name); err != nil {
+			return fmt.Errorf("failed to rename temporary file to target %q: %w", name, err)
+		}
+		return nil
+	})
 }
 
 // createTemp creates a new temporary file in the directory dir, with a name based on the provided prefix,
