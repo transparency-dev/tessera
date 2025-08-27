@@ -62,7 +62,7 @@ const (
 	// treeStateLock must be held when integrating entries into the tree or writing to the treeState file.
 	treeStateLock = treeStateFile + ".lock"
 
-	minCheckpointInterval = time.Second
+	minCheckpointInterval = 100 * time.Millisecond
 )
 
 // Storage implements storage functions for a POSIX filesystem.

@@ -45,7 +45,7 @@ const (
 	// Since this is a short-lived command-line tool, we set this to a relatively low value so that
 	// the tool can publish the new checkpoint and exit relatively quickly after integrating the entries
 	// into the tree.
-	checkpointInterval = time.Second
+	checkpointInterval = 100 * time.Millisecond
 )
 
 // entryInfo binds the actual bytes to be added as a leaf with a
@@ -96,7 +96,7 @@ func main() {
 
 	// We don't want to exit until our entries have been integrated into the tree, so we'll use Tessera's
 	// PublicationAwaiter to help with that.
-	await := tessera.NewPublicationAwaiter(ctx, r.ReadCheckpoint, time.Second)
+	await := tessera.NewPublicationAwaiter(ctx, r.ReadCheckpoint, 100*time.Millisecond)
 
 	// Add each of the leaves in order, and store the futures in a slice
 	// that we will check once all leaves are sent to storage.
