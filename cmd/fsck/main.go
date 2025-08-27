@@ -47,12 +47,21 @@ func main() {
 	if err != nil {
 		klog.Exitf("Invalid --storage_url %q: %v", *storageURL, err)
 	}
-	src, err := client.NewHTTPFetcher(logURL, nil)
-	if err != nil {
-		klog.Exitf("Failed to create HTTP fetcher: %v", err)
-	}
-	if *bearerToken != "" {
-		src.SetAuthorizationHeader(fmt.Sprintf("Bearer %s", *bearerToken))
+	var src fsck.Fetcher
+
+	if logURL.Scheme == "file" {
+		src = &client.FileFetcher{
+			Root: logURL.Path,
+		}
+	} else {
+		httpSrc, err := client.NewHTTPFetcher(logURL, nil)
+		if err != nil {
+			klog.Exitf("Failed to create HTTP fetcher: %v", err)
+		}
+		if *bearerToken != "" {
+			httpSrc.SetAuthorizationHeader(fmt.Sprintf("Bearer %s", *bearerToken))
+		}
+		src = httpSrc
 	}
 	v := verifierFromFlags()
 	if *origin == "" {

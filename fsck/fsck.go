@@ -101,7 +101,7 @@ func Check(ctx context.Context, origin string, verifier note.Verifier, f Fetcher
 	}
 
 	// Finally, check that the claimed root hash matches what we calculated.
-	gotRoot, err := fTree.tree.GetRootHash(nil)
+	gotRoot, err := fTree.GetRootHash()
 	switch {
 	case err != nil:
 		klog.Exitf("Failed to calculate root: %v", err)
@@ -158,6 +158,13 @@ func (f *fsckTree) AppendBundle(ri layout.RangeInfo, data []byte) error {
 		}
 	}
 	return nil
+}
+
+func (f *fsckTree) GetRootHash() ([]byte, error) {
+	if f.tree.End() == 0 {
+		return rfc6962.DefaultHasher.EmptyRoot(), nil
+	}
+	return f.tree.GetRootHash(nil)
 }
 
 // visit is used to populate the derived tiles as we consume entries from the log we're checking.
