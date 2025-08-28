@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC. All Rights Reserved.
+// Copyright 2025 The Tessera Authors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -68,7 +68,7 @@ var (
 //     posix-oneshat was actively managing/updating the log on disk.
 //  4. for each individual interesting syscall:
 //     4.1. create a new copy of the base log
-//     4.2. invoke posix-oneshot using `strace`'s `-e inject=' flag to inject the provided fauled for a single specific instance of a syscall.
+//     4.2. invoke posix-oneshot using `strace`'s `-e inject=' flag to inject the provided fault for a single specific instance of a syscall.
 //     We don't particularly care whether this fault causes posix-oneshot to exit or retry; what's important is that the on-disk
 //     representation of the log state is never left in an inconsistent or corrupt state.
 //     4.3. run `fsck` against the log-under-test to assert that the on-disk state is, indeed, self-consistent and uncorrupted.
@@ -116,7 +116,7 @@ func runFaultInjectionTest(t *testing.T, inject string) {
 			t.Run(fmt.Sprintf("%s-on-%s#%d", inject, sc, i), func(t *testing.T) {
 				t.Parallel()
 
-				// Fork the base log into a new directory
+				// Fork the base log into a new directory.
 				injectDir := filepath.Join(tmp, fmt.Sprintf("inject-%s-%d", sc, i))
 				_ = os.MkdirAll(injectDir, 0o755)
 				if output, err := script.Exec(fmt.Sprintf("cp -r %s/. %s/", baseDir, injectDir)).String(); err != nil {
