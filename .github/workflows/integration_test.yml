@@ -17,7 +17,7 @@ jobs:
       - name: Start Docker services (tessera-conformance-mysql-db and tessera-conformance-mysql)
         run: docker compose -f ./cmd/conformance/mysql/docker/compose.yaml up --build --detach
       - name: Run integration test 
-        run: go test -v -race ./integration/... --run_integration_test=true --log_url="http://localhost:2024" --write_log_url="http://localhost:2024" --log_public_key="transparency.dev/tessera/example+ae330e15+ASf4/L1zE859VqlfQgGzKy34l91Gl8W6wfwp+vKP62DW"
+        run: go test -v -race ./integration/. --run_integration_test=true --log_url="http://localhost:2024" --write_log_url="http://localhost:2024" --log_public_key="transparency.dev/tessera/example+ae330e15+ASf4/L1zE859VqlfQgGzKy34l91Gl8W6wfwp+vKP62DW"
       - name: Stop Docker services (tessera-conformance-mysql-db and tessera-conformance-mysql)
         if: ${{ always() }}
         run: docker compose -f ./cmd/conformance/mysql/docker/compose.yaml down
@@ -33,10 +33,21 @@ jobs:
       - name: Start Docker services (tessera-conformance-posix)
         run: docker compose -f ./cmd/conformance/posix/docker/compose.yaml up --build --detach
       - name: Run integration test 
-        run: go test -v -race ./integration/... --run_integration_test=true --log_url="file:///tmp/tessera-posix-log" --write_log_url="http://localhost:2025" --log_public_key="example.com/log/testdata+33d7b496+AeHTu4Q3hEIMHNqc6fASMsq3rKNx280NI+oO5xCFkkSx"
+        run: go test -v -race ./integration/. --run_integration_test=true --log_url="file:///tmp/tessera-posix-log" --write_log_url="http://localhost:2025" --log_public_key="example.com/log/testdata+33d7b496+AeHTu4Q3hEIMHNqc6fASMsq3rKNx280NI+oO5xCFkkSx"
       - name: What's in the box?
         if: ${{ always() }}
         run: tree /tmp/tessera-posix-log
       - name: Stop Docker services (tessera-conformance-posix)
         if: ${{ always() }}
         run: docker compose -f ./cmd/conformance/posix/docker/compose.yaml down
+
+  posix-fault-injection:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - name: Run fault-injection test 
+        run: go test -v -race ./integration/fault/posix/... 

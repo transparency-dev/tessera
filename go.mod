@@ -14,6 +14,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.18.7
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.87.1
 	github.com/aws/smithy-go v1.22.5
+	github.com/bitfield/script v0.24.1
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/dgraph-io/badger/v4 v4.8.0
 	github.com/gdamore/tcell/v2 v2.9.0
@@ -64,6 +65,8 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.1 // indirect
 	github.com/google/flatbuffers v25.2.10+incompatible // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.1 // indirect
+	github.com/itchyny/gojq v0.12.13 // indirect
+	github.com/itchyny/timefmt-go v0.1.5 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.5.0 // indirect
@@ -73,6 +76,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.37.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.7.0 // indirect
 	gopkg.in/yaml.v2 v2.3.0 // indirect
+	mvdan.cc/sh/v3 v3.7.0 // indirect
 )
 
 require (
