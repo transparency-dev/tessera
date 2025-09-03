@@ -2,7 +2,7 @@
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
-// You may not use a copy of the License at
+// You may obtain a copy of the License at
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 //
@@ -117,6 +117,78 @@ func TestNewWitnessGroupFromPolicyErrors(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.errStr) {
 				t.Errorf("Expected error string to contain %q, got %q", tc.errStr, err.Error())
+			}
+		})
+	}
+}
+
+func TestNewWitnessGroupFromPolicy_Shorthands(t *testing.T) {
+	testCases := []struct {
+		desc   string
+		policy string
+		wantN  int
+		errStr string
+	}{
+		{
+			desc: "any shorthand",
+			policy: `
+witness sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/
+witness example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
+group any 0 1
+`,
+			wantN: 1,
+		},
+		{
+			desc: "all shorthand",
+			policy: `
+witness sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/
+witness example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
+group all 0 1
+`,
+			wantN: 2,
+		},
+		{
+			desc: "all shorthand with one witness",
+			policy: `
+witness sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/
+group all 0
+`,
+			wantN: 1,
+		},
+		{
+			desc: "any with no children",
+			policy: `
+group any
+`,
+			errStr: "group with no children cannot have threshold > 0",
+		},
+		{
+			desc: "all with no children",
+			policy: `
+group all
+`,
+			wantN: 0,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			r := strings.NewReader(tc.policy)
+			wg, err := NewWitnessGroupFromPolicy(r)
+			if err != nil {
+				if tc.errStr == "" {
+					t.Fatalf("NewWitnessGroupFromPolicy() failed: %v", err)
+				}
+				if !strings.Contains(err.Error(), tc.errStr) {
+					t.Errorf("Expected error string to contain %q, got %q", tc.errStr, err.Error())
+				}
+				return
+			}
+			if tc.errStr != "" {
+				t.Fatalf("Expected error, got nil")
+			}
+			if wg.N != tc.wantN {
+				t.Errorf("wg.N = %d, want %d", wg.N, tc.wantN)
 			}
 		})
 	}

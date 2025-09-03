@@ -89,12 +89,22 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 			if len(fields) < 2 {
 				return WitnessGroup{}, fmt.Errorf("invalid group definition: %q", line)
 			}
-			n, err := strconv.Atoi(fields[1])
-			if err != nil {
-				return WitnessGroup{}, fmt.Errorf("invalid threshold N for group %q: %w", fields[1], err)
-			}
 
 			childrenIndices := fields[2:]
+			var n int
+			switch fields[1] {
+			case "any":
+				n = 1
+			case "all":
+				n = len(childrenIndices)
+			default:
+				var err error
+				n, err = strconv.Atoi(fields[1])
+				if err != nil {
+					return WitnessGroup{}, fmt.Errorf("invalid threshold N for group %q: %w", fields[1], err)
+				}
+			}
+
 			children := make([]policyComponent, len(childrenIndices))
 			for i, childIndexStr := range childrenIndices {
 				childIndex, err := strconv.Atoi(childIndexStr)
@@ -105,6 +115,10 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 					return WitnessGroup{}, fmt.Errorf("component index %d out of range", childIndex)
 				}
 				children[i] = components[childIndex]
+			}
+
+			if len(children) == 0 && n > 0 {
+				return WitnessGroup{}, fmt.Errorf("group with no children cannot have threshold > 0")
 			}
 
 			wg := NewWitnessGroup(n, children...)
