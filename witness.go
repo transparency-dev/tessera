@@ -56,11 +56,11 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 	var quorumName string
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
 		if i := strings.Index(line, "#"); i >= 0 {
 			line = line[:i]
+		}
+		if line == "" {
+			continue
 		}
 
 		switch fields := strings.Fields(line); fields[0] {
@@ -75,6 +75,9 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 				return WitnessGroup{}, fmt.Errorf("invalid witness definition: %q", line)
 			}
 			name, vkey, witnessURLStr := fields[1], fields[2], fields[3]
+			if isBadName(name) {
+				return WitnessGroup{}, fmt.Errorf("invalid witness name %q", name)
+			}
 			if _, ok := components[name]; ok {
 				return WitnessGroup{}, fmt.Errorf("duplicate component name: %q", name)
 			}
@@ -84,7 +87,7 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 			}
 			w, err := NewWitness(vkey, witnessURL)
 			if err != nil {
-				return WitnessGroup{}, fmt.Errorf("invalid witness key %q: %w", vkey, err)
+				return WitnessGroup{}, fmt.Errorf("invalid witness config %q: %w", line, err)
 			}
 			components[name] = w
 		case "group":
@@ -93,6 +96,9 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 			}
 
 			name, N, childrenNames := fields[1], fields[2], fields[3:]
+			if isBadName(name) {
+				return WitnessGroup{}, fmt.Errorf("invalid group name %q", name)
+			}
 			if _, ok := components[name]; ok {
 				return WitnessGroup{}, fmt.Errorf("duplicate component name: %q", name)
 			}
@@ -103,11 +109,11 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 			case "all":
 				n = len(childrenNames)
 			default:
-				var err error
-				n, err = strconv.Atoi(N)
+				i, err := strconv.ParseUint(N, 10, 8)
 				if err != nil {
 					return WitnessGroup{}, fmt.Errorf("invalid threshold %q for group %q: %w", N, name, err)
 				}
+				n = int(i)
 			}
 			if c := len(childrenNames); n > c {
 				return WitnessGroup{}, fmt.Errorf("group with %d children cannot have threshold %d", c, n)
@@ -115,6 +121,9 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 
 			children := make([]policyComponent, len(childrenNames))
 			for i, cName := range childrenNames {
+				if isBadName(cName) {
+					return WitnessGroup{}, fmt.Errorf("invalid component name %q", cName)
+				}
 				child, ok := components[cName]
 				if !ok {
 					return WitnessGroup{}, fmt.Errorf("unknown component %q in group definition", cName)
@@ -142,6 +151,9 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 	case "none":
 		return NewWitnessGroup(0), nil
 	default:
+		if isBadName(quorumName) {
+			return WitnessGroup{}, fmt.Errorf("invalid quorum name %q", quorumName)
+		}
 		policy, ok := components[quorumName]
 		if !ok {
 			return WitnessGroup{}, fmt.Errorf("quorum component %q not found", quorumName)
@@ -153,6 +165,21 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 		}
 		return wg, nil
 	}
+}
+
+var keywords = map[string]struct{}{
+	"witness": {},
+	"group":   {},
+	"any":     {},
+	"all":     {},
+	"none":    {},
+	"quorum":  {},
+	"log":     {},
+}
+
+func isBadName(n string) bool {
+	_, isKeyword := keywords[n]
+	return isKeyword
 }
 
 // NewWitness returns a Witness given a verifier key and the root URL for where this

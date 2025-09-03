@@ -116,6 +116,25 @@ func TestNewWitnessGroupFromPolicy_Errors(t *testing.T) {
 			policy: "witness w1 sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/\nwitness w1 sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/\nquorum w1",
 			errStr: "duplicate component name",
 		},
+		{
+			desc: "negative threshold",
+			policy: `witness w1 sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/
+					 witness w2 example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
+					 witness w3 example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
+					 group g1 -1 w1
+					 quorum g1`,
+			errStr: "invalid threshold",
+		},
+		{
+			desc:   "witness name is keyword",
+			policy: `witness all sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/`,
+			errStr: "invalid witness name",
+		},
+		{
+			desc:   "witness name is keyword",
+			policy: `group none 1 witness`,
+			errStr: "invalid group name",
+		},
 	}
 
 	for _, tc := range testCases {
