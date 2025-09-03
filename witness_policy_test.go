@@ -22,14 +22,14 @@ import (
 func TestNewWitnessGroupFromPolicy(t *testing.T) {
 	policy := `
 # Witness verifier keys.
-w1: witness sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/
-w2: witness example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
+witness sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/
+witness example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
 
 # A group of witnesses.
-all: group 2 w1 w2
+group 2 0 1
 
 # The policy is the last group defined in the file.
-group 1 all
+group 1 2
 `
 	r := strings.NewReader(policy)
 	wg, err := NewWitnessGroupFromPolicy(r)
@@ -77,39 +77,33 @@ func TestNewWitnessGroupFromPolicyErrors(t *testing.T) {
 		errStr string
 	}{
 		{
-			desc:   "anonymous witness",
-			policy: "witness key url",
-			errStr: "anonymous witness definition is not allowed",
-		},
-		{
 			desc:   "duplicate name",
-			policy: `w1: witness sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/
-w1: witness example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/`,
-			errStr: "duplicate component name",
+			policy: "witness sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/\nwitness sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/",
+			errStr: "",
 		},
 		{
 			desc:   "unknown component in group",
-			policy: "group 1 unknown",
-			errStr: "unknown component",
+			policy: "group 1 0",
+			errStr: "component index 0 out of range",
 		},
 		{
 			desc:   "no groups",
-			policy: "w1: witness sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/",
+			policy: "witness sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/",
 			errStr: "policy file must define at least one group",
 		},
 		{
 			desc:   "invalid witness def",
-			policy: "w1: witness key",
+			policy: "witness key",
 			errStr: "invalid witness definition",
 		},
 		{
 			desc:   "invalid group def",
-			policy: "g1: group",
+			policy: "group",
 			errStr: "invalid group definition",
 		},
 		{
 			desc:   "invalid group N",
-			policy: "g1: group foo w1",
+			policy: "group foo 0",
 			errStr: "invalid threshold N",
 		},
 	}

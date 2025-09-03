@@ -50,7 +50,7 @@ type policyComponent interface {
 // https://git.glasklar.is/sigsum/core/sigsum-go/-/blob/main/doc/policy.md
 func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 	scanner := bufio.NewScanner(r)
-	components := make(map[string]policyComponent)
+	var components []policyComponent
 	var policy *WitnessGroup
 
 	for scanner.Scan() {
@@ -59,25 +59,13 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 			continue
 		}
 
-		var name, def string
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) == 2 {
-			name = strings.TrimSpace(parts[0])
-			def = strings.TrimSpace(parts[1])
-		} else {
-			def = line
-		}
-
-		fields := strings.Fields(def)
+		fields := strings.Fields(line)
 		if len(fields) == 0 {
 			continue
 		}
 
 		switch fields[0] {
 		case "witness":
-			if name == "" {
-				return WitnessGroup{}, fmt.Errorf("anonymous witness definition is not allowed: %q", line)
-			}
 			if len(fields) != 3 {
 				return WitnessGroup{}, fmt.Errorf("invalid witness definition: %q", line)
 			}
@@ -91,10 +79,7 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 			if err != nil {
 				return WitnessGroup{}, fmt.Errorf("invalid witness key %q: %w", vkey, err)
 			}
-			if _, ok := components[name]; ok {
-				return WitnessGroup{}, fmt.Errorf("duplicate component name: %q", name)
-			}
-			components[name] = w
+			components = append(components, w)
 
 		case "group":
 			if len(fields) < 2 {
@@ -105,23 +90,21 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 				return WitnessGroup{}, fmt.Errorf("invalid threshold N for group %q: %w", fields[1], err)
 			}
 
-			childrenNames := fields[2:]
-			children := make([]policyComponent, len(childrenNames))
-			for i, childName := range childrenNames {
-				child, ok := components[childName]
-				if !ok {
-					return WitnessGroup{}, fmt.Errorf("unknown component %q in group definition", childName)
+			childrenIndices := fields[2:]
+			children := make([]policyComponent, len(childrenIndices))
+			for i, childIndexStr := range childrenIndices {
+				childIndex, err := strconv.Atoi(childIndexStr)
+				if err != nil {
+					return WitnessGroup{}, fmt.Errorf("invalid component index %q in group definition", childIndexStr)
 				}
-				children[i] = child
+				if childIndex < 0 || childIndex >= len(components) {
+					return WitnessGroup{}, fmt.Errorf("component index %d out of range", childIndex)
+				}
+				children[i] = components[childIndex]
 			}
 
 			wg := NewWitnessGroup(n, children...)
-			if name != "" {
-				if _, ok := components[name]; ok {
-					return WitnessGroup{}, fmt.Errorf("duplicate component name: %q", name)
-				}
-				components[name] = wg
-			}
+			components = append(components, wg)
 			p := wg
 			policy = &p
 		default:
