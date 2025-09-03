@@ -22,11 +22,11 @@ import (
 func TestNewWitnessGroupFromPolicy(t *testing.T) {
 	policy := `
 # Witness verifier keys.
-witness sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/
+witness sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/ # witness 1
 witness example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
 
 # A group of witnesses.
-group 2 0 1
+group 2 0 1 # all witnesses
 
 # The policy is the last group defined in the file.
 group 1 2

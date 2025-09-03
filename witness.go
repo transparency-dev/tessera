@@ -54,8 +54,12 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 	var policy *WitnessGroup
 
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+		line := scanner.Text()
+		if i := strings.Index(line, "#"); i >= 0 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
 
