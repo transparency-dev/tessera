@@ -88,11 +88,11 @@ func TestWitnessGateway_Update(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wit1, err = tessera.NewWitness(wit1Vkey, baseURL)
+	wit1, err = tessera.NewWitness(wit1Vkey, baseURL.JoinPath("wit1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	wit2, err = tessera.NewWitness(wit2Vkey, baseURL)
+	wit2, err = tessera.NewWitness(wit2Vkey, baseURL.JoinPath("wit2"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,11 +423,11 @@ func TestWitnessReusesProofs(t *testing.T) {
 	}))
 	baseURL := mustURL(t, ts.URL)
 	var err error
-	wit1, err = tessera.NewWitness(wit1Vkey, baseURL)
+	wit1, err = tessera.NewWitness(wit1Vkey, baseURL.JoinPath("wit1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	wit2, err = tessera.NewWitness(wit2Vkey, baseURL)
+	wit2, err = tessera.NewWitness(wit2Vkey, baseURL.JoinPath("wit2"))
 	if err != nil {
 		t.Fatal(err)
 	}
