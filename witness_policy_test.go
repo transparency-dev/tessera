@@ -2,7 +2,7 @@
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
-// You may not obtain a copy of the License at
+// You may obtain a copy of the License at
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 //
@@ -40,28 +40,41 @@ quorum g1
 	}
 }
 
-func TestNewWitnessGroupFromPolicy_QuorumShorthands(t *testing.T) {
+func TestNewWitnessGroupFromPolicy_GroupN(t *testing.T) {
 	testCases := []struct {
 		desc   string
 		policy string
 		wantN  int
 	}{
 		{
-			desc: "quorum shorthand",
+			desc: "group numerical",
 			policy: `
 witness w1 sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/
 witness w2 example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
 witness w3 example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
-group g1 quorum w1 w2 w3
+group g1 2 w1 w2 w3
 quorum g1
 `,
 			wantN: 2,
 		},
 		{
-			desc: "quorum shorthand single witness",
+			desc: "group all",
 			policy: `
 witness w1 sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/
-group g1 quorum w1
+witness w2 example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
+witness w3 example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
+group g1 all w1 w2 w3
+quorum g1
+`,
+			wantN: 3,
+		},
+		{
+			desc: "group any",
+			policy: `
+witness w1 sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/
+witness w2 example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
+witness w3 example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
+group g1 any w1
 quorum g1
 `,
 			wantN: 1,
@@ -118,3 +131,4 @@ func TestNewWitnessGroupFromPolicy_Errors(t *testing.T) {
 		})
 	}
 }
+

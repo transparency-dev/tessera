@@ -43,42 +43,41 @@ type policyComponent interface {
 	Endpoints() map[string]note.Verifier
 }
 
-// NewWitnessGroupFromPolicy creates a graph of witness objects which represnts the
-// policy provided via the reader.
+// NewWitnessGroupFromPolicy creates a graph of witness objects that represents the
+// policy provided via the reader, and which can be passed directly to the WithWitnesses
+// appender lifecycle option.
 //
-// The policy is expected to be formatted as per the description in
+// The policy must be structured as per the description in
 // https://git.glasklar.is/sigsum/core/sigsum-go/-/blob/main/doc/policy.md
 func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 	scanner := bufio.NewScanner(r)
 	components := make(map[string]policyComponent)
 
-	var lines []string
+	var quorumName string
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
 		if i := strings.Index(line, "#"); i >= 0 {
 			line = line[:i]
 		}
-		line = strings.TrimSpace(line)
-		if line != "" {
-			lines = append(lines, line)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return WitnessGroup{}, err
-	}
 
-	var quorumName string
-	for _, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		switch fields[0] {
+		switch fields := strings.Fields(line); fields[0] {
+		case "log":
+			// This keyword is important to clients who might use the policy file, but we don't need to know about it since
+			// we _are_ the log, so just ignore it.
 		case "witness":
+			// Strictly, the URL is optional so policy files can be used client-side, where they don't care about the URL.
+			// Given this function is parsing to create the graph structure which will be used by a Tessera log to witness
+			// new checkpoints we'll ignore that special case here.
 			if len(fields) != 4 {
 				return WitnessGroup{}, fmt.Errorf("invalid witness definition: %q", line)
 			}
 			name, vkey, witnessURLStr := fields[1], fields[2], fields[3]
+			if _, ok := components[name]; ok {
+				return WitnessGroup{}, fmt.Errorf("duplicate component name: %q", name)
+			}
 			witnessURL, err := url.Parse(witnessURLStr)
 			if err != nil {
 				return WitnessGroup{}, fmt.Errorf("invalid witness URL %q: %w", witnessURLStr, err)
@@ -87,47 +86,42 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 			if err != nil {
 				return WitnessGroup{}, fmt.Errorf("invalid witness key %q: %w", vkey, err)
 			}
-			if _, ok := components[name]; ok {
-				return WitnessGroup{}, fmt.Errorf("duplicate component name: %q", name)
-			}
 			components[name] = w
 		case "group":
 			if len(fields) < 3 {
 				return WitnessGroup{}, fmt.Errorf("invalid group definition: %q", line)
 			}
-			name := fields[1]
-			childrenNames := fields[3:]
+
+			name, N, childrenNames := fields[1], fields[2], fields[3:]
+			if _, ok := components[name]; ok {
+				return WitnessGroup{}, fmt.Errorf("duplicate component name: %q", name)
+			}
 			var n int
-			switch fields[2] {
+			switch N {
 			case "any":
 				n = 1
 			case "all":
 				n = len(childrenNames)
-			case "quorum":
-				n = len(childrenNames)/2 + 1
 			default:
 				var err error
-				n, err = strconv.Atoi(fields[2])
+				n, err = strconv.Atoi(N)
 				if err != nil {
-					return WitnessGroup{}, fmt.Errorf("invalid threshold N for group %q: %w", fields[2], err)
+					return WitnessGroup{}, fmt.Errorf("invalid threshold %q for group %q: %w", N, name, err)
 				}
+			}
+			if c := len(childrenNames); n > c {
+				return WitnessGroup{}, fmt.Errorf("group with %d children cannot have threshold %d", c, n)
 			}
 
 			children := make([]policyComponent, len(childrenNames))
-			for i, childName := range childrenNames {
-				child, ok := components[childName]
+			for i, cName := range childrenNames {
+				child, ok := components[cName]
 				if !ok {
-					return WitnessGroup{}, fmt.Errorf("unknown component %q in group definition", childName)
+					return WitnessGroup{}, fmt.Errorf("unknown component %q in group definition", cName)
 				}
 				children[i] = child
 			}
-			if len(children) == 0 && n > 0 {
-				return WitnessGroup{}, fmt.Errorf("group with no children cannot have threshold > 0")
-			}
 			wg := NewWitnessGroup(n, children...)
-			if _, ok := components[name]; ok {
-				return WitnessGroup{}, fmt.Errorf("duplicate component name: %q", name)
-			}
 			components[name] = wg
 		case "quorum":
 			if len(fields) != 2 {
@@ -135,28 +129,30 @@ func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
 			}
 			quorumName = fields[1]
 		default:
-			return WitnessGroup{}, fmt.Errorf("unknown definition type: %q", fields[0])
+			return WitnessGroup{}, fmt.Errorf("unknown keyword: %q", fields[0])
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return WitnessGroup{}, err
+	}
 
-	if quorumName == "" {
+	switch quorumName {
+	case "":
 		return WitnessGroup{}, fmt.Errorf("policy file must define a quorum")
-	}
-	if quorumName == "none" {
+	case "none":
 		return NewWitnessGroup(0), nil
+	default:
+		policy, ok := components[quorumName]
+		if !ok {
+			return WitnessGroup{}, fmt.Errorf("quorum component %q not found", quorumName)
+		}
+		wg, ok := policy.(WitnessGroup)
+		if !ok {
+			// A single witness can be a policy. Wrap it in a group.
+			return NewWitnessGroup(1, policy), nil
+		}
+		return wg, nil
 	}
-
-	policy, ok := components[quorumName]
-	if !ok {
-		return WitnessGroup{}, fmt.Errorf("quorum component %q not found", quorumName)
-	}
-	wg, ok := policy.(WitnessGroup)
-	if !ok {
-		// A single witness can be a policy. Wrap it in a group.
-		return NewWitnessGroup(1, policy), nil
-	}
-
-	return wg, nil
 }
 
 // NewWitness returns a Witness given a verifier key and the root URL for where this
@@ -275,3 +271,4 @@ func (wg WitnessGroup) Endpoints() map[string]note.Verifier {
 	}
 	return endpoints
 }
+
