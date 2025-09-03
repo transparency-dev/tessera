@@ -15,10 +15,13 @@
 package tessera
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"maps"
@@ -38,6 +41,103 @@ type policyComponent interface {
 	// the witness with a new checkpoint, to the value which is the verifier to check
 	// the response is well formed.
 	Endpoints() map[string]note.Verifier
+}
+
+// NewWitnessGroupFromPolicy creates a graph of witness objects which represnts the
+// policy provided via the reader.
+//
+// The policy is expected to be formatted as per the description in
+// https://git.glasklar.is/sigsum/core/sigsum-go/-/blob/main/doc/policy.md
+func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
+	scanner := bufio.NewScanner(r)
+	components := make(map[string]policyComponent)
+	var policy *WitnessGroup
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		var name, def string
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) == 2 {
+			name = strings.TrimSpace(parts[0])
+			def = strings.TrimSpace(parts[1])
+		} else {
+			def = line
+		}
+
+		fields := strings.Fields(def)
+		if len(fields) == 0 {
+			continue
+		}
+
+		switch fields[0] {
+		case "witness":
+			if name == "" {
+				return WitnessGroup{}, fmt.Errorf("anonymous witness definition is not allowed: %q", line)
+			}
+			if len(fields) != 3 {
+				return WitnessGroup{}, fmt.Errorf("invalid witness definition: %q", line)
+			}
+			vkey := fields[1]
+			witnessURLStr := fields[2]
+			witnessURL, err := url.Parse(witnessURLStr)
+			if err != nil {
+				return WitnessGroup{}, fmt.Errorf("invalid witness URL %q: %w", witnessURLStr, err)
+			}
+			w, err := NewWitness(vkey, witnessURL)
+			if err != nil {
+				return WitnessGroup{}, fmt.Errorf("invalid witness key %q: %w", vkey, err)
+			}
+			if _, ok := components[name]; ok {
+				return WitnessGroup{}, fmt.Errorf("duplicate component name: %q", name)
+			}
+			components[name] = w
+
+		case "group":
+			if len(fields) < 2 {
+				return WitnessGroup{}, fmt.Errorf("invalid group definition: %q", line)
+			}
+			n, err := strconv.Atoi(fields[1])
+			if err != nil {
+				return WitnessGroup{}, fmt.Errorf("invalid threshold N for group %q: %w", fields[1], err)
+			}
+
+			childrenNames := fields[2:]
+			children := make([]policyComponent, len(childrenNames))
+			for i, childName := range childrenNames {
+				child, ok := components[childName]
+				if !ok {
+					return WitnessGroup{}, fmt.Errorf("unknown component %q in group definition", childName)
+				}
+				children[i] = child
+			}
+
+			wg := NewWitnessGroup(n, children...)
+			if name != "" {
+				if _, ok := components[name]; ok {
+					return WitnessGroup{}, fmt.Errorf("duplicate component name: %q", name)
+				}
+				components[name] = wg
+			}
+			p := wg
+			policy = &p
+		default:
+			return WitnessGroup{}, fmt.Errorf("unknown definition type: %q", fields[0])
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return WitnessGroup{}, err
+	}
+
+	if policy == nil {
+		return WitnessGroup{}, fmt.Errorf("policy file must define at least one group")
+	}
+
+	return *policy, nil
 }
 
 // NewWitness returns a Witness given a verifier key and the root URL for where this
