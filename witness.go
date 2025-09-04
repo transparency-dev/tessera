@@ -16,8 +16,8 @@ package tessera
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
-	"io"
 	"net/url"
 	"strconv"
 	"strings"
@@ -43,13 +43,13 @@ type policyComponent interface {
 }
 
 // NewWitnessGroupFromPolicy creates a graph of witness objects that represents the
-// policy provided via the reader, and which can be passed directly to the WithWitnesses
+// policy provided, and which can be passed directly to the WithWitnesses
 // appender lifecycle option.
 //
 // The policy must be structured as per the description in
 // https://git.glasklar.is/sigsum/core/sigsum-go/-/blob/main/doc/policy.md
-func NewWitnessGroupFromPolicy(r io.Reader) (WitnessGroup, error) {
-	scanner := bufio.NewScanner(r)
+func NewWitnessGroupFromPolicy(p []byte) (WitnessGroup, error) {
+	scanner := bufio.NewScanner(bytes.NewBuffer(p))
 	components := make(map[string]policyComponent)
 
 	var quorumName string
