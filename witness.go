@@ -16,8 +16,6 @@ package tessera
 
 import (
 	"bufio"
-	"crypto/sha256"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net/url"
@@ -189,16 +187,8 @@ func NewWitness(vkey string, witnessRoot *url.URL) (Witness, error) {
 	if err != nil {
 		return Witness{}, err
 	}
-	// "key hash" MUST be a lowercase hex-encoded SHA-256 hash of a 32-byte Ed25519 public key.
-	// This expression cuts off the identity name and hash.
-	key64 := strings.SplitAfterN(vkey, "+", 3)[2]
-	key, err := base64.StdEncoding.DecodeString(key64)
-	if err != nil {
-		return Witness{}, err
-	}
-	h := sha256.Sum256(key)
 
-	u := witnessRoot.JoinPath(fmt.Sprintf("/%x/add-checkpoint", h))
+	u := witnessRoot.JoinPath("/add-checkpoint")
 
 	return Witness{
 		Key: v,
@@ -298,4 +288,3 @@ func (wg WitnessGroup) Endpoints() map[string]note.Verifier {
 	}
 	return endpoints
 }
-
