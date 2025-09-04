@@ -5,6 +5,7 @@ import (
 	"slices"
 	"testing"
 
+	f_note "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"golang.org/x/mod/sumdb/note"
 )
@@ -24,9 +25,9 @@ var (
 	wit1, _      = tessera.NewWitness(wit1_vkey, bastion.JoinPath("wit1prefix"))
 	wit2, _      = tessera.NewWitness(wit2_vkey, bastion.JoinPath("wit2prefix"))
 	wit3, _      = tessera.NewWitness(wit3_vkey, directURL)
-	wit1Sign, _  = note.NewSigner(wit1_skey)
-	wit2Sign, _  = note.NewSigner(wit2_skey)
-	wit3Sign, _  = note.NewSigner(wit3_skey)
+	wit1Sign, _  = f_note.NewSignerForCosignatureV1(wit1_skey)
+	wit2Sign, _  = f_note.NewSignerForCosignatureV1(wit2_skey)
+	wit3Sign, _  = f_note.NewSignerForCosignatureV1(wit3_skey)
 )
 
 func TestWitnessGroup_Empty(t *testing.T) {
@@ -122,7 +123,8 @@ func TestWitnessGroup_Satisfied(t *testing.T) {
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
 			n := &note.Note{
-				Text: "sign me\n",
+				// The body needs to be 3 lines to meet the cosigner expectations.
+				Text: "sign me\nI'm a\nnote\n",
 			}
 			cp, err := note.Sign(n, tC.signers...)
 			if err != nil {
@@ -196,7 +198,8 @@ func TestWitnessGroup_URLs(t *testing.T) {
 func BenchmarkWitnessGroupSatisfaction(b *testing.B) {
 	group := tessera.NewWitnessGroup(2, wit1, tessera.NewWitnessGroup(1, wit2, wit3))
 	n := &note.Note{
-		Text: "sign me\n",
+		// Text must contain 3 lines to meet cosig expectations.
+		Text: "sign me\nI'm a\nnote\n",
 	}
 	cp, err := note.Sign(n, wit1Sign, wit2Sign, wit3Sign)
 	if err != nil {
