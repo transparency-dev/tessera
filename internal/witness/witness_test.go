@@ -28,6 +28,7 @@ import (
 	"testing"
 
 	"github.com/transparency-dev/formats/log"
+	f_note "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/internal/witness"
@@ -178,7 +179,7 @@ func TestWitness_UpdateRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, reader, err := tessera.NewAppender(context.Background(), d, tessera.NewAppendOptions().WithCheckpointSigner(mustCreateSigner(t, wit1Skey)))
+	_, _, reader, err := tessera.NewAppender(context.Background(), d, tessera.NewAppendOptions().WithCheckpointSigner(mustCreateCoSigSigner(t, wit1Skey)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +496,7 @@ func mustURL(t *testing.T, u string) *url.URL {
 
 func sigForSigner(t *testing.T, cp, skey string) []byte {
 	t.Helper()
-	s, err := note.NewSigner(skey)
+	s, err := f_note.NewSignerForCosignatureV1(skey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,9 +515,9 @@ func mustCreateVerifier(vkey string) note.Verifier {
 	return verifier
 }
 
-func mustCreateSigner(t *testing.T, skey string) note.Signer {
+func mustCreateCoSigSigner(t *testing.T, skey string) note.Signer {
 	t.Helper()
-	signer, err := note.NewSigner(skey)
+	signer, err := f_note.NewSignerForCosignatureV1(skey)
 	if err != nil {
 		t.Fatal(err)
 	}
