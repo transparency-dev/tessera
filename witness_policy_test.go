@@ -26,8 +26,7 @@ witness w2 example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM htt
 group g1 all w1 w2
 quorum g1
 `
-	r := strings.NewReader(policy)
-	wg, err := NewWitnessGroupFromPolicy(r)
+	wg, err := NewWitnessGroupFromPolicy([]byte(policy))
 	if err != nil {
 		t.Fatalf("NewWitnessGroupFromPolicy() failed: %v", err)
 	}
@@ -83,8 +82,7 @@ quorum g1
 
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
-			r := strings.NewReader(tc.policy)
-			wg, err := NewWitnessGroupFromPolicy(r)
+			wg, err := NewWitnessGroupFromPolicy([]byte(tc.policy))
 			if err != nil {
 				t.Fatalf("NewWitnessGroupFromPolicy() failed: %v", err)
 			}
@@ -139,8 +137,7 @@ func TestNewWitnessGroupFromPolicy_Errors(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
-			r := strings.NewReader(tc.policy)
-			_, err := NewWitnessGroupFromPolicy(r)
+			_, err := NewWitnessGroupFromPolicy([]byte(tc.policy))
 			if err == nil {
 				t.Fatal("Expected error, got nil")
 			}
