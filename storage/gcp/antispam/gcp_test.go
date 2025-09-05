@@ -15,13 +15,11 @@
 package gcp
 
 import (
-	"context"
 	"crypto/sha256"
 	"os"
 	"testing"
 	"time"
 
-	"cloud.google.com/go/spanner"
 	"cloud.google.com/go/spanner/spannertest"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
@@ -78,8 +76,6 @@ func TestAntispamStorage(t *testing.T) {
 			}()
 
 			f := as.Follower(testBundleHasher)
-			// Hack in a workaround for spannertest not supporting BatchWrites
-			f.(*follower).updateIndex = updateIndexTx
 
 			go f.Follow(t.Context(), fl.LogReader)
 
@@ -168,8 +164,6 @@ func TestAntispamPushbackRecovers(t *testing.T) {
 			}()
 
 			f := as.Follower(testBundleHasher)
-			// Hack in a workaround for spannertest not supporting BatchWrites
-			f.(*follower).updateIndex = updateIndexTx
 
 			entryIndex := make(map[string]uint64)
 			a := tessera.NewPublicationAwaiter(t.Context(), fl.LogReader.ReadCheckpoint, 100*time.Millisecond)
@@ -248,11 +242,4 @@ func testBundleHasher(b []byte) ([][]byte, error) {
 		r[i] = testIDHash(e)
 	}
 	return r, err
-}
-
-// updateIndexTx is a workaround for spannertest not supporting BatchWrites.
-// We use this func as a replacement for follower's updateIndex hook, and simply commit the index
-// updates inline with the larger transaction.
-func updateIndexTx(_ context.Context, txn *spanner.ReadWriteTransaction, ms []*spanner.Mutation) error {
-	return txn.BufferWrite(ms)
 }

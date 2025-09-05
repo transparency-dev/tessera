@@ -19,10 +19,15 @@
 package gcp
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -190,6 +195,17 @@ func (d *AntispamStorage) Follower(b func([]byte) ([][]byte, error)) tessera.Fol
 	// This will be overriden by the test to use an "inline" mechanism since spannertest
 	// does not support BatchWrite :(
 	f.updateIndex = f.batchUpdateIndex
+
+	if r := os.Getenv("SPANNER_EMULATOR_HOST"); r != "" {
+		const warn = `H4sIAAAAAAAAA83VwRGAIAwEwH+qoFwrsEAr8eEDPZO7gxkcGV6G7IAJ2tr8iDp07Fs6J7BnImcK5J3EmHVIT2Dvp2YTVJMu/y1+X+jiFQ84LtK9mLHr0aqh+K15PwkWRDaPrcbU5WdMKILtCDMF5hSgQEdJlw/36D7eRYqPfsVNVBcMsNH2QQKq/p957Yr8RfWIE22t7L7ABwAA`
+		r, _ := base64.StdEncoding.DecodeString(warn)
+		gzr, _ := gzip.NewReader(bytes.NewReader([]byte(r)))
+		w, _ := io.ReadAll(gzr)
+		klog.Warningf("%s\nWarning: you're running under the Spanner emulator - this is not a supported environment!\n\n", string(w))
+
+		// Hack in a workaround for spannertest not supporting BatchWrites
+		f.updateIndex = emulatorWorkaroundUpdateIndexTx
+	}
 
 	return f
 }
@@ -459,4 +475,11 @@ func createAndPrepareTables(ctx context.Context, spannerDB string, ddl []string,
 		}
 	}
 	return nil
+}
+
+// emulatorWorkaroundUpdateIndexTx is a workaround for spannertest not supporting BatchWrites.
+// We use this func as a replacement for follower's updateIndex hook, and simply commit the index
+// updates inline with the larger transaction.
+func emulatorWorkaroundUpdateIndexTx(_ context.Context, txn *spanner.ReadWriteTransaction, ms []*spanner.Mutation) error {
+	return txn.BufferWrite(ms)
 }
