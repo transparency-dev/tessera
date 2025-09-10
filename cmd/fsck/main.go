@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"time"
 
 	f_note "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/merkle/rfc6962"
@@ -67,9 +68,17 @@ func main() {
 	if *origin == "" {
 		*origin = v.Name()
 	}
-	if err := fsck.Check(ctx, *origin, v, src, *N, defaultMerkleLeafHasher); err != nil {
+	f := fsck.New(*origin, v, src, *N, defaultMerkleLeafHasher)
+	go func() {
+		for {
+			time.Sleep(time.Second)
+			klog.V(1).Infof("Ranges:\n%s", f.Status())
+		}
+	}()
+	if err := f.Check(ctx); err != nil {
 		klog.Exitf("fsck failed: %v", err)
 	}
+	klog.V(1).Infof("Ranges:\n%s", f.Status())
 }
 
 // defaultMerkleLeafHasher parses a C2SP tlog-tile bundle and returns the Merkle leaf hashes of each entry it contains.
