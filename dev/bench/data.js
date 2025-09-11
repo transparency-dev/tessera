@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1757605890160,
+  "lastUpdate": 1757617786519,
   "repoUrl": "https://github.com/transparency-dev/tessera",
   "entries": {
     "Benchmark": [
@@ -42912,6 +42912,198 @@ window.BENCHMARK_DATA = {
             "value": 14373,
             "unit": "allocs/op",
             "extra": "1611 times\n4 procs"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "79ff7f1b4cd33e44a4541ede1087e11d56d614b9",
+          "message": "Bump the all-go-deps group across 1 directory with 23 updates (#764)\n\n* Bump the all-go-deps group across 1 directory with 23 updates\n\nBumps the all-go-deps group with 16 updates in the / directory:\n\n| Package | From | To |\n| --- | --- | --- |\n| [cloud.google.com/go/spanner](https://github.com/googleapis/google-cloud-go) | `1.84.1` | `1.85.0` |\n| [github.com/aws/aws-sdk-go-v2](https://github.com/aws/aws-sdk-go-v2) | `1.38.1` | `1.39.0` |\n| [github.com/aws/aws-sdk-go-v2/config](https://github.com/aws/aws-sdk-go-v2) | `1.31.3` | `1.31.8` |\n| [github.com/aws/aws-sdk-go-v2/service/s3](https://github.com/aws/aws-sdk-go-v2) | `1.87.1` | `1.88.1` |\n| [github.com/rivo/tview](https://github.com/rivo/tview) | `0.0.0-20240625185742-b0a7293b8130` | `0.42.0` |\n| [go.opentelemetry.io/contrib/detectors/aws/ec2](https://github.com/open-telemetry/opentelemetry-go-contrib) | `1.37.0` | `1.38.0` |\n| [go.opentelemetry.io/contrib/detectors/aws/ecs](https://github.com/open-telemetry/opentelemetry-go-contrib) | `1.37.0` | `1.38.0` |\n| [go.opentelemetry.io/contrib/detectors/gcp](https://github.com/open-telemetry/opentelemetry-go-contrib) | `1.37.0` | `1.38.0` |\n| [go.opentelemetry.io/contrib/propagators/aws](https://github.com/open-telemetry/opentelemetry-go-contrib) | `1.37.0` | `1.38.0` |\n| [go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc](https://github.com/open-telemetry/opentelemetry-go) | `1.37.0` | `1.38.0` |\n| [go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc](https://github.com/open-telemetry/opentelemetry-go) | `1.37.0` | `1.38.0` |\n| [golang.org/x/mod](https://github.com/golang/mod) | `0.27.0` | `0.28.0` |\n| [google.golang.org/api](https://github.com/googleapis/google-api-go-client) | `0.248.0` | `0.249.0` |\n| [google.golang.org/grpc](https://github.com/grpc/grpc-go) | `1.75.0` | `1.75.1` |\n| [golang.org/x/crypto](https://github.com/golang/crypto) | `0.41.0` | `0.42.0` |\n| [golang.org/x/net](https://github.com/golang/net) | `0.43.0` | `0.44.0` |\n\n\n\nUpdates `cloud.google.com/go/spanner` from 1.84.1 to 1.85.0\n- [Release notes](https://github.com/googleapis/google-cloud-go/releases)\n- [Changelog](https://github.com/googleapis/google-cloud-go/blob/main/CHANGES.md)\n- [Commits](https://github.com/googleapis/google-cloud-go/compare/spanner/v1.84.1...spanner/v1.85.0)\n\nUpdates `github.com/aws/aws-sdk-go-v2` from 1.38.1 to 1.39.0\n- [Release notes](https://github.com/aws/aws-sdk-go-v2/releases)\n- [Changelog](https://github.com/aws/aws-sdk-go-v2/blob/main/changelog-template.json)\n- [Commits](https://github.com/aws/aws-sdk-go-v2/compare/v1.38.1...v1.39.0)\n\nUpdates `github.com/aws/aws-sdk-go-v2/config` from 1.31.3 to 1.31.8\n- [Release notes](https://github.com/aws/aws-sdk-go-v2/releases)\n- [Changelog](https://github.com/aws/aws-sdk-go-v2/blob/main/changelog-template.json)\n- [Commits](https://github.com/aws/aws-sdk-go-v2/compare/config/v1.31.3...config/v1.31.8)\n\nUpdates `github.com/aws/aws-sdk-go-v2/credentials` from 1.18.7 to 1.18.12\n- [Release notes](https://github.com/aws/aws-sdk-go-v2/releases)\n- [Changelog](https://github.com/aws/aws-sdk-go-v2/blob/main/changelog-template.json)\n- [Commits](https://github.com/aws/aws-sdk-go-v2/compare/config/v1.18.7...config/v1.18.12)\n\nUpdates `github.com/aws/aws-sdk-go-v2/service/s3` from 1.87.1 to 1.88.1\n- [Release notes](https://github.com/aws/aws-sdk-go-v2/releases)\n- [Changelog](https://github.com/aws/aws-sdk-go-v2/blob/main/changelog-template.json)\n- [Commits](https://github.com/aws/aws-sdk-go-v2/compare/service/s3/v1.87.1...service/s3/v1.88.1)\n\nUpdates `github.com/aws/smithy-go` from 1.22.5 to 1.23.0\n- [Release notes](https://github.com/aws/smithy-go/releases)\n- [Changelog](https://github.com/aws/smithy-go/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/aws/smithy-go/compare/v1.22.5...v1.23.0)\n\nUpdates `github.com/rivo/tview` from 0.0.0-20240625185742-b0a7293b8130 to 0.42.0\n- [Release notes](https://github.com/rivo/tview/releases)\n- [Commits](https://github.com/rivo/tview/commits/v0.42.0)\n\nUpdates `go.opentelemetry.io/contrib/detectors/aws/ec2` from 1.37.0 to 1.38.0\n- [Release notes](https://github.com/open-telemetry/opentelemetry-go-contrib/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-go-contrib/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-go-contrib/compare/v1.37.0...v1.38.0)\n\nUpdates `go.opentelemetry.io/contrib/detectors/aws/ecs` from 1.37.0 to 1.38.0\n- [Release notes](https://github.com/open-telemetry/opentelemetry-go-contrib/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-go-contrib/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-go-contrib/compare/v1.37.0...v1.38.0)\n\nUpdates `go.opentelemetry.io/contrib/detectors/gcp` from 1.37.0 to 1.38.0\n- [Release notes](https://github.com/open-telemetry/opentelemetry-go-contrib/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-go-contrib/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-go-contrib/compare/v1.37.0...v1.38.0)\n\nUpdates `go.opentelemetry.io/contrib/propagators/aws` from 1.37.0 to 1.38.0\n- [Release notes](https://github.com/open-telemetry/opentelemetry-go-contrib/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-go-contrib/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-go-contrib/compare/v1.37.0...v1.38.0)\n\nUpdates `go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc` from 1.37.0 to 1.38.0\n- [Release notes](https://github.com/open-telemetry/opentelemetry-go/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-go/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-go/compare/v1.37.0...v1.38.0)\n\nUpdates `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc` from 1.37.0 to 1.38.0\n- [Release notes](https://github.com/open-telemetry/opentelemetry-go/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-go/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-go/compare/v1.37.0...v1.38.0)\n\nUpdates `go.opentelemetry.io/otel/sdk` from 1.37.0 to 1.38.0\n- [Release notes](https://github.com/open-telemetry/opentelemetry-go/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-go/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-go/compare/v1.37.0...v1.38.0)\n\nUpdates `go.opentelemetry.io/otel/sdk/metric` from 1.37.0 to 1.38.0\n- [Release notes](https://github.com/open-telemetry/opentelemetry-go/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-go/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-go/compare/v1.37.0...v1.38.0)\n\nUpdates `golang.org/x/mod` from 0.27.0 to 0.28.0\n- [Commits](https://github.com/golang/mod/compare/v0.27.0...v0.28.0)\n\nUpdates `google.golang.org/api` from 0.248.0 to 0.249.0\n- [Release notes](https://github.com/googleapis/google-api-go-client/releases)\n- [Changelog](https://github.com/googleapis/google-api-go-client/blob/main/CHANGES.md)\n- [Commits](https://github.com/googleapis/google-api-go-client/compare/v0.248.0...v0.249.0)\n\nUpdates `google.golang.org/grpc` from 1.75.0 to 1.75.1\n- [Release notes](https://github.com/grpc/grpc-go/releases)\n- [Commits](https://github.com/grpc/grpc-go/compare/v1.75.0...v1.75.1)\n\nUpdates `go.opentelemetry.io/otel` from 1.37.0 to 1.38.0\n- [Release notes](https://github.com/open-telemetry/opentelemetry-go/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-go/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-go/compare/v1.37.0...v1.38.0)\n\nUpdates `go.opentelemetry.io/otel/metric` from 1.37.0 to 1.38.0\n- [Release notes](https://github.com/open-telemetry/opentelemetry-go/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-go/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-go/compare/v1.37.0...v1.38.0)\n\nUpdates `golang.org/x/crypto` from 0.41.0 to 0.42.0\n- [Commits](https://github.com/golang/crypto/compare/v0.41.0...v0.42.0)\n\nUpdates `golang.org/x/net` from 0.43.0 to 0.44.0\n- [Commits](https://github.com/golang/net/compare/v0.43.0...v0.44.0)\n\nUpdates `golang.org/x/sync` from 0.16.0 to 0.17.0\n- [Commits](https://github.com/golang/sync/compare/v0.16.0...v0.17.0)\n\n---\nupdated-dependencies:\n- dependency-name: cloud.google.com/go/spanner\n  dependency-version: 1.85.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: github.com/aws/aws-sdk-go-v2\n  dependency-version: 1.39.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: github.com/aws/aws-sdk-go-v2/config\n  dependency-version: 1.31.8\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: all-go-deps\n- dependency-name: github.com/aws/aws-sdk-go-v2/credentials\n  dependency-version: 1.18.12\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: all-go-deps\n- dependency-name: github.com/aws/aws-sdk-go-v2/service/s3\n  dependency-version: 1.88.1\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: github.com/aws/smithy-go\n  dependency-version: 1.23.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: github.com/rivo/tview\n  dependency-version: 0.42.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: go.opentelemetry.io/contrib/detectors/aws/ec2\n  dependency-version: 1.38.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: go.opentelemetry.io/contrib/detectors/aws/ecs\n  dependency-version: 1.38.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: go.opentelemetry.io/contrib/detectors/gcp\n  dependency-version: 1.38.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: go.opentelemetry.io/contrib/propagators/aws\n  dependency-version: 1.38.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc\n  dependency-version: 1.38.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc\n  dependency-version: 1.38.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: go.opentelemetry.io/otel/sdk\n  dependency-version: 1.38.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: go.opentelemetry.io/otel/sdk/metric\n  dependency-version: 1.38.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: golang.org/x/mod\n  dependency-version: 0.28.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: google.golang.org/api\n  dependency-version: 0.249.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: google.golang.org/grpc\n  dependency-version: 1.75.1\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: all-go-deps\n- dependency-name: go.opentelemetry.io/otel\n  dependency-version: 1.38.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: go.opentelemetry.io/otel/metric\n  dependency-version: 1.38.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: golang.org/x/crypto\n  dependency-version: 0.42.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: golang.org/x/net\n  dependency-version: 0.44.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: golang.org/x/sync\n  dependency-version: 0.17.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\n\n* Fix SA1019 golangci-lint issue\n\n---------\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Roger Ng <rogerng@google.com>",
+          "timestamp": "2025-09-11T20:08:14+01:00",
+          "tree_id": "62e146b3bbfeb30ea70a79a36b55d872e54304fc",
+          "url": "https://github.com/transparency-dev/tessera/commit/79ff7f1b4cd33e44a4541ede1087e11d56d614b9"
+        },
+        "date": 1757617784824,
+        "tool": "go",
+        "benches": [
+          {
+            "name": "BenchmarkDedupe",
+            "value": 3999018,
+            "unit": "ns/op\t  984929 B/op\t   23859 allocs/op",
+            "extra": "278 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedupe - ns/op",
+            "value": 3999018,
+            "unit": "ns/op",
+            "extra": "278 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedupe - B/op",
+            "value": 984929,
+            "unit": "B/op",
+            "extra": "278 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedupe - allocs/op",
+            "value": 23859,
+            "unit": "allocs/op",
+            "extra": "278 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait",
+            "value": 1498049,
+            "unit": "ns/op\t     699 B/op\t      13 allocs/op",
+            "extra": "814 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait - ns/op",
+            "value": 1498049,
+            "unit": "ns/op",
+            "extra": "814 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait - B/op",
+            "value": 699,
+            "unit": "B/op",
+            "extra": "814 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "814 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction",
+            "value": 247289,
+            "unit": "ns/op\t    3697 B/op\t      46 allocs/op",
+            "extra": "5605 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - ns/op",
+            "value": 247289,
+            "unit": "ns/op",
+            "extra": "5605 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - B/op",
+            "value": 3697,
+            "unit": "B/op",
+            "extra": "5605 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - allocs/op",
+            "value": 46,
+            "unit": "allocs/op",
+            "extra": "5605 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText",
+            "value": 7247,
+            "unit": "ns/op\t    6528 B/op\t       1 allocs/op",
+            "extra": "222454 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - ns/op",
+            "value": 7247,
+            "unit": "ns/op",
+            "extra": "222454 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - B/op",
+            "value": 6528,
+            "unit": "B/op",
+            "extra": "222454 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - allocs/op",
+            "value": 1,
+            "unit": "allocs/op",
+            "extra": "222454 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe",
+            "value": 221.5,
+            "unit": "ns/op\t     224 B/op\t       5 allocs/op",
+            "extra": "5319716 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - ns/op",
+            "value": 221.5,
+            "unit": "ns/op",
+            "extra": "5319716 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - B/op",
+            "value": 224,
+            "unit": "B/op",
+            "extra": "5319716 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - allocs/op",
+            "value": 5,
+            "unit": "allocs/op",
+            "extra": "5319716 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate",
+            "value": 346180,
+            "unit": "ns/op\t  279157 B/op\t    3082 allocs/op",
+            "extra": "3864 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - ns/op",
+            "value": 346180,
+            "unit": "ns/op",
+            "extra": "3864 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - B/op",
+            "value": 279157,
+            "unit": "B/op",
+            "extra": "3864 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - allocs/op",
+            "value": 3082,
+            "unit": "allocs/op",
+            "extra": "3864 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue",
+            "value": 669360,
+            "unit": "ns/op\t  503009 B/op\t   14373 allocs/op",
+            "extra": "1868 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - ns/op",
+            "value": 669360,
+            "unit": "ns/op",
+            "extra": "1868 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - B/op",
+            "value": 503009,
+            "unit": "B/op",
+            "extra": "1868 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - allocs/op",
+            "value": 14373,
+            "unit": "allocs/op",
+            "extra": "1868 times\n4 procs"
           }
         ]
       }
