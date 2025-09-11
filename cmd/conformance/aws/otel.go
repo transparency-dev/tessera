@@ -18,7 +18,7 @@ import (
 	"context"
 	"errors"
 
-	"go.opentelemetry.io/contrib/detectors/aws/ec2"
+	ec2 "go.opentelemetry.io/contrib/detectors/aws/ec2/v2"
 	"go.opentelemetry.io/contrib/detectors/aws/ecs"
 	"go.opentelemetry.io/contrib/propagators/aws/xray"
 	"go.opentelemetry.io/otel"
