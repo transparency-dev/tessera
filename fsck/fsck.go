@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"sync/atomic"
 
 	"github.com/transparency-dev/merkle/compact"
@@ -39,7 +40,23 @@ type Fetcher interface {
 	ReadEntryBundle(ctx context.Context, i uint64, p uint8) ([]byte, error)
 }
 
-// Check performs an integrity check against a log via the provided fetcher, using the provided
+// Fsck knows how to check the integrity of tlog-tile logs.
+type Fsck struct {
+	origin       string
+	verifier     note.Verifier
+	fetcher      Fetcher
+	bundleHasher func([]byte) ([][]byte, error)
+	rangeTracker *rangeTracker
+	opts         Opts
+}
+
+type Opts struct {
+	N uint
+}
+
+// New creates a new Fsck instance configured for a particular log.
+//
+// The log resources will be retrieved via the provided fetcher, using the provided
 // bundleHasher to parse and convert entries from the log's entry bundles into leaf hashes.
 //
 // The leaf hashes are used to:
@@ -48,22 +65,39 @@ type Fetcher interface {
 //
 // The checking will use the provided N parameter to control the number of concurrent workers undertaking
 // this process.
-func Check(ctx context.Context, origin string, verifier note.Verifier, f Fetcher, N uint, bundleHasher func([]byte) ([][]byte, error)) error {
-	cp, cpRaw, _, err := client.FetchCheckpoint(ctx, f.ReadCheckpoint, verifier, origin)
+func New(origin string, verifier note.Verifier, f Fetcher, bundleHasher func([]byte) ([][]byte, error), opts Opts) *Fsck {
+	if opts.N == 0 {
+		opts.N = 1
+	}
+	return &Fsck{
+		origin:       origin,
+		verifier:     verifier,
+		fetcher:      f,
+		opts:         opts,
+		bundleHasher: bundleHasher,
+	}
+}
+
+// Check performs an integrity check against the log.
+func (f *Fsck) Check(ctx context.Context) error {
+	cp, cpRaw, _, err := client.FetchCheckpoint(ctx, f.fetcher.ReadCheckpoint, f.verifier, f.origin)
 	if err != nil {
-		klog.Exitf("Failed to fetch and verify checkpoint: %v", err)
+		return fmt.Errorf("failed to fetch and verify checkpoint: %v", err)
 	}
 	klog.Infof("Fsck: checking log of size %d", cp.Size)
 
 	klog.V(1).Infof("Fsck: checkpoint:\n%s", cpRaw)
 
+	f.rangeTracker = newRangeTracker(cp.Size)
+
 	fTree := fsckTree{
-		fetcher:           f,
-		bundleHasher:      bundleHasher,
+		fetcher:           f.fetcher,
+		bundleHasher:      f.bundleHasher,
 		tree:              (&compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}).NewEmptyRange(0),
 		sourceSize:        cp.Size,
 		pendingTiles:      make(map[compact.NodeID]*api.HashTile),
-		expectedResources: make(chan resource, N),
+		expectedResources: make(chan resource, f.opts.N),
+		rangeTracker:      f.rangeTracker,
 	}
 
 	// Set up a stream of entry bundles from the log to be checked.
@@ -71,17 +105,29 @@ func Check(ctx context.Context, origin string, verifier note.Verifier, f Fetcher
 	eg := errgroup.Group{}
 
 	// Kick off resource comparing workers
-	for range N {
+	for range f.opts.N {
 		eg.Go(fTree.resourceCheckWorker(ctx))
+	}
+
+	trackBundle := func(ctx context.Context, idx uint64, p uint8) ([]byte, error) {
+		fTree.rangeTracker.Update(-1, idx, Fetching)
+		r, err := f.fetcher.ReadEntryBundle(ctx, idx, p)
+		if err != nil {
+			fTree.rangeTracker.Update(-1, idx, FetchError)
+			return nil, err
+		}
+		fTree.rangeTracker.Update(-1, idx, Fetched)
+		return r, nil
 	}
 
 	getSize := func(_ context.Context) (uint64, error) { return cp.Size, nil }
 	// Consume the stream of bundles to re-derive the other log resources.
 	// TODO(al): consider chunking the log and doing each in parallel.
-	for b, err := range client.EntryBundles(ctx, N, getSize, f.ReadEntryBundle, 0, cp.Size) {
+	for b, err := range client.EntryBundles(ctx, f.opts.N, getSize, trackBundle, 0, cp.Size) {
 		if err != nil {
 			return fmt.Errorf("error while streaming bundles: %v", err)
 		}
+		fTree.rangeTracker.Update(-1, b.RangeInfo.Index, OK)
 		if err := fTree.AppendBundle(b.RangeInfo, b.Data); err != nil {
 			return fmt.Errorf("failure calling AppendBundle(%v): %v", b.RangeInfo, err)
 		}
@@ -97,21 +143,54 @@ func Check(ctx context.Context, origin string, verifier note.Verifier, f Fetcher
 
 	// Wait for all the work to be done.
 	if err := eg.Wait(); err != nil {
-		klog.Exitf("Failed: %v", err)
+		return fmt.Errorf("failed: %v", err)
 	}
 
 	// Finally, check that the claimed root hash matches what we calculated.
 	gotRoot, err := fTree.GetRootHash()
 	switch {
 	case err != nil:
-		klog.Exitf("Failed to calculate root: %v", err)
+		return fmt.Errorf("failed to calculate root: %v", err)
 	case !bytes.Equal(gotRoot, cp.Hash):
-		klog.Exitf("Calculated root %x, but checkpoint claims %x", gotRoot, cp.Hash)
+		return fmt.Errorf("calculated root %x, but checkpoint claims %x", gotRoot, cp.Hash)
 	default:
 		klog.Infof("Successfully fsck'd log with size %d and root %s (%x)", cp.Size, base64.StdEncoding.EncodeToString(gotRoot), gotRoot)
 	}
 
 	return nil
+}
+
+type Status struct {
+	EntryRanges []Range
+	TileRanges  [][]Range
+}
+
+func (f *Fsck) Status() Status {
+	e, t := f.rangeTracker.Ranges()
+	r := Status{
+		EntryRanges: e,
+		TileRanges:  t,
+	}
+	return r
+}
+
+func (s Status) String() string {
+	ret := []string{}
+	for i := len(s.TileRanges) - 1; i >= 0; i-- {
+		l := []string{}
+		for _, tr := range s.TileRanges[i] {
+			l = append(l, tr.String())
+		}
+		ret = append(ret, fmt.Sprintf("Tiles/%d: ", i))
+		ret = append(ret, strings.Join(l, ", "))
+	}
+	l := []string{}
+	for _, tr := range s.EntryRanges {
+		l = append(l, tr.String())
+	}
+	ret = append(ret, "EntryBdl: ")
+	ret = append(ret, strings.Join(l, ", "))
+	return strings.Join(ret, "\n")
 }
 
 // resource represents a single static tile resource on the log, and the derived content we expect it to contain.
@@ -140,6 +219,8 @@ type fsckTree struct {
 	// expectedResources is a channel of derived tlog resources which need to be verified against the source log's static resources.
 	// Entries in this channel are consumed by the resoruceCheckWorker functions.
 	expectedResources chan resource
+
+	rangeTracker *rangeTracker
 }
 
 // AppendBundle appends leaf hashes from the provided entry bundle.
@@ -226,18 +307,23 @@ func (f *fsckTree) resourceCheckWorker(ctx context.Context) func() error {
 
 	return func() error {
 		for r := range f.expectedResources {
+			f.rangeTracker.Update(int(r.level), r.index, Fetching)
 			data, err := f.fetcher.ReadTile(ctx, r.level, r.index, r.partial)
 			if err != nil {
+				f.rangeTracker.Update(int(r.level), r.index, FetchError)
 				return err
 			}
+			f.rangeTracker.Update(int(r.level), r.index, Calculating)
 			if l, e := uint(len(data)), uint(r.partial)*sha256.Size; r.partial != 0 && l > e {
 				// We were likely given a full tile rather than a partial tile, so trim it to the expected size.
 				data = data[:e]
 			}
 			p := layout.TilePath(r.level, r.index, r.partial)
 			if !bytes.Equal(data, r.content) {
+				f.rangeTracker.Update(int(r.level), r.index, Invalid)
 				return fmt.Errorf("%s: log has:\n%x\nexpected:\n%x", p, data, r.content)
 			}
+			f.rangeTracker.Update(int(r.level), r.index, OK)
 			klog.V(2).Infof("%s: %s ok", id, p)
 		}
 		return nil

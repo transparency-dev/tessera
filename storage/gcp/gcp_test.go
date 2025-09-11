@@ -523,7 +523,8 @@ func TestGarbageCollect(t *testing.T) {
 
 	// And finally, for good measure, assert that all the resources implied by the log's checkpoint
 	// are present.
-	if err := fsck.Check(ctx, vk.Name(), vk, lr, 1, defaultMerkleLeafHasher); err != nil {
+	f := fsck.New(vk.Name(), vk, lr, defaultMerkleLeafHasher, fsck.Opts{N: 1})
+	if err := f.Check(ctx); err != nil {
 		t.Fatalf("FSCK failed: %v", err)
 	}
 }

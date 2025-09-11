@@ -68,6 +68,7 @@ func TestTrimFullToPartial(t *testing.T) {
 				fetcher: &fakeFetcher{
 					tile: test.storedTile,
 				},
+				rangeTracker: newRangeTracker(1),
 			}
 
 			f.expectedResources <- test.r
