@@ -250,7 +250,8 @@ func fsckLog(t *testing.T, dir string) error {
 	if err != nil {
 		klog.Exitf("Invalid verifier in %q: %v", testVerifier, err)
 	}
-	return fsck.Check(t.Context(), v.Name(), v, src, 1, defaultMerkleLeafHasher)
+	f := fsck.New(v.Name(), v, src, 1, defaultMerkleLeafHasher)
+	return f.Check(t.Context())
 }
 
 // defaultMerkleLeafHasher parses a C2SP tlog-tile bundle and returns the Merkle leaf hashes of each entry it contains.
