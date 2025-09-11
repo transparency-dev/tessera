@@ -175,7 +175,7 @@ func TestUpdate(t *testing.T) {
 				got := p.Value.(*Range)
 				if !reflect.DeepEqual(*got, want) {
 					t.Errorf("Got range at index %d:\n%+v\nwant:\n%+v", i, *got, want)
-					t.Errorf("DUMP:\n%s", strings.Join(s.dump(), "\n"))
+					t.Errorf("DUMP:\n%s", strings.Join(s.dumpRanges(), "\n"))
 				}
 				p = p.Next()
 			}

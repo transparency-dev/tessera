@@ -82,13 +82,13 @@ func (s State) String() string {
 //   - Eventually, all the ranges will (hopefully) return to being OK.
 type rangeTracker struct {
 	// mu guards access to the fields below.
-	mu *sync.RWMutex
+	mu *sync.Mutex
 	// tiles holds information about the tiles in each level of the log, with tiles[0] being the
 	// lowest level tiles, just above the entries.
-	// The elements in this list are all Range structs.
+	// The elements in this list are all *Range structs.
 	tiles []*list.List
 	// entries holds information about the entrybundles in the log. The list elements are all
-	// Range structs.
+	// *Range structs.
 	entries *list.List
 }
 
@@ -139,7 +139,7 @@ func newRangeTracker(logSize uint64) *rangeTracker {
 	}
 
 	return &rangeTracker{
-		mu:      &sync.RWMutex{},
+		mu:      &sync.Mutex{},
 		entries: el,
 		tiles:   t,
 	}
@@ -180,15 +180,15 @@ func maybeMergeWithNext(e *list.Element, l *list.List) {
 
 // Update updates the range state representation with the new state for the static resource at the given index.
 // level is the tile level if it's >= 0, or an entry bundle if it's == -1.
-func (s *rangeTracker) Update(l int, idx uint64, state State) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (r *rangeTracker) Update(l int, idx uint64, state State) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	var list *list.List
 	if l == -1 {
-		list = s.entries
-	} else if l < len(s.tiles) {
-		list = s.tiles[l]
+		list = r.entries
+	} else if l < len(r.tiles) {
+		list = r.tiles[l]
 	} else {
 		panic(fmt.Errorf("no such tile level %d", l))
 	}
@@ -247,22 +247,28 @@ func (s *rangeTracker) Update(l int, idx uint64, state State) {
 		}
 		return
 	}
-	dump := s.dump()
+	dump := r.dumpRanges()
 	panic(fmt.Errorf("walked off end of range with idx %d. List:\n%s", idx, strings.Join(dump, "\n")))
 }
 
-func (s *rangeTracker) Ranges() ([]Range, [][]Range) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// Ranges returns a snapshot of the current status of resources in the log.
+//
+// Returns:
+//   - a []Range which contains one or more contiguous Range structs which cover all the entry bundles
+//   - a slice of []Range which perform the same function for the internal Merkle tree levels, with the
+//     zeroth entry being the bottom-most level of the tree, just above the entry bundles.
+func (r *rangeTracker) Ranges() ([]Range, [][]Range) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-	eRange := make([]Range, 0, s.entries.Len())
-	for p := s.entries.Front(); p != nil; p = p.Next() {
+	eRange := make([]Range, 0, r.entries.Len())
+	for p := r.entries.Front(); p != nil; p = p.Next() {
 		v := p.Value.(*Range)
 		eRange = append(eRange, *v)
 	}
 
-	tRanges := make([][]Range, 0, len(s.tiles))
-	for _, t := range s.tiles {
+	tRanges := make([][]Range, 0, len(r.tiles))
+	for _, t := range r.tiles {
 		tr := make([]Range, 0, t.Len())
 		for p := t.Front(); p != nil; p = p.Next() {
 			v := p.Value.(*Range)
@@ -273,9 +279,11 @@ func (s *rangeTracker) Ranges() ([]Range, [][]Range) {
 	return eRange, tRanges
 }
 
-func (s *rangeTracker) dump() []string {
+// dumpRanges returns a string suitable for logging/printing to std out to help debug the internal
+// state of the tracked ranges.
+func (r *rangeTracker) dumpRanges() []string {
 	d := []string{}
-	for p := s.entries.Front(); p != nil; p = p.Next() {
+	for p := r.entries.Front(); p != nil; p = p.Next() {
 		v := p.Value.(*Range)
 		d = append(d, fmt.Sprintf("([%d:%d): %v", v.First, v.First+v.N, v.State))
 	}
