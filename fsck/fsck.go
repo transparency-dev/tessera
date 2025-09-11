@@ -45,23 +45,18 @@ type Fsck struct {
 	origin       string
 	verifier     note.Verifier
 	fetcher      Fetcher
-	n            uint
 	bundleHasher func([]byte) ([][]byte, error)
 	rangeTracker *rangeTracker
+	opts         Opts
+}
+
+type Opts struct {
+	N uint
 }
 
 // New creates a new Fsck instance configured for a particular log.
-func New(origin string, verifier note.Verifier, f Fetcher, N uint, bundleHasher func([]byte) ([][]byte, error)) *Fsck {
-	return &Fsck{
-		origin:       origin,
-		verifier:     verifier,
-		fetcher:      f,
-		n:            N,
-		bundleHasher: bundleHasher,
-	}
-}
-
-// Check performs an integrity check against a log via the provided fetcher, using the provided
+//
+// The log resources will be retrieved via the provided fetcher, using the provided
 // bundleHasher to parse and convert entries from the log's entry bundles into leaf hashes.
 //
 // The leaf hashes are used to:
@@ -70,10 +65,24 @@ func New(origin string, verifier note.Verifier, f Fetcher, N uint, bundleHasher 
 //
 // The checking will use the provided N parameter to control the number of concurrent workers undertaking
 // this process.
+func New(origin string, verifier note.Verifier, f Fetcher, bundleHasher func([]byte) ([][]byte, error), opts Opts) *Fsck {
+	if opts.N == 0 {
+		opts.N = 1
+	}
+	return &Fsck{
+		origin:       origin,
+		verifier:     verifier,
+		fetcher:      f,
+		opts:         opts,
+		bundleHasher: bundleHasher,
+	}
+}
+
+// Check performs an integrity check against the log.
 func (f *Fsck) Check(ctx context.Context) error {
 	cp, cpRaw, _, err := client.FetchCheckpoint(ctx, f.fetcher.ReadCheckpoint, f.verifier, f.origin)
 	if err != nil {
-		klog.Exitf("Failed to fetch and verify checkpoint: %v", err)
+		return fmt.Errorf("failed to fetch and verify checkpoint: %v", err)
 	}
 	klog.Infof("Fsck: checking log of size %d", cp.Size)
 
@@ -87,7 +96,7 @@ func (f *Fsck) Check(ctx context.Context) error {
 		tree:              (&compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}).NewEmptyRange(0),
 		sourceSize:        cp.Size,
 		pendingTiles:      make(map[compact.NodeID]*api.HashTile),
-		expectedResources: make(chan resource, f.n),
+		expectedResources: make(chan resource, f.opts.N),
 		rangeTracker:      f.rangeTracker,
 	}
 
@@ -96,7 +105,7 @@ func (f *Fsck) Check(ctx context.Context) error {
 	eg := errgroup.Group{}
 
 	// Kick off resource comparing workers
-	for range f.n {
+	for range f.opts.N {
 		eg.Go(fTree.resourceCheckWorker(ctx))
 	}
 
@@ -114,7 +123,7 @@ func (f *Fsck) Check(ctx context.Context) error {
 	getSize := func(_ context.Context) (uint64, error) { return cp.Size, nil }
 	// Consume the stream of bundles to re-derive the other log resources.
 	// TODO(al): consider chunking the log and doing each in parallel.
-	for b, err := range client.EntryBundles(ctx, f.n, getSize, trackBundle, 0, cp.Size) {
+	for b, err := range client.EntryBundles(ctx, f.opts.N, getSize, trackBundle, 0, cp.Size) {
 		if err != nil {
 			return fmt.Errorf("error while streaming bundles: %v", err)
 		}
@@ -134,16 +143,16 @@ func (f *Fsck) Check(ctx context.Context) error {
 
 	// Wait for all the work to be done.
 	if err := eg.Wait(); err != nil {
-		klog.Exitf("Failed: %v", err)
+		return fmt.Errorf("failed: %v", err)
 	}
 
 	// Finally, check that the claimed root hash matches what we calculated.
 	gotRoot, err := fTree.GetRootHash()
 	switch {
 	case err != nil:
-		klog.Exitf("Failed to calculate root: %v", err)
+		return fmt.Errorf("failed to calculate root: %v", err)
 	case !bytes.Equal(gotRoot, cp.Hash):
-		klog.Exitf("Calculated root %x, but checkpoint claims %x", gotRoot, cp.Hash)
+		return fmt.Errorf("calculated root %x, but checkpoint claims %x", gotRoot, cp.Hash)
 	default:
 		klog.Infof("Successfully fsck'd log with size %d and root %s (%x)", cp.Size, base64.StdEncoding.EncodeToString(gotRoot), gotRoot)
 	}

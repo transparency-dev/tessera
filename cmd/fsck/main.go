@@ -68,7 +68,7 @@ func main() {
 	if *origin == "" {
 		*origin = v.Name()
 	}
-	f := fsck.New(*origin, v, src, *N, defaultMerkleLeafHasher)
+	f := fsck.New(*origin, v, src, defaultMerkleLeafHasher, fsck.Opts{N: *N})
 	go func() {
 		for {
 			time.Sleep(time.Second)
