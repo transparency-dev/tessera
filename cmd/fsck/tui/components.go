@@ -53,12 +53,12 @@ var (
 	}{
 		fsck.Unknown: {
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#313244")),
-			bar:      "░",
+			bar:      "⠤",
 			priority: 1,
 		},
 		fsck.Fetching: {
-			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#74c7ec")),
-			bar:      "▒",
+			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#eeeeee")),
+			bar:      "▄",
 			priority: 3,
 		},
 		fsck.FetchError: {
@@ -67,18 +67,18 @@ var (
 			priority: 9,
 		},
 		fsck.Fetched: {
-			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#89dceb")),
-			bar:      "▓",
+			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#94e2d5")),
+			bar:      "▄",
 			priority: 4,
 		},
 		fsck.Calculating: {
-			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#94e2d5")),
+			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#89dceb")),
 			bar:      "C",
 			priority: 5,
 		},
 		fsck.OK: {
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#a6e3a1")),
-			bar:      "█",
+			bar:      "▄",
 			priority: 2,
 		},
 		fsck.Invalid: {
@@ -143,11 +143,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Create the range progress bars now that we know how details about the tree.
 		if len(m.tilesBars) != len(msg.s.TileRanges) {
-			m.entriesBar = NewLayerProgressBar("Entry bundles", m.width)
+			m.entriesBar = NewLayerProgressBar("Entry bundles", m.width, 0)
 
 			bs := make([]*layerProgressModel, 0, len(msg.s.TileRanges))
 			for i := range msg.s.TileRanges {
-				bs = append(bs, NewLayerProgressBar(fmt.Sprintf("Tiles level %02d", i), m.width))
+				bs = append(bs, NewLayerProgressBar(fmt.Sprintf("Tiles level %02d", i), m.width, i))
 			}
 			m.tilesBars = bs
 		}
@@ -210,24 +210,25 @@ func UpdateCmd(status fsck.Status) tea.Cmd {
 	}
 }
 
+// layerUpdateMsg is a message which carries information for a specific layer in the tree (e.g. tiles for a specific level).
+type layerUpdateMsg struct {
+	r []fsck.Range
+}
+
 // NewLayerProgressBar returns a progress bar which can render information about the states of fsck ranges.
 //
 // Label is the name of the range, and will be shown in the UI.
 // width is the total width available to this model.
-func NewLayerProgressBar(label string, width int) *layerProgressModel {
+func NewLayerProgressBar(label string, width int, level int) *layerProgressModel {
 	m := &layerProgressModel{
 		label:           label,
 		width:           width,
+		level:           level,
 		colorProfile:    termenv.ColorProfile(),
 		PercentageStyle: percentageStyle,
 		LabelStyle:      labelStyle,
 	}
 	return m
-}
-
-// layerUpdateMsg is a message which carries information for a specific layer in the tree (e.g. tiles for a specific level).
-type layerUpdateMsg struct {
-	r []fsck.Range
 }
 
 // layerProgressModel is the UI model for a progress bar which represents fsck status through a paricular level of the tree.
@@ -245,6 +246,10 @@ type layerProgressModel struct {
 
 	// width available to this component.
 	width int
+
+	// level is the tile-space level this progress bar represents.
+	// used to scale the bar portion of the component.
+	level int
 
 	// Current state this progress bar is representing.
 	state []fsck.Range
@@ -292,11 +297,12 @@ func (m *layerProgressModel) ViewAs(rs []fsck.Range) string {
 	percentView := m.percentageView(float64(byState[fsck.OK]) / float64(extent))
 	labelView := m.LabelStyle.Inline(true).Render(m.label)
 	barSize := m.width - ansi.StringWidth(labelView) - 1 - ansi.StringWidth(percentView) - 1
-	barView := barString(rs, barSize)
+	levelSize := barSize >> m.level
+	barView := barString(rs, levelSize)
 
 	b := strings.Builder{}
 	b.WriteString(labelView)
-	b.WriteString(barView)
+	b.WriteString(lipgloss.NewStyle().Width(barSize).MaxWidth(barSize).Align(lipgloss.Center).Render(barView))
 	b.WriteString(percentView)
 	return b.String()
 }

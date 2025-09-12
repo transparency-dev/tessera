@@ -30,7 +30,7 @@ func runUI(f *fsck.Fsck) error {
 	p := tea.NewProgram(m)
 	go func() {
 		for {
-			<-time.After(50 * time.Millisecond)
+			<-time.After(100 * time.Millisecond)
 			cmd := tui.UpdateCmd(f.Status())
 			p.Send(cmd())
 		}
