@@ -29,6 +29,7 @@ import (
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/fsck"
 	"golang.org/x/mod/sumdb/note"
+	"golang.org/x/time/rate"
 	"k8s.io/klog/v2"
 )
 
@@ -38,6 +39,7 @@ var (
 	N           = flag.Uint("N", 1, "The number of workers to use when fetching/comparing resources")
 	origin      = flag.String("origin", "", "Origin of the log to check, if unset, will use the name of the provided public key")
 	pubKey      = flag.String("public_key", "", "Path to a file containing the log's public key")
+	qps         = flag.Float64("qps", 0, "Max QPS to send to the target log. Set to zero for unlimited")
 )
 
 func main() {
@@ -63,6 +65,12 @@ func main() {
 			httpSrc.SetAuthorizationHeader(fmt.Sprintf("Bearer %s", *bearerToken))
 		}
 		src = httpSrc
+	}
+	if *qps > 0 {
+		src = &rateLimitedSrc{
+			rl:       rate.NewLimiter(rate.Limit(*qps), 10),
+			delegate: src,
+		}
 	}
 	v := verifierFromFlags()
 	if *origin == "" {
@@ -108,4 +116,30 @@ func verifierFromFlags() note.Verifier {
 		klog.Exitf("Invalid verifier in %q: %v", *pubKey, err)
 	}
 	return v
+}
+
+type rateLimitedSrc struct {
+	rl       *rate.Limiter
+	delegate fsck.Fetcher
+}
+
+func (r *rateLimitedSrc) ReadCheckpoint(ctx context.Context) ([]byte, error) {
+	if err := r.rl.Wait(ctx); err != nil {
+		return nil, err
+	}
+	return r.delegate.ReadCheckpoint(ctx)
+}
+
+func (r *rateLimitedSrc) ReadTile(ctx context.Context, l, i uint64, p uint8) ([]byte, error) {
+	if err := r.rl.Wait(ctx); err != nil {
+		return nil, err
+	}
+	return r.delegate.ReadTile(ctx, l, i, p)
+}
+
+func (r *rateLimitedSrc) ReadEntryBundle(ctx context.Context, i uint64, p uint8) ([]byte, error) {
+	if err := r.rl.Wait(ctx); err != nil {
+		return nil, err
+	}
+	return r.delegate.ReadEntryBundle(ctx, i, p)
 }
