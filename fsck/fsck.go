@@ -166,6 +166,9 @@ type Status struct {
 }
 
 func (f *Fsck) Status() Status {
+	if f.rangeTracker == nil {
+		return Status{}
+	}
 	e, t := f.rangeTracker.Ranges()
 	r := Status{
 		EntryRanges: e,

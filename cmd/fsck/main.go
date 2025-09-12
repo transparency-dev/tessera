@@ -40,6 +40,7 @@ var (
 	origin      = flag.String("origin", "", "Origin of the log to check, if unset, will use the name of the provided public key")
 	pubKey      = flag.String("public_key", "", "Path to a file containing the log's public key")
 	qps         = flag.Float64("qps", 0, "Max QPS to send to the target log. Set to zero for unlimited")
+	ui          = flag.Bool("ui", true, "Set to true to use a TUI to display progress, or false for logging")
 )
 
 func main() {
@@ -77,16 +78,22 @@ func main() {
 		*origin = v.Name()
 	}
 	f := fsck.New(*origin, v, src, defaultMerkleLeafHasher, fsck.Opts{N: *N})
-	go func() {
-		for {
-			time.Sleep(time.Second)
-			klog.V(1).Infof("Ranges:\n%s", f.Status())
-		}
-	}()
+
+	if *ui {
+		go runUI(f)
+	} else {
+		go func() {
+			for {
+				time.Sleep(time.Second)
+				klog.V(1).Infof("Ranges:\n%s", f.Status())
+			}
+		}()
+	}
 	if err := f.Check(ctx); err != nil {
 		klog.Exitf("fsck failed: %v", err)
 	}
 	klog.V(1).Infof("Ranges:\n%s", f.Status())
+	time.Sleep(time.Second)
 }
 
 // defaultMerkleLeafHasher parses a C2SP tlog-tile bundle and returns the Merkle leaf hashes of each entry it contains.
