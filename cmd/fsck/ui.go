@@ -26,8 +26,8 @@ import (
 
 func runUI(f *fsck.Fsck) error {
 	m := tui.NewAppModel()
+	p := tea.NewProgram(m, tea.WithAltScreen())
 
-	p := tea.NewProgram(m)
 	go func() {
 		for {
 			<-time.After(100 * time.Millisecond)

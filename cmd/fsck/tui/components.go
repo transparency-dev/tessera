@@ -90,10 +90,10 @@ var (
 )
 
 func NewAppModel() *AppModel {
-	return &AppModel{}
+	r := &AppModel{}
+	return r
 }
 
-// AppModel is the top level UI model for the fsck app.
 type AppModel struct {
 	// components
 	entriesBar *layerProgressModel
@@ -169,33 +169,35 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View is called by Bubbletea to render the UI components.
 func (m *AppModel) View() string {
 	// Build the progress bars, we'll use this below.
-	progressContent := strings.Builder{}
+	bars := []string{}
 	for i := len(m.tilesBars) - 1; i >= 0; i-- {
 		t := m.tilesBars[i]
-		_, _ = progressContent.WriteString(t.View())
-		_, _ = progressContent.WriteString("\n")
+		bars = append(bars, t.View())
 	}
 	if m.entriesBar != nil {
-		_, _ = progressContent.WriteString(m.entriesBar.View())
+		bars = append(bars, m.entriesBar.View())
 	}
+	barsView := lipgloss.JoinVertical(lipgloss.Bottom, bars...)
 
 	header := lipgloss.NewStyle().
 		Align(lipgloss.Center).
 		Width(m.width).
 		Border(lipgloss.NormalBorder(), false, false, true, false).
-		Render("header")
-	footer := lipgloss.NewStyle().
-		Align(lipgloss.Center).
-		Width(m.width).
-		Render("footer")
-
+		Render("fsck")
 	content := lipgloss.NewStyle().
 		Width(m.width).
-		Height(m.height-lipgloss.Height(header)-lipgloss.Height(footer)).
-		Align(lipgloss.Center, lipgloss.Center).
-		Render(progressContent.String())
+		Height(lipgloss.Height(barsView)).
+		Align(lipgloss.Center, lipgloss.Bottom).
+		Border(lipgloss.NormalBorder(), false, false, true, false).
+		Render(barsView)
+	messages := lipgloss.NewStyle().
+		Align(lipgloss.Center).
+		Width(m.width).
+		Height(m.height-lipgloss.Height(header)-lipgloss.Height(content)).
+		Border(lipgloss.NormalBorder(), true, false, true, false).
+		Render("messages")
 
-	return lipgloss.JoinVertical(lipgloss.Top, header, content, footer)
+	return lipgloss.JoinVertical(lipgloss.Top, header, messages, content)
 }
 
 // updateMsg is used to tell the model about updated status from the fsck.
@@ -298,15 +300,17 @@ func (m *layerProgressModel) ViewAs(rs []fsck.Range) string {
 	labelView := m.LabelStyle.Inline(true).Render(m.label)
 	barSize := m.width - ansi.StringWidth(labelView) - 1 - ansi.StringWidth(percentView) - 1
 	levelSize := barSize >> m.level
-	barView := barString(rs, levelSize)
+	barView := renderBar(rs, levelSize)
 
-	b := strings.Builder{}
-	b.WriteString(labelView)
-	b.WriteString(lipgloss.NewStyle().Width(barSize).MaxWidth(barSize).Align(lipgloss.Center).Render(barView))
-	b.WriteString(percentView)
-	return b.String()
+	return lipgloss.JoinHorizontal(
+		lipgloss.Left,
+		labelView,
+		lipgloss.NewStyle().Width(barSize).MaxWidth(barSize).Align(lipgloss.Center).Render(barView),
+		percentView)
 }
 
+// stateForRange figures out the right state style to use for the progress bar section covering range [f, f+n),
+// using the provided fsck status ranges.
 func stateForRange(rs []fsck.Range, f, n uint64) string {
 	ret := "?"
 	pri := 0
@@ -324,68 +328,27 @@ func stateForRange(rs []fsck.Range, f, n uint64) string {
 	return ret
 }
 
-func barString(r []fsck.Range, numChars int) string {
+// renderBar builds a complete width-sized rendering for a progress bar representing the provided fsck ranges.
+func renderBar(r []fsck.Range, width int) string {
 	if len(r) == 0 {
-		return strings.Repeat("x", int(numChars))
+		return strings.Repeat(" ", int(width))
 	}
 
 	sb := strings.Builder{}
 	rangeExtent := r[len(r)-1].First + r[len(r)-1].N
 	rFirst := float64(0)
-	for i := range numChars {
-		chunk := (float64(rangeExtent) - rFirst - 1) / float64(numChars-i)
+	for i := range width {
+		chunk := (float64(rangeExtent) - rFirst - 1) / float64(width-i)
 		_, _ = sb.WriteString(stateForRange(r, uint64(math.Round(rFirst)), uint64(math.Round(chunk))))
 		rFirst += chunk
 	}
 	return sb.String()
 }
 
-/*
-func (m *rangeModel) barView(b *strings.Builder, percent float64, textWidth int) {
-	var (
-		tw = max(0, m.Width-textWidth)                // total width
-		fw = int(math.Round((float64(tw) * percent))) // filled width
-		p  float64
-	)
-
-	fw = max(0, min(tw, fw))
-
-	if m.useRamp {
-		// Gradient fill
-		for i := 0; i < fw; i++ {
-			if fw == 1 {
-				// this is up for debate: in a gradient of width=1, should the
-				// single character rendered be the first color, the last color
-				// or exactly 50% in between? I opted for 50%
-				p = 0.5
-			} else if m.scaleRamp {
-				p = float64(i) / float64(fw-1)
-			} else {
-				p = float64(i) / float64(tw-1)
-			}
-			c := m.rampColorA.BlendLuv(m.rampColorB, p).Hex()
-			b.WriteString(termenv.
-				String(string(m.Full)).
-				Foreground(m.color(c)).
-				String(),
-			)
-		}
-	} else {
-		// Solid fill
-		s := termenv.String(string(m.Full)).Foreground(m.color(m.FullColor)).String()
-		b.WriteString(strings.Repeat(s, fw))
-	}
-
-	// Empty fill
-	e := termenv.String(string(m.Empty)).Foreground(m.color(m.EmptyColor)).String()
-	n := max(0, tw-fw)
-	b.WriteString(strings.Repeat(e, n))
-}
-*/
-
+// percentageView returns a rendering of the provided percentage value.
 func (m *layerProgressModel) percentageView(percent float64) string {
 	percent = math.Max(0, math.Min(1, percent))
-	percentage := fmt.Sprintf(" %03.2f%%", percent*100) //nolint:mnd
+	percentage := fmt.Sprintf(" %03.2f%%", percent*100)
 	percentage = m.PercentageStyle.Inline(true).Render(percentage)
 	return percentage
 }
