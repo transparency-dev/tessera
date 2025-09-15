@@ -79,24 +79,28 @@ func main() {
 	}
 	f := fsck.New(*origin, v, src, defaultMerkleLeafHasher, fsck.Opts{N: *N})
 
+	go func() {
+		if err := f.Check(ctx); err != nil {
+			klog.Errorf("fsck failed: %v", err)
+		}
+		klog.V(1).Infof("Completed ranges:\n%s", f.Status())
+		cancel()
+	}()
+
 	if *ui {
-		go func() {
-			runUI(ctx, f)
-			// User exited the UI, cancel the context to signal to everything else.
-			cancel()
-		}()
+		runUI(ctx, f)
+		// User exited the UI, cancel the context to signal to everything else.
+		cancel()
 	} else {
-		go func() {
-			for {
-				time.Sleep(time.Second)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
 				klog.V(1).Infof("Ranges:\n%s", f.Status())
 			}
-		}()
+		}
 	}
-	if err := f.Check(ctx); err != nil {
-		klog.Errorf("fsck failed: %v", err)
-	}
-	klog.V(1).Infof("Completed ranges:\n%s", f.Status())
 }
 
 // defaultMerkleLeafHasher parses a C2SP tlog-tile bundle and returns the Merkle leaf hashes of each entry it contains.

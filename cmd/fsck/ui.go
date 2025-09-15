@@ -49,7 +49,7 @@ func runUI(ctx context.Context, f *fsck.Fsck) error {
 		for {
 			select {
 			case <-ctx.Done():
-				return
+				p.Send(tea.Quit())
 			case <-time.After(100 * time.Millisecond):
 				p.Send(tui.UpdateMsg(f.Status()))
 			}
