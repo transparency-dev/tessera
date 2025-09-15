@@ -27,7 +27,7 @@ import (
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/client"
-	"github.com/transparency-dev/tessera/cmd/fsck/tui"
+	"github.com/transparency-dev/tessera/cmd/fsck/internal/tui"
 	"github.com/transparency-dev/tessera/fsck"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/time/rate"
@@ -89,7 +89,9 @@ func main() {
 	}()
 
 	if *ui {
-		tui.RunApp(ctx, f)
+		if err := tui.RunApp(ctx, f); err != nil {
+			klog.Errorf("App exited: %v", err)
+		}
 		// User may have exited the UI, cancel the context to signal to everything else.
 		cancel()
 	} else {

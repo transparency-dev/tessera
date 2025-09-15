@@ -29,7 +29,6 @@ import (
 )
 
 var (
-	percentFormat = "%03.2f%%"
 	// percentageStyle defines the layout for the progress bar percentage.
 	percentageStyle = lipgloss.NewStyle().Width(8).MaxWidth(8)
 
@@ -50,12 +49,12 @@ var (
 	}{
 		fsck.Unknown: {
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#313244")),
-			bar:      "⠤",
+			bar:      "◻",
 			priority: 1,
 		},
 		fsck.Fetching: {
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#eeeeee")),
-			bar:      "▄",
+			bar:      "◻",
 			priority: 3,
 		},
 		fsck.FetchError: {
@@ -65,7 +64,7 @@ var (
 		},
 		fsck.Fetched: {
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#94e2d5")),
-			bar:      "▄",
+			bar:      "◼",
 			priority: 4,
 		},
 		fsck.Calculating: {
@@ -74,8 +73,8 @@ var (
 			priority: 5,
 		},
 		fsck.OK: {
-			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#a6e3a1")),
-			bar:      "▄",
+			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#86a381")),
+			bar:      "◼",
 			priority: 2,
 		},
 		fsck.Invalid: {
@@ -86,17 +85,17 @@ var (
 	}
 )
 
-// layerUpdateMsg is a message which carries information for a specific layer in the tree (e.g. tiles for a specific level).
-type layerUpdateMsg struct {
-	r []fsck.Range
+// LayerUpdateMsg is a message which carries information for a specific layer in the tree (e.g. tiles for a specific level).
+type LayerUpdateMsg struct {
+	Ranges []fsck.Range
 }
 
 // NewLayerProgressBar returns a progress bar which can render information about the states of fsck ranges.
 //
 // Label is the name of the range, and will be shown in the UI.
 // width is the total width available to this model.
-func NewLayerProgressBar(label string, width int, level int) *layerProgressModel {
-	m := &layerProgressModel{
+func NewLayerProgressBar(label string, width int, level int) *LayerProgressModel {
+	m := &LayerProgressModel{
 		label:        label,
 		width:        width,
 		level:        level,
@@ -105,8 +104,8 @@ func NewLayerProgressBar(label string, width int, level int) *layerProgressModel
 	return m
 }
 
-// layerProgressModel is the UI model for a progress bar which represents fsck status through a paricular level of the tree.
-type layerProgressModel struct {
+// LayerProgressModel is the UI model for a progress bar which represents fsck status through a paricular level of the tree.
+type LayerProgressModel struct {
 	// label is a human readable name associated with this progress bar, and is shown in the UI.
 	label string
 
@@ -129,7 +128,7 @@ type layerProgressModel struct {
 	state []fsck.Range
 }
 
-func (m *layerProgressModel) Init() tea.Cmd {
+func (m *LayerProgressModel) Init() tea.Cmd {
 	return nil
 }
 
@@ -137,27 +136,27 @@ func (m *layerProgressModel) Init() tea.Cmd {
 // SetPercent to create the command you'll need to trigger the animation.
 //
 // If you're rendering with ViewAs you won't need this.
-func (m *layerProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *LayerProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		return m, nil
-	case layerUpdateMsg:
-		m.state = msg.r
+	case LayerUpdateMsg:
+		m.state = msg.Ranges
 		return m, nil
 	default:
 		return m, nil
 	}
 }
 
-func (m *layerProgressModel) View() string {
+func (m *LayerProgressModel) View() string {
 	if m.state == nil {
 		return ""
 	}
 	return m.ViewAs(m.state)
 }
 
-func (m *layerProgressModel) ViewAs(rs []fsck.Range) string {
+func (m *LayerProgressModel) ViewAs(rs []fsck.Range) string {
 	// Don't bother trying to show empty information.
 	if len(rs) == 0 {
 		return ""
@@ -174,7 +173,7 @@ func (m *layerProgressModel) ViewAs(rs []fsck.Range) string {
 	labelView := labelStyle.Inline(true).Render(m.label)
 	barWidth := m.width - ansi.StringWidth(labelView) - 1 - ansi.StringWidth(percentView) - 1
 	// Squash higher levels so the bars look a bit more tree-like.
-	levelSize := barWidth >> m.level
+	levelSize := max(1, barWidth>>m.level)
 	barView := lipgloss.NewStyle().Width(barWidth).MaxWidth(barWidth).Align(lipgloss.Center).Inline(true).Render(renderBar(rs, levelSize))
 
 	return lipgloss.JoinHorizontal(
@@ -221,7 +220,7 @@ func renderBar(r []fsck.Range, width int) string {
 }
 
 // percentageView returns a rendering of the provided percentage value.
-func (m *layerProgressModel) percentageView(percent float64) string {
+func (m *LayerProgressModel) percentageView(percent float64) string {
 	percent = math.Max(0, math.Min(1, percent))
 	percentage := fmt.Sprintf(" %03.2f%%", percent*100)
 	return percentageStyle.Inline(true).Render(percentage)

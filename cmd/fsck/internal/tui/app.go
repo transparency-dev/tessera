@@ -23,6 +23,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/transparency-dev/tessera/cmd/fsck/tui"
 	"github.com/transparency-dev/tessera/fsck"
 	"k8s.io/klog/v2"
 
@@ -83,10 +84,10 @@ func NewFsckAppModel() *FsckAppModel {
 // FsckAppModel represents the UI model for the FSCK TUI.
 type FsckAppModel struct {
 	// entriesBar is the status/progress bar representing progress through the entry bundles.
-	entriesBar *layerProgressModel
+	entriesBar *tui.LayerProgressModel
 	// titlesBars is the list status/progress bars representing progress through the various levels of tiles in the log.
 	// The zeroth entry corresponds to the tiles on level zero.
-	tilesBars []*layerProgressModel
+	tilesBars []*tui.LayerProgressModel
 
 	// width is the width of the app window
 	width int
@@ -102,9 +103,9 @@ func (m *FsckAppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		// Handle user input.
-		// Quit if they pressed Q or escape
+		// Quit if they pressed Q, escape, or CTRL-C.
 		switch msg.String() {
-		case "q", "esc":
+		case "q", "esc", "ctrl+c":
 			return m, tea.Quit
 		}
 		return m, nil
@@ -132,20 +133,20 @@ func (m *FsckAppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Create the range progress bars now that we know how details about the tree.
 		if len(m.tilesBars) != len(msg.s.TileRanges) {
-			m.entriesBar = NewLayerProgressBar("Entry bundles", m.width, 0)
+			m.entriesBar = tui.NewLayerProgressBar("Entry bundles", m.width, 0)
 
-			bs := make([]*layerProgressModel, 0, len(msg.s.TileRanges))
+			bs := make([]*tui.LayerProgressModel, 0, len(msg.s.TileRanges))
 			for i := range msg.s.TileRanges {
-				bs = append(bs, NewLayerProgressBar(fmt.Sprintf("Tiles level %02d", i), m.width, i))
+				bs = append(bs, tui.NewLayerProgressBar(fmt.Sprintf("Tiles level %02d", i), m.width, i))
 			}
 			m.tilesBars = bs
 		}
 
 		// Update all the range progress bars with the latest state.
-		_, cmd := m.entriesBar.Update(layerUpdateMsg{r: msg.s.EntryRanges})
+		_, cmd := m.entriesBar.Update(tui.LayerUpdateMsg{Ranges: msg.s.EntryRanges})
 		cmds := []tea.Cmd{cmd}
 		for i := range m.tilesBars {
-			_, cmd = m.tilesBars[i].Update(layerUpdateMsg{r: msg.s.TileRanges[i]})
+			_, cmd = m.tilesBars[i].Update(tui.LayerUpdateMsg{Ranges: msg.s.TileRanges[i]})
 			cmds = append(cmds, cmd)
 		}
 
