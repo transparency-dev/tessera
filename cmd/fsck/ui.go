@@ -29,9 +29,10 @@ import (
 )
 
 func runUI(ctx context.Context, f *fsck.Fsck) error {
-	m := tui.NewAppModel()
+	m := tui.NewFsckAppModel()
 	p := tea.NewProgram(m)
 
+	// Redirect logging so as to appear above the UI
 	_ = flag.Set("logtostderr", "false")
 	_ = flag.Set("alsologtostderr", "false")
 	r, w := io.Pipe()
@@ -43,14 +44,14 @@ func runUI(ctx context.Context, f *fsck.Fsck) error {
 		}
 	}()
 
+	// Send periodic status updates to the UI from fsck.
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(100 * time.Millisecond):
-				cmd := tui.UpdateCmd(f.Status())
-				p.Send(cmd())
+				p.Send(tui.UpdateMsg(f.Status()))
 			}
 		}
 	}()

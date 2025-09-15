@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package tui provides a Bubbletea-based TUI for the fsck command.
 package tui
 
 import (
@@ -28,18 +29,21 @@ import (
 )
 
 var (
+	// percentageStyle controls how the progress bar percentage text is displayed.
 	percentageStyle = lipgloss.NewStyle().
 			MaxWidth(len(" 100.00%")).
 			Align(lipgloss.Right).
 			Width(len(" 100.00%")).
 			Foreground(lipgloss.Color("#f2cdcd"))
 
+	// labelStyle controls how the progress bar label is displayed.
 	labelStyle = lipgloss.NewStyle().
 			MaxWidth(16).
 			Align(lipgloss.Left).
 			Width(16).
 			Foreground(lipgloss.Color("#f2cdcd"))
 
+	// stateStyle defines how the different fsck.State types show up in the progress bar.
 	stateStyle = map[fsck.State]struct {
 		// style is the style to use for this state in the progress bar.
 		style lipgloss.Style
@@ -89,38 +93,42 @@ var (
 	}
 )
 
-func NewAppModel() *AppModel {
-	r := &AppModel{}
+// NewFsckAppModel creates a new BubbleTea model for the TUI.
+func NewFsckAppModel() *FsckAppModel {
+	r := &FsckAppModel{}
 	return r
 }
 
-type AppModel struct {
-	// components
+// FsckAppModel represents the UI model for the FSCK TUI.
+type FsckAppModel struct {
+	// entriesBar is the status/progress bar representing progress through the entry bundles.
 	entriesBar *layerProgressModel
-	tilesBars  []*layerProgressModel
+	// titlesBars is the list status/progress bars representing progress through the various levels of tiles in the log.
+	// The zeroth entry corresponds to the tiles on level zero.
+	tilesBars []*layerProgressModel
 
-	// styles
-	appStyle lipgloss.Style
-
-	width, height int
+	// width is the width of the app window
+	width int
 }
 
 // Init is called by Bubbleteam early on to set up the app.
-func (m *AppModel) Init() tea.Cmd {
+func (m *FsckAppModel) Init() tea.Cmd {
 	return nil
 }
 
 // Update is called by Bubbletea to handle events.
-func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *FsckAppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if msg.String() == "q" {
+		// Handle user input.
+		// Quit if they pressed Q or escape
+		switch msg.String() {
+		case "q", "esc":
 			return m, tea.Quit
 		}
 		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-		m.height = msg.Height
 
 		var cmd tea.Cmd
 		cmds := []tea.Cmd{}
@@ -167,7 +175,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View is called by Bubbletea to render the UI components.
-func (m *AppModel) View() string {
+func (m *FsckAppModel) View() string {
 	// Build the progress bars, we'll use this below.
 	bars := []string{}
 	for i := len(m.tilesBars) - 1; i >= 0; i-- {
@@ -179,41 +187,24 @@ func (m *AppModel) View() string {
 	}
 	barsView := lipgloss.JoinVertical(lipgloss.Bottom, bars...)
 
-	/*
-		header := lipgloss.NewStyle().
-			Align(lipgloss.Center).
-			Width(m.width).
-			Border(lipgloss.NormalBorder(), false, false, true, false).
-			Render("fsck")
-	*/
 	content := lipgloss.NewStyle().
 		Width(m.width).
 		Height(lipgloss.Height(barsView)).
 		Align(lipgloss.Center, lipgloss.Bottom).
 		Border(lipgloss.NormalBorder(), false, false, true, false).
 		Render(barsView)
-	/*
-		messages := lipgloss.NewStyle().
-			Align(lipgloss.Center).
-			Width(m.width).
-			Height(m.height-lipgloss.Height(header)-lipgloss.Height(content)).
-			Border(lipgloss.NormalBorder(), true, false, true, false).
-			Render("messages")
-	*/
 
 	return lipgloss.JoinVertical(lipgloss.Top, content)
 }
 
-// updateMsg is used to tell the model about updated status from the fsck.
+// updateMsg is used to tell the model about updated status from the fsck library.
 type updateMsg struct {
 	s fsck.Status
 }
 
-// getUpdateCmd returns a Cmd which Bubbletea can execute in order to retrieve and updateMsg.
-func UpdateCmd(status fsck.Status) tea.Cmd {
-	return func() tea.Msg {
-		return updateMsg{s: status}
-	}
+// UpdateCmd returns a Cmd which Bubbletea can execute in order to retrieve and updateMsg.
+func UpdateMsg(status fsck.Status) tea.Msg {
+	return updateMsg{s: status}
 }
 
 // layerUpdateMsg is a message which carries information for a specific layer in the tree (e.g. tiles for a specific level).
