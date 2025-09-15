@@ -46,7 +46,7 @@ var (
 func main() {
 	klog.InitFlags(nil)
 	flag.Parse()
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 	logURL, err := url.Parse(*storageURL)
 	if err != nil {
 		klog.Exitf("Invalid --storage_url %q: %v", *storageURL, err)
@@ -80,7 +80,11 @@ func main() {
 	f := fsck.New(*origin, v, src, defaultMerkleLeafHasher, fsck.Opts{N: *N})
 
 	if *ui {
-		go runUI(f)
+		go func() {
+			runUI(ctx, f)
+			// User exited the UI, cancel the context to signal to everything else.
+			cancel()
+		}()
 	} else {
 		go func() {
 			for {
@@ -90,10 +94,9 @@ func main() {
 		}()
 	}
 	if err := f.Check(ctx); err != nil {
-		klog.Exitf("fsck failed: %v", err)
+		klog.Errorf("fsck failed: %v", err)
 	}
-	klog.V(1).Infof("Ranges:\n%s", f.Status())
-	time.Sleep(time.Second)
+	klog.V(1).Infof("Completed ranges:\n%s", f.Status())
 }
 
 // defaultMerkleLeafHasher parses a C2SP tlog-tile bundle and returns the Merkle leaf hashes of each entry it contains.

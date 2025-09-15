@@ -16,9 +16,9 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"io"
-	"os"
 	"time"
 
 	"github.com/transparency-dev/tessera/cmd/fsck/tui"
@@ -28,7 +28,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func runUI(f *fsck.Fsck) error {
+func runUI(ctx context.Context, f *fsck.Fsck) error {
 	m := tui.NewAppModel()
 	p := tea.NewProgram(m)
 
@@ -36,7 +36,6 @@ func runUI(f *fsck.Fsck) error {
 	_ = flag.Set("alsologtostderr", "false")
 	r, w := io.Pipe()
 	klog.SetOutput(w)
-
 	go func() {
 		s := bufio.NewScanner(r)
 		for s.Scan() {
@@ -46,15 +45,18 @@ func runUI(f *fsck.Fsck) error {
 
 	go func() {
 		for {
-			<-time.After(100 * time.Millisecond)
-			cmd := tui.UpdateCmd(f.Status())
-			p.Send(cmd())
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+				cmd := tui.UpdateCmd(f.Status())
+				p.Send(cmd())
+			}
 		}
 	}()
 
 	if _, err := p.Run(); err != nil {
 		return err
 	}
-	os.Exit(0)
 	return nil
 }
