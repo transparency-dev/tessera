@@ -29,19 +29,12 @@ import (
 )
 
 var (
-	// percentageStyle controls how the progress bar percentage text is displayed.
-	percentageStyle = lipgloss.NewStyle().
-			MaxWidth(len(" 100.00%")).
-			Align(lipgloss.Right).
-			Width(len(" 100.00%")).
-			Foreground(lipgloss.Color("#f2cdcd"))
+	percentFormat = "%03.2f%%"
+	// percentageStyle defines the layout for the progress bar percentage.
+	percentageStyle = lipgloss.NewStyle().Width(8).MaxWidth(8)
 
-	// labelStyle controls how the progress bar label is displayed.
-	labelStyle = lipgloss.NewStyle().
-			MaxWidth(16).
-			Align(lipgloss.Left).
-			Width(16).
-			Foreground(lipgloss.Color("#f2cdcd"))
+	// labelStyle defines the layout for the progress bar label.
+	labelStyle = lipgloss.NewStyle().Width(16).MaxWidth(16)
 
 	// stateStyle defines how the different fsck.State types show up in the progress bar.
 	stateStyle = map[fsck.State]struct {
@@ -104,12 +97,10 @@ type layerUpdateMsg struct {
 // width is the total width available to this model.
 func NewLayerProgressBar(label string, width int, level int) *layerProgressModel {
 	m := &layerProgressModel{
-		label:           label,
-		width:           width,
-		level:           level,
-		colorProfile:    termenv.ColorProfile(),
-		PercentageStyle: percentageStyle,
-		LabelStyle:      labelStyle,
+		label:        label,
+		width:        width,
+		level:        level,
+		colorProfile: termenv.ColorProfile(),
 	}
 	return m
 }
@@ -177,16 +168,19 @@ func (m *layerProgressModel) ViewAs(rs []fsck.Range) string {
 	for _, r := range rs {
 		byState[r.State] += r.N
 	}
+
+	// Render the pieces
 	percentView := m.percentageView(float64(byState[fsck.OK]) / float64(extent))
-	labelView := m.LabelStyle.Inline(true).Render(m.label)
-	barSize := m.width - ansi.StringWidth(labelView) - 1 - ansi.StringWidth(percentView) - 1
-	levelSize := barSize >> m.level
-	barView := renderBar(rs, levelSize)
+	labelView := labelStyle.Inline(true).Render(m.label)
+	barWidth := m.width - ansi.StringWidth(labelView) - 1 - ansi.StringWidth(percentView) - 1
+	// Squash higher levels so the bars look a bit more tree-like.
+	levelSize := barWidth >> m.level
+	barView := lipgloss.NewStyle().Width(barWidth).MaxWidth(barWidth).Align(lipgloss.Center).Inline(true).Render(renderBar(rs, levelSize))
 
 	return lipgloss.JoinHorizontal(
 		lipgloss.Left,
 		labelView,
-		lipgloss.NewStyle().Width(barSize).MaxWidth(barSize).Align(lipgloss.Center).Render(barView),
+		barView,
 		percentView)
 }
 
@@ -230,6 +224,5 @@ func renderBar(r []fsck.Range, width int) string {
 func (m *layerProgressModel) percentageView(percent float64) string {
 	percent = math.Max(0, math.Min(1, percent))
 	percentage := fmt.Sprintf(" %03.2f%%", percent*100)
-	percentage = m.PercentageStyle.Inline(true).Render(percentage)
-	return percentage
+	return percentageStyle.Inline(true).Render(percentage)
 }

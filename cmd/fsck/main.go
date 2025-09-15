@@ -90,7 +90,7 @@ func main() {
 
 	if *ui {
 		tui.RunApp(ctx, f)
-		// User exited the UI, cancel the context to signal to everything else.
+		// User may have exited the UI, cancel the context to signal to everything else.
 		cancel()
 	} else {
 		for {
