@@ -28,6 +28,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // RunApp runs the TUI app, using the provided fsck instance to fetch updates from to populate the UI.
@@ -43,7 +44,9 @@ func RunApp(ctx context.Context, f *fsck.Fsck) error {
 	go func() {
 		s := bufio.NewScanner(r)
 		for s.Scan() {
-			p.Send(tea.Println(s.Text())())
+			l := ansi.StringWidth(s.Text())
+			txt := ansi.InsertLine(l) + s.Text()
+			p.Send(tea.Println(txt)())
 		}
 	}()
 
@@ -167,9 +170,9 @@ func (m *FsckAppModel) View() string {
 
 	content := lipgloss.NewStyle().
 		Width(m.width).
-		Height(lipgloss.Height(barsView)).
-		Align(lipgloss.Center, lipgloss.Bottom).
-		Border(lipgloss.NormalBorder(), false, false, true, false).
+		Height(lipgloss.Height(barsView)+1).
+		Align(lipgloss.Center, lipgloss.Top).
+		Border(lipgloss.NormalBorder(), true, false, false, false).
 		Render(barsView)
 
 	return lipgloss.JoinVertical(lipgloss.Top, content)
