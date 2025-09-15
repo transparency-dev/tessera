@@ -52,9 +52,15 @@ func RunApp(ctx context.Context, f *fsck.Fsck) error {
 		for {
 			select {
 			case <-ctx.Done():
+				// Have the UI update one last time to show where we got to (this helps ensure we see 100%
+				// on the progress bars if we're exiting because the fsck has completed).
+				p.Send(UpdateCmd(f.Status())())
+				// Give the UI a bit of time to render...
+				<-time.After(100 * time.Millisecond)
+				// And then we're out.
 				p.Send(tea.Quit())
 			case <-time.After(100 * time.Millisecond):
-				p.Send(UpdateMsg(f.Status()))
+				p.Send(UpdateCmd(f.Status())())
 			}
 		}
 	}()
@@ -175,6 +181,8 @@ type updateMsg struct {
 }
 
 // UpdateCmd returns a Cmd which Bubbletea can execute in order to retrieve and updateMsg.
-func UpdateMsg(status fsck.Status) tea.Msg {
-	return updateMsg{s: status}
+func UpdateCmd(status fsck.Status) tea.Cmd {
+	return func() tea.Msg {
+		return updateMsg{s: status}
+	}
 }
