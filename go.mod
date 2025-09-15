@@ -3,8 +3,8 @@ module github.com/transparency-dev/tessera
 go 1.24.0
 
 require (
-	cloud.google.com/go/spanner v1.85.0
-	cloud.google.com/go/storage v1.56.1
+	cloud.google.com/go/spanner v1.85.1
+	cloud.google.com/go/storage v1.56.2
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.53.0
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace v1.29.0
 	github.com/RobinUS2/golang-moving-average v1.0.0
@@ -114,7 +114,7 @@ require (
 	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/term v0.35.0 // indirect
 	golang.org/x/text v0.29.0 // indirect
-	golang.org/x/time v0.12.0 // indirect
+	golang.org/x/time v0.12.0
 	google.golang.org/genproto v0.0.0-20250603155806-513f23925822 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20250825161204-c5933d9347a5 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250825161204-c5933d9347a5 // indirect
