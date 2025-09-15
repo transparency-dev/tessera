@@ -82,7 +82,7 @@ var (
 			priority: 2,
 		},
 		fsck.Invalid: {
-			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#f38ba8")),
+			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#f38b38")),
 			bar:      "!",
 			priority: 10,
 		},
@@ -179,25 +179,29 @@ func (m *AppModel) View() string {
 	}
 	barsView := lipgloss.JoinVertical(lipgloss.Bottom, bars...)
 
-	header := lipgloss.NewStyle().
-		Align(lipgloss.Center).
-		Width(m.width).
-		Border(lipgloss.NormalBorder(), false, false, true, false).
-		Render("fsck")
+	/*
+		header := lipgloss.NewStyle().
+			Align(lipgloss.Center).
+			Width(m.width).
+			Border(lipgloss.NormalBorder(), false, false, true, false).
+			Render("fsck")
+	*/
 	content := lipgloss.NewStyle().
 		Width(m.width).
 		Height(lipgloss.Height(barsView)).
 		Align(lipgloss.Center, lipgloss.Bottom).
 		Border(lipgloss.NormalBorder(), false, false, true, false).
 		Render(barsView)
-	messages := lipgloss.NewStyle().
-		Align(lipgloss.Center).
-		Width(m.width).
-		Height(m.height-lipgloss.Height(header)-lipgloss.Height(content)).
-		Border(lipgloss.NormalBorder(), true, false, true, false).
-		Render("messages")
+	/*
+		messages := lipgloss.NewStyle().
+			Align(lipgloss.Center).
+			Width(m.width).
+			Height(m.height-lipgloss.Height(header)-lipgloss.Height(content)).
+			Border(lipgloss.NormalBorder(), true, false, true, false).
+			Render("messages")
+	*/
 
-	return lipgloss.JoinVertical(lipgloss.Top, header, messages, content)
+	return lipgloss.JoinVertical(lipgloss.Top, content)
 }
 
 // updateMsg is used to tell the model about updated status from the fsck.

@@ -15,18 +15,34 @@
 package main
 
 import (
+	"bufio"
+	"flag"
+	"io"
 	"os"
 	"time"
 
 	"github.com/transparency-dev/tessera/cmd/fsck/tui"
 	"github.com/transparency-dev/tessera/fsck"
+	"k8s.io/klog/v2"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 func runUI(f *fsck.Fsck) error {
 	m := tui.NewAppModel()
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m)
+
+	_ = flag.Set("logtostderr", "false")
+	_ = flag.Set("alsologtostderr", "false")
+	r, w := io.Pipe()
+	klog.SetOutput(w)
+
+	go func() {
+		s := bufio.NewScanner(r)
+		for s.Scan() {
+			p.Send(tea.Println(s.Text())())
+		}
+	}()
 
 	go func() {
 		for {
