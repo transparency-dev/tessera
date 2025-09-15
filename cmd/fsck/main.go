@@ -27,6 +27,7 @@ import (
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/client"
+	"github.com/transparency-dev/tessera/cmd/fsck/tui"
 	"github.com/transparency-dev/tessera/fsck"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/time/rate"
@@ -88,7 +89,7 @@ func main() {
 	}()
 
 	if *ui {
-		runUI(ctx, f)
+		tui.RunApp(ctx, f)
 		// User exited the UI, cancel the context to signal to everything else.
 		cancel()
 	} else {

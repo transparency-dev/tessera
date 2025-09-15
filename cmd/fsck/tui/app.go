@@ -16,13 +16,54 @@
 package tui
 
 import (
+	"bufio"
+	"context"
+	"flag"
 	"fmt"
+	"io"
+	"time"
 
 	"github.com/transparency-dev/tessera/fsck"
+	"k8s.io/klog/v2"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// RunApp runs the TUI app, using the provided fsck instance to fetch updates from to populate the UI.
+func RunApp(ctx context.Context, f *fsck.Fsck) error {
+	m := NewFsckAppModel()
+	p := tea.NewProgram(m)
+
+	// Redirect logging so as to appear above the UI
+	_ = flag.Set("logtostderr", "false")
+	_ = flag.Set("alsologtostderr", "false")
+	r, w := io.Pipe()
+	klog.SetOutput(w)
+	go func() {
+		s := bufio.NewScanner(r)
+		for s.Scan() {
+			p.Send(tea.Println(s.Text())())
+		}
+	}()
+
+	// Send periodic status updates to the UI from fsck.
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				p.Send(tea.Quit())
+			case <-time.After(100 * time.Millisecond):
+				p.Send(UpdateMsg(f.Status()))
+			}
+		}
+	}()
+
+	if _, err := p.Run(); err != nil {
+		return err
+	}
+	return nil
+}
 
 // NewFsckAppModel creates a new BubbleTea model for the TUI.
 func NewFsckAppModel() *FsckAppModel {
