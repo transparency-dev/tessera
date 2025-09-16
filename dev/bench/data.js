@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1758018020776,
+  "lastUpdate": 1758038749708,
   "repoUrl": "https://github.com/transparency-dev/tessera",
   "entries": {
     "Benchmark": [
@@ -43680,6 +43680,198 @@ window.BENCHMARK_DATA = {
             "value": 14373,
             "unit": "allocs/op",
             "extra": "1832 times\n4 procs"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "al@google.com",
+            "name": "Al Cutter",
+            "username": "AlCutter"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "010300f4b9a6827437eba87f16b29483871fff75",
+          "message": "Add a TUI to cmd/fsck (#767)\n\nAdds a simple UI to the fsck too which allows the user to visibly see the progress.\n\nWhen running against large logs, fsck can take a long time to complete, so it's important to show that the process is ongoing and progress is being made.\n\nThis PR adds several combination status/progress bar widgets - one for entry bundles, and then one for each layer of tiles in the target log. The app uses the Status call from fsck.Fsck to periodically fetch updated information on the state of the check, and updates the bars accordingly, using a combination of colour and glyph to represent each of the possible states a range of static artifacts can be in.\n\nThe UI that this PR adds doesn't completely take over the terminal/use the \"alt screen\", but works in a way which is complementary to the existing klog info lines and terminal scroll-back.",
+          "timestamp": "2025-09-16T17:04:16+01:00",
+          "tree_id": "a131f25d33ef5acb0a747b1c5ad94da38674723e",
+          "url": "https://github.com/transparency-dev/tessera/commit/010300f4b9a6827437eba87f16b29483871fff75"
+        },
+        "date": 1758038748675,
+        "tool": "go",
+        "benches": [
+          {
+            "name": "BenchmarkDedupe",
+            "value": 3983413,
+            "unit": "ns/op\t  984789 B/op\t   23863 allocs/op",
+            "extra": "308 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedupe - ns/op",
+            "value": 3983413,
+            "unit": "ns/op",
+            "extra": "308 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedupe - B/op",
+            "value": 984789,
+            "unit": "B/op",
+            "extra": "308 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedupe - allocs/op",
+            "value": 23863,
+            "unit": "allocs/op",
+            "extra": "308 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait",
+            "value": 1543523,
+            "unit": "ns/op\t     701 B/op\t      13 allocs/op",
+            "extra": "757 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait - ns/op",
+            "value": 1543523,
+            "unit": "ns/op",
+            "extra": "757 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait - B/op",
+            "value": 701,
+            "unit": "B/op",
+            "extra": "757 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "757 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction",
+            "value": 237506,
+            "unit": "ns/op\t    3697 B/op\t      46 allocs/op",
+            "extra": "4489 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - ns/op",
+            "value": 237506,
+            "unit": "ns/op",
+            "extra": "4489 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - B/op",
+            "value": 3697,
+            "unit": "B/op",
+            "extra": "4489 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - allocs/op",
+            "value": 46,
+            "unit": "allocs/op",
+            "extra": "4489 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText",
+            "value": 7611,
+            "unit": "ns/op\t    6528 B/op\t       1 allocs/op",
+            "extra": "140978 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - ns/op",
+            "value": 7611,
+            "unit": "ns/op",
+            "extra": "140978 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - B/op",
+            "value": 6528,
+            "unit": "B/op",
+            "extra": "140978 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - allocs/op",
+            "value": 1,
+            "unit": "allocs/op",
+            "extra": "140978 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe",
+            "value": 222.1,
+            "unit": "ns/op\t     224 B/op\t       5 allocs/op",
+            "extra": "5380683 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - ns/op",
+            "value": 222.1,
+            "unit": "ns/op",
+            "extra": "5380683 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - B/op",
+            "value": 224,
+            "unit": "B/op",
+            "extra": "5380683 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - allocs/op",
+            "value": 5,
+            "unit": "allocs/op",
+            "extra": "5380683 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate",
+            "value": 343726,
+            "unit": "ns/op\t  279050 B/op\t    3081 allocs/op",
+            "extra": "4086 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - ns/op",
+            "value": 343726,
+            "unit": "ns/op",
+            "extra": "4086 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - B/op",
+            "value": 279050,
+            "unit": "B/op",
+            "extra": "4086 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - allocs/op",
+            "value": 3081,
+            "unit": "allocs/op",
+            "extra": "4086 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue",
+            "value": 681639,
+            "unit": "ns/op\t  503008 B/op\t   14373 allocs/op",
+            "extra": "1767 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - ns/op",
+            "value": 681639,
+            "unit": "ns/op",
+            "extra": "1767 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - B/op",
+            "value": 503008,
+            "unit": "B/op",
+            "extra": "1767 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - allocs/op",
+            "value": 14373,
+            "unit": "allocs/op",
+            "extra": "1767 times\n4 procs"
           }
         ]
       }
