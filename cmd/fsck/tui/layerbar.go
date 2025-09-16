@@ -36,46 +36,36 @@ var (
 	labelStyle = lipgloss.NewStyle().Width(16).MaxWidth(16)
 
 	// stateStyle defines how the different fsck.State types show up in the progress bar.
-	stateStyle = map[fsck.State]struct {
-		// style is the style to use for this state in the progress bar.
-		style lipgloss.Style
-		// bar is the character(s) used for representing this state in the progress bar.
-		bar string
-		// priority maps each possible state to a relative importance of that priority.
-		// This is used when displaying the overall state of a range of resources where multiple
-		// states are present.
-		// The highest priority state represented in the range "wins".
-		priority int
-	}{
+	stateStyles = map[fsck.State]stateStyle{
 		fsck.Unknown: {
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#313244")),
 			bar:      "◻",
 			priority: 1,
 		},
-		fsck.Fetching: {
-			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#eeeeee")),
-			bar:      "◻",
-			priority: 3,
+		fsck.OK: {
+			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#86a381")),
+			bar:      "◼",
+			priority: 2,
 		},
-		fsck.FetchError: {
-			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#fab387")),
-			bar:      "E",
-			priority: 9,
+		fsck.Calculating: {
+			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#89dceb")),
+			bar:      "C",
+			priority: 3,
 		},
 		fsck.Fetched: {
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#94e2d5")),
 			bar:      "◼",
 			priority: 4,
 		},
-		fsck.Calculating: {
-			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#89dceb")),
-			bar:      "C",
+		fsck.Fetching: {
+			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#eeeeee")),
+			bar:      "◼",
 			priority: 5,
 		},
-		fsck.OK: {
-			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#86a381")),
-			bar:      "◼",
-			priority: 2,
+		fsck.FetchError: {
+			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#fab387")),
+			bar:      "E",
+			priority: 9,
 		},
 		fsck.Invalid: {
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#f38b38")),
@@ -84,6 +74,24 @@ var (
 		},
 	}
 )
+
+type stateStyle struct {
+	// style is the style to use for this state in the progress bar.
+	style lipgloss.Style
+	// bar is the character(s) used for representing this state in the progress bar.
+	bar string
+	// priority maps each possible state to a relative importance of that priority.
+	// This is used when displaying the overall state of a range of resources where multiple
+	// states are present.
+	// The highest priority state represented in the range "wins".
+	priority int
+}
+
+// Render returns a string representing a single segment of a LayerProgressBar, styled
+// appropriately for the state.
+func (s stateStyle) Render() string {
+	return s.style.Inline(true).Render(s.bar)
+}
 
 // LayerUpdateMsg is a message which carries information for a specific layer in the tree (e.g. tiles for a specific level).
 type LayerUpdateMsg struct {
@@ -185,18 +193,21 @@ func (m *LayerProgressModel) ViewAs(rs []fsck.Range) string {
 
 // stateForRange figures out the right state style to use for the progress bar section covering range [f, f+n),
 // using the provided fsck status ranges.
-func stateForRange(rs []fsck.Range, f, n uint64) string {
-	ret := "?"
-	pri := 0
+func stateForRange(rs []fsck.Range, f, n uint64) stateStyle {
+	ret := stateStyles[fsck.Unknown]
+	found := false
 	for _, r := range rs {
-		if (f >= r.First && f < r.First+r.N) ||
-			(f < r.First && f+n > r.First+r.N) ||
-			(f+n > r.First && f+n < r.First+r.N) {
-			s := stateStyle[r.State]
-			if s.priority > pri {
-				pri = s.priority
-				ret = s.style.Inline(true).Render(s.bar)
+		if r.First <= f && f < r.First+r.N {
+			found = true
+		}
+		if found {
+			s := stateStyles[r.State]
+			if s.priority > ret.priority {
+				ret = s
 			}
+		}
+		if r.First+r.N > f+n {
+			break
 		}
 	}
 	return ret
@@ -213,7 +224,7 @@ func renderBar(r []fsck.Range, width int) string {
 	rFirst := float64(0)
 	for i := range width {
 		chunk := (float64(rangeExtent) - rFirst - 1) / float64(width-i)
-		_, _ = sb.WriteString(stateForRange(r, uint64(math.Round(rFirst)), uint64(math.Round(chunk))))
+		_, _ = sb.WriteString(stateForRange(r, uint64(math.Round(rFirst)), uint64(math.Round(chunk))).Render())
 		rFirst += chunk
 	}
 	return sb.String()
