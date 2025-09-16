@@ -33,28 +33,28 @@ func TestStateForRange(t *testing.T) {
 			rs:   []fsck.Range{{First: 0, N: 10, State: fsck.Calculating}},
 			f:    0,
 			n:    3,
-			want: stateStyles[fsck.Calculating],
+			want: stateStylesByState[fsck.Calculating],
 		},
 		{
 			name: "single range, all contained internal",
 			rs:   []fsck.Range{{First: 0, N: 10, State: fsck.Calculating}},
 			f:    1,
 			n:    3,
-			want: stateStyles[fsck.Calculating],
+			want: stateStylesByState[fsck.Calculating],
 		},
 		{
 			name: "single range, all contained RHS",
 			rs:   []fsck.Range{{First: 0, N: 10, State: fsck.Calculating}},
 			f:    7,
 			n:    3,
-			want: stateStyles[fsck.Calculating],
+			want: stateStylesByState[fsck.Calculating],
 		},
 		{
 			name: "single range, all contained full overlap",
 			rs:   []fsck.Range{{First: 0, N: 10, State: fsck.Calculating}},
 			f:    0,
 			n:    10,
-			want: stateStyles[fsck.Calculating],
+			want: stateStylesByState[fsck.Calculating],
 		},
 		{
 			name: "multiple ranges, contained in first",
@@ -65,7 +65,7 @@ func TestStateForRange(t *testing.T) {
 			},
 			f:    1,
 			n:    3,
-			want: stateStyles[fsck.Calculating],
+			want: stateStylesByState[fsck.Calculating],
 		},
 		{
 			name: "multiple ranges, contained in last",
@@ -76,7 +76,7 @@ func TestStateForRange(t *testing.T) {
 			},
 			f:    11,
 			n:    3,
-			want: stateStyles[fsck.OK],
+			want: stateStylesByState[fsck.OK],
 		},
 		{
 			name: "multiple ranges, spans two",
@@ -87,7 +87,7 @@ func TestStateForRange(t *testing.T) {
 			},
 			f:    8,
 			n:    10,
-			want: stateStyles[fsck.Invalid],
+			want: stateStylesByState[fsck.Invalid],
 		},
 		{
 			name: "multiple ranges, spans three",
@@ -99,13 +99,13 @@ func TestStateForRange(t *testing.T) {
 			},
 			f:    18,
 			n:    20,
-			want: stateStyles[fsck.Invalid],
+			want: stateStylesByState[fsck.Invalid],
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := stateForRange(test.rs, test.f, test.n)
-			if got.priority != test.want.priority {
-				t.Fatalf("Got %v, want %v", got, test.want)
+			if got.state != test.want.state {
+				t.Fatalf("Got %v, want %v", got.state, test.want.state)
 			}
 		})
 

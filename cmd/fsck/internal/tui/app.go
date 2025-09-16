@@ -167,6 +167,7 @@ func (m *FsckAppModel) View() string {
 	if m.entriesBar != nil {
 		bars = append(bars, m.entriesBar.View())
 	}
+	bars = append(bars, tui.LayerProgressKey())
 	barsView := lipgloss.JoinVertical(lipgloss.Bottom, bars...)
 
 	content := lipgloss.NewStyle().
