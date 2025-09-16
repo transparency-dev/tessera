@@ -103,8 +103,9 @@ func main() {
 	// Run the HTTP server with the single handler and block until this is terminated
 	h2s := &http2.Server{}
 	h1s := &http.Server{
-		Addr:    *listen,
-		Handler: h2c.NewHandler(http.DefaultServeMux, h2s),
+		Addr:              *listen,
+		Handler:           h2c.NewHandler(http.DefaultServeMux, h2s),
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if err := http2.ConfigureServer(h1s, h2s); err != nil {
 		klog.Exitf("http2.ConfigureServer: %v", err)
