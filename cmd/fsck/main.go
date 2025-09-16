@@ -27,6 +27,7 @@ import (
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/client"
+	"github.com/transparency-dev/tessera/cmd/fsck/internal/tui"
 	"github.com/transparency-dev/tessera/fsck"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/time/rate"
@@ -40,12 +41,13 @@ var (
 	origin      = flag.String("origin", "", "Origin of the log to check, if unset, will use the name of the provided public key")
 	pubKey      = flag.String("public_key", "", "Path to a file containing the log's public key")
 	qps         = flag.Float64("qps", 0, "Max QPS to send to the target log. Set to zero for unlimited")
+	ui          = flag.Bool("ui", true, "Set to true to use a TUI to display progress, or false for logging")
 )
 
 func main() {
 	klog.InitFlags(nil)
 	flag.Parse()
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 	logURL, err := url.Parse(*storageURL)
 	if err != nil {
 		klog.Exitf("Invalid --storage_url %q: %v", *storageURL, err)
@@ -77,16 +79,31 @@ func main() {
 		*origin = v.Name()
 	}
 	f := fsck.New(*origin, v, src, defaultMerkleLeafHasher, fsck.Opts{N: *N})
+
 	go func() {
-		for {
-			time.Sleep(time.Second)
-			klog.V(1).Infof("Ranges:\n%s", f.Status())
+		if err := f.Check(ctx); err != nil {
+			klog.Errorf("fsck failed: %v", err)
 		}
+		klog.V(1).Infof("Completed ranges:\n%s", f.Status())
+		cancel()
 	}()
-	if err := f.Check(ctx); err != nil {
-		klog.Exitf("fsck failed: %v", err)
+
+	if *ui {
+		if err := tui.RunApp(ctx, f); err != nil {
+			klog.Errorf("App exited: %v", err)
+		}
+		// User may have exited the UI, cancel the context to signal to everything else.
+		cancel()
+	} else {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+				klog.V(1).Infof("Ranges:\n%s", f.Status())
+			}
+		}
 	}
-	klog.V(1).Infof("Ranges:\n%s", f.Status())
 }
 
 // defaultMerkleLeafHasher parses a C2SP tlog-tile bundle and returns the Merkle leaf hashes of each entry it contains.
