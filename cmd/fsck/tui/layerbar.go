@@ -36,46 +36,67 @@ var (
 	labelStyle = lipgloss.NewStyle().Width(16).MaxWidth(16)
 
 	// stateStyle defines how the different fsck.State types show up in the progress bar.
-	stateStyles = map[fsck.State]stateStyle{
-		fsck.Unknown: {
+	stateStyles = []stateStyle{
+		{
+			state:    fsck.Unknown,
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#313244")),
 			bar:      "◻",
 			priority: 1,
-		},
-		fsck.OK: {
+		}, {
+			state:    fsck.OK,
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#86a381")),
 			bar:      "◼",
 			priority: 2,
-		},
-		fsck.Calculating: {
+		}, {
+			state:    fsck.Calculating,
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#89dceb")),
 			bar:      "C",
 			priority: 3,
-		},
-		fsck.Fetched: {
+		}, {
+			state:    fsck.Fetched,
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#94e2d5")),
 			bar:      "◼",
 			priority: 4,
-		},
-		fsck.Fetching: {
+		}, {
+			state:    fsck.Fetching,
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#eeeeee")),
 			bar:      "◼",
 			priority: 5,
-		},
-		fsck.FetchError: {
+		}, {
+			state:    fsck.FetchError,
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#fab387")),
 			bar:      "E",
 			priority: 9,
-		},
-		fsck.Invalid: {
+		}, {
+			state:    fsck.Invalid,
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#f38b38")),
 			bar:      "!",
 			priority: 10,
 		},
 	}
+
+	// stateStylesByState maps styles to their corresponding fsck.State.
+	stateStylesByState = func() map[fsck.State]stateStyle {
+		r := make(map[fsck.State]stateStyle)
+		for _, v := range stateStyles {
+			r[v.state] = v
+		}
+		return r
+	}()
 )
 
+// LayerProgressKey returns a rendered "key" which can be used in the UI to visually explain
+// to the user which fsck state is associated with the various styles.
+func LayerProgressKey() string {
+	r := make([]string, 0, len(stateStyles))
+	for _, s := range stateStyles {
+		r = append(r, fmt.Sprintf("%s %s", s.Render(), s.state.String()))
+	}
+	return strings.Join(r, " | ")
+}
+
 type stateStyle struct {
+	state fsck.State
 	// style is the style to use for this state in the progress bar.
 	style lipgloss.Style
 	// bar is the character(s) used for representing this state in the progress bar.
@@ -194,14 +215,14 @@ func (m *LayerProgressModel) ViewAs(rs []fsck.Range) string {
 // stateForRange figures out the right state style to use for the progress bar section covering range [f, f+n),
 // using the provided fsck status ranges.
 func stateForRange(rs []fsck.Range, f, n uint64) stateStyle {
-	ret := stateStyles[fsck.Unknown]
+	ret := stateStylesByState[fsck.Unknown]
 	found := false
 	for _, r := range rs {
 		if r.First <= f && f < r.First+r.N {
 			found = true
 		}
 		if found {
-			s := stateStyles[r.State]
+			s := stateStylesByState[r.State]
 			if s.priority > ret.priority {
 				ret = s
 			}
