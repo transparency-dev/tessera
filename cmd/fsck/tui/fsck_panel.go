@@ -115,17 +115,19 @@ func (m *FsckPanel) View() string {
 		bars = append(bars, m.entriesBar.View())
 	}
 	bars = append(bars, LayerProgressKey())
-	bars = append(bars, lipgloss.NewStyle().Align(lipgloss.Left).Render(m.statsView.View()))
 	barsView := lipgloss.JoinVertical(lipgloss.Bottom, bars...)
 
-	content := lipgloss.NewStyle().
+	progress := lipgloss.NewStyle().
 		Width(m.width).
 		Height(lipgloss.Height(barsView)+1).
-		Align(lipgloss.Center, lipgloss.Top).
 		Border(lipgloss.NormalBorder(), true, false, false, false).
 		Render(barsView)
 
-	return lipgloss.JoinVertical(lipgloss.Top, content)
+	stats := lipgloss.NewStyle().Align(lipgloss.Left).Render(m.statsView.View())
+
+	return lipgloss.NewStyle().Align(lipgloss.Center).Render(
+		lipgloss.JoinVertical(lipgloss.Top, progress, stats),
+	)
 }
 
 // FsckPanelUpdateMsg is used to tell the FsckPanel about updated status from the fsck operation.

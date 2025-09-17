@@ -164,15 +164,23 @@ func (f *Fsck) Check(ctx context.Context) error {
 	return nil
 }
 
+// Status represents the current status of an ongoing fsck check.
 type Status struct {
+	// EntryRanges describes the status of the entrybundles in the target log.
 	EntryRanges []Range
-	TileRanges  [][]Range
+	// TileRanges describes the status of the tiles in the target log.
+	// The zeroth entry in the slice represents the lower-most tile level, just above the entry bundles.
+	TileRanges [][]Range
 
-	BytesFetched      uint64
-	ResourcesFetched  uint64
+	// BytesFetched is the total number of bytes fetched from the target log since the last time Status() was called.
+	BytesFetched uint64
+	// ResourcesFetched is the total number of resources fetched from the target log since the last time Status() was called.
+	ResourcesFetched uint64
+	// ErrorsEncountered is the total number of errors encountered since the last time Status() was called.
 	ErrorsEncountered uint64
 }
 
+// Status returns a struct representing the current status of the fsck operation.
 func (f *Fsck) Status() Status {
 	if f.rangeTracker == nil {
 		return Status{}

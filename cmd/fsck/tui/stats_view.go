@@ -74,30 +74,48 @@ func (m *StatsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastUpdate = now
 
 		b := msg.Status.BytesFetched
-		r := msg.Status.ResourcesFetched
-		e := msg.Status.ErrorsEncountered
 		m.totalBytes += b
+		bytesPerSecond := float64(b) / d.Seconds()
+		m.bytesAvg.Add(bytesPerSecond)
+
+		r := msg.Status.ResourcesFetched
 		m.totalResources += r
+		resourcesPerSecond := float64(r) / d.Seconds()
+		m.resourcesAvg.Add(resourcesPerSecond)
+
+		e := msg.Status.ErrorsEncountered
 		m.totalErrors += e
-		m.bytesAvg.Add(float64(b) / d.Seconds())
-		m.resourcesAvg.Add(float64(r) / d.Seconds())
-		m.errorsAvg.Add(float64(e) / d.Seconds())
+		errorsPerSecond := float64(e) / d.Seconds()
+		m.errorsAvg.Add(errorsPerSecond)
+
+		totalResources := totalSize(msg.Status.EntryRanges)
+		for _, rs := range msg.Status.TileRanges {
+			totalResources += totalSize(rs)
+		}
+
+		m.eta = time.Duration(float64(totalResources-m.totalResources)/resourcesPerSecond) * time.Second
+
 		return m, nil
 	default:
 		return m, nil
 	}
 }
 
-func (m *StatsViewModel) View() string {
-	// Render the pieces
+// totalSize returns the total number of elements covered by the provided ranges.
+func totalSize(rs []fsck.Range) uint64 {
+	tot := uint64(0)
+	for _, r := range rs {
+		tot += r.N
+	}
+	return tot
+}
 
-	bytesFetched := lipgloss.NewStyle().Width(27).Render(fmt.Sprintf("Bytes: %s (%s/s)", humanize.Bytes(m.totalBytes), humanize.Bytes(uint64(m.bytesAvg.Avg()))))
-	rSI, rP := humanize.ComputeSI(float64(m.totalResources))
-	rAvgSI, rAvgP := humanize.ComputeSI(float64(m.resourcesAvg.Avg()))
-	resourcesFetched := lipgloss.NewStyle().Width(28).Render(fmt.Sprintf("Resources: %03.1f %s (%03.1f%s/s)", rSI, rP, rAvgSI, rAvgP))
-	eSI, eP := humanize.ComputeSI(float64(m.totalErrors))
-	eAvgSI, eAvgP := humanize.ComputeSI(float64(m.errorsAvg.Avg()))
-	errorsEncountered := lipgloss.NewStyle().Width(20).Render(fmt.Sprintf("Errors: %03.1f %s (%03.1f%s/s)", eSI, eP, eAvgSI, eAvgP))
+func (m *StatsViewModel) View() string {
+	bytesFetched := lipgloss.NewStyle().Width(27).Render(formatTotalAndAverage("Bytes", m.totalBytes, m.bytesAvg.Avg()))
+	resourcesFetched := lipgloss.NewStyle().Width(30).Render(formatTotalAndAverage("Resources", m.totalResources, m.resourcesAvg.Avg()))
+	errorsEncountered := lipgloss.NewStyle().Width(23).Render(formatTotalAndAverage("Errors", m.totalErrors, m.errorsAvg.Avg()))
+
+	eta := lipgloss.NewStyle().Width(15).Render(fmt.Sprintf("ETA: %s", m.eta))
 
 	return lipgloss.NewStyle().
 		Width(m.width).Render(
@@ -105,6 +123,14 @@ func (m *StatsViewModel) View() string {
 			lipgloss.Right,
 			bytesFetched,
 			resourcesFetched,
-			errorsEncountered),
+			errorsEncountered,
+			eta),
 	)
+}
+
+func formatTotalAndAverage(label string, total uint64, avg float64) string {
+	si, p := humanize.ComputeSI(float64(total))
+	avgSI, avgP := humanize.ComputeSI(avg)
+
+	return fmt.Sprintf("%s: %0.1f %s (%03.1f%s/s)", label, si, p, avgSI, avgP)
 }
