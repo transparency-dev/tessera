@@ -25,7 +25,9 @@ import (
 
 // NewFsckPanel creates a new TUI panel showing information about an ongoing fsck operation.
 func NewFsckPanel() *FsckPanel {
-	r := &FsckPanel{}
+	r := &FsckPanel{
+		statsView: NewStatsView(),
+	}
 	return r
 }
 
@@ -36,6 +38,8 @@ type FsckPanel struct {
 	// titlesBars is the list status/progress bars representing progress through the various levels of tiles in the log.
 	// The zeroth entry corresponds to the tiles on level zero.
 	tilesBars []*LayerProgressModel
+
+	statsView *StatsViewModel
 
 	// width is the width of the app window
 	width int
@@ -90,6 +94,9 @@ func (m *FsckPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 
+		_, cmd = m.statsView.Update(msg)
+		cmds = append(cmds, cmd)
+
 		return m, tea.Batch(cmds...)
 	default:
 		return m, nil
@@ -110,14 +117,17 @@ func (m *FsckPanel) View() string {
 	bars = append(bars, LayerProgressKey())
 	barsView := lipgloss.JoinVertical(lipgloss.Bottom, bars...)
 
-	content := lipgloss.NewStyle().
+	progress := lipgloss.NewStyle().
 		Width(m.width).
 		Height(lipgloss.Height(barsView)+1).
-		Align(lipgloss.Center, lipgloss.Top).
 		Border(lipgloss.NormalBorder(), true, false, false, false).
 		Render(barsView)
 
-	return lipgloss.JoinVertical(lipgloss.Top, content)
+	stats := lipgloss.NewStyle().Align(lipgloss.Left).Render(m.statsView.View())
+
+	return lipgloss.NewStyle().Align(lipgloss.Center).Render(
+		lipgloss.JoinVertical(lipgloss.Top, progress, stats),
+	)
 }
 
 // FsckPanelUpdateMsg is used to tell the FsckPanel about updated status from the fsck operation.

@@ -44,10 +44,12 @@ type Fetcher interface {
 type Fsck struct {
 	origin       string
 	verifier     note.Verifier
-	fetcher      Fetcher
+	fetcher      *countingFetcher
 	bundleHasher func([]byte) ([][]byte, error)
 	rangeTracker *rangeTracker
 	opts         Opts
+
+	fsckTree *fsckTree
 }
 
 type Opts struct {
@@ -72,13 +74,15 @@ func New(origin string, verifier note.Verifier, f Fetcher, bundleHasher func([]b
 	return &Fsck{
 		origin:       origin,
 		verifier:     verifier,
-		fetcher:      f,
+		fetcher:      newCountingFetcher(f),
 		opts:         opts,
 		bundleHasher: bundleHasher,
 	}
 }
 
 // Check performs an integrity check against the log.
+//
+// Check may only be called once per instance of Fsck.
 func (f *Fsck) Check(ctx context.Context) error {
 	cp, cpRaw, _, err := client.FetchCheckpoint(ctx, f.fetcher.ReadCheckpoint, f.verifier, f.origin)
 	if err != nil {
@@ -90,7 +94,7 @@ func (f *Fsck) Check(ctx context.Context) error {
 
 	f.rangeTracker = newRangeTracker(cp.Size)
 
-	fTree := fsckTree{
+	f.fsckTree = &fsckTree{
 		fetcher:           f.fetcher,
 		bundleHasher:      f.bundleHasher,
 		tree:              (&compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}).NewEmptyRange(0),
@@ -106,17 +110,17 @@ func (f *Fsck) Check(ctx context.Context) error {
 
 	// Kick off resource comparing workers
 	for range f.opts.N {
-		eg.Go(fTree.resourceCheckWorker(ctx))
+		eg.Go(f.fsckTree.resourceCheckWorker(ctx))
 	}
 
 	trackBundle := func(ctx context.Context, idx uint64, p uint8) ([]byte, error) {
-		fTree.rangeTracker.Update(-1, idx, Fetching)
+		f.fsckTree.rangeTracker.Update(-1, idx, Fetching)
 		r, err := f.fetcher.ReadEntryBundle(ctx, idx, p)
 		if err != nil {
-			fTree.rangeTracker.Update(-1, idx, FetchError)
+			f.fsckTree.rangeTracker.Update(-1, idx, FetchError)
 			return nil, err
 		}
-		fTree.rangeTracker.Update(-1, idx, Fetched)
+		f.fsckTree.rangeTracker.Update(-1, idx, Fetched)
 		return r, nil
 	}
 
@@ -127,19 +131,19 @@ func (f *Fsck) Check(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("error while streaming bundles: %v", err)
 		}
-		fTree.rangeTracker.Update(-1, b.RangeInfo.Index, OK)
-		if err := fTree.AppendBundle(b.RangeInfo, b.Data); err != nil {
+		f.fsckTree.rangeTracker.Update(-1, b.RangeInfo.Index, OK)
+		if err := f.fsckTree.AppendBundle(b.RangeInfo, b.Data); err != nil {
 			return fmt.Errorf("failure calling AppendBundle(%v): %v", b.RangeInfo, err)
 		}
-		if fTree.tree.End() >= cp.Size {
+		if f.fsckTree.tree.End() >= cp.Size {
 			break
 		}
 	}
 
 	// Ensure we see process any partial tiles too.
-	fTree.flushPartialTiles()
+	f.fsckTree.flushPartialTiles()
 	// Signal that there will be no more resource checking jobs coming so workers can exit when the channel is drained.
-	close(fTree.expectedResources)
+	close(f.fsckTree.expectedResources)
 
 	// Wait for all the work to be done.
 	if err := eg.Wait(); err != nil {
@@ -147,7 +151,7 @@ func (f *Fsck) Check(ctx context.Context) error {
 	}
 
 	// Finally, check that the claimed root hash matches what we calculated.
-	gotRoot, err := fTree.GetRootHash()
+	gotRoot, err := f.fsckTree.GetRootHash()
 	switch {
 	case err != nil:
 		return fmt.Errorf("failed to calculate root: %v", err)
@@ -160,19 +164,34 @@ func (f *Fsck) Check(ctx context.Context) error {
 	return nil
 }
 
+// Status represents the current status of an ongoing fsck check.
 type Status struct {
+	// EntryRanges describes the status of the entrybundles in the target log.
 	EntryRanges []Range
-	TileRanges  [][]Range
+	// TileRanges describes the status of the tiles in the target log.
+	// The zeroth entry in the slice represents the lower-most tile level, just above the entry bundles.
+	TileRanges [][]Range
+
+	// BytesFetched is the total number of bytes fetched from the target log since the last time Status() was called.
+	BytesFetched uint64
+	// ResourcesFetched is the total number of resources fetched from the target log since the last time Status() was called.
+	ResourcesFetched uint64
+	// ErrorsEncountered is the total number of errors encountered since the last time Status() was called.
+	ErrorsEncountered uint64
 }
 
+// Status returns a struct representing the current status of the fsck operation.
 func (f *Fsck) Status() Status {
 	if f.rangeTracker == nil {
 		return Status{}
 	}
 	e, t := f.rangeTracker.Ranges()
 	r := Status{
-		EntryRanges: e,
-		TileRanges:  t,
+		EntryRanges:       e,
+		TileRanges:        t,
+		BytesFetched:      f.fsckTree.fetcher.bytesFetched.Swap(0),
+		ResourcesFetched:  f.fsckTree.fetcher.resourcesFetched.Swap(0),
+		ErrorsEncountered: f.fsckTree.fetcher.errorsEncountered.Swap(0),
 	}
 	return r
 }
@@ -206,7 +225,7 @@ type resource struct {
 // fsckTree represents the tree we're currently checking.
 type fsckTree struct {
 	// fetcher knows how to retrieve static tlog-tile resources.
-	fetcher Fetcher
+	fetcher *countingFetcher
 	// bundleHasher knows how to convert entry bundles into leaf hashes.
 	bundleHasher func([]byte) ([][]byte, error)
 	// tree contains the running state of the leaves we've appended so far.
@@ -331,4 +350,40 @@ func (f *fsckTree) resourceCheckWorker(ctx context.Context) func() error {
 		}
 		return nil
 	}
+}
+
+// countingFetcher is a Fetcher which keeps track of the total number of bytes and resources fetched.
+type countingFetcher struct {
+	f                 Fetcher
+	bytesFetched      atomic.Uint64
+	resourcesFetched  atomic.Uint64
+	errorsEncountered atomic.Uint64
+}
+
+func newCountingFetcher(f Fetcher) *countingFetcher {
+	return &countingFetcher{
+		f: f,
+	}
+}
+
+func (c *countingFetcher) count(r []byte, err error) ([]byte, error) {
+	if err != nil {
+		c.errorsEncountered.Add(1)
+		return nil, err
+	}
+	c.bytesFetched.Add(uint64(len(r)))
+	c.resourcesFetched.Add(1)
+	return r, nil
+}
+
+func (c *countingFetcher) ReadCheckpoint(ctx context.Context) ([]byte, error) {
+	return c.count(c.f.ReadCheckpoint(ctx))
+}
+
+func (c *countingFetcher) ReadEntryBundle(ctx context.Context, i uint64, p uint8) ([]byte, error) {
+	return c.count(c.f.ReadEntryBundle(ctx, i, p))
+}
+
+func (c *countingFetcher) ReadTile(ctx context.Context, l, i uint64, p uint8) ([]byte, error) {
+	return c.count(c.f.ReadTile(ctx, l, i, p))
 }
