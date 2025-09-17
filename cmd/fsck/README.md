@@ -15,7 +15,7 @@ tiles implied by the tree size it contains.
 It can be run with the following command:
 
 ```bash
-$ go run github.com/transparency-dev/tessera/cmd/experimental/fsck --storage_url=http://localhost:2024/ --public_key=tessera.pub
+$ go run github.com/transparency-dev/tessera/cmd/fsck@main --storage_url=http://localhost:2024/ --public_key=tessera.pub
 I0519 12:48:18.776151   16532 fsck.go:61] Fsck: checking log of size 203150
 I0519 12:48:20.991727   16532 fsck.go:116] Successfully fsck'd log with size 203150 and root veoRTC8vvpl5VyXbG4mALWTBlz75rVKWKnSXoUX3UHU= (bdea114c2f2fbe99795725db1b89802d64c1973ef9ad52962a7497a145f75075)
 ```
