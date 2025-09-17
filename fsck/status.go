@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	// Unknown represents the state of resources we as yet know nothing about.
-	Unknown State = iota
+	// Unchecked represents the state of resources which hasn't yet been checked.
+	Unchecked State = iota
 	// Fetching is the state of a resource being retrieved from the target log.
 	Fetching
 	// FetchError is the state of a failed fetch.
@@ -46,8 +46,8 @@ type State uint8
 // String returns a string representation of the state.
 func (s State) String() string {
 	switch s {
-	case Unknown:
-		return "Unknown"
+	case Unchecked:
+		return "Unchecked"
 	case Fetching:
 		return "Fetching"
 	case FetchError:
@@ -126,14 +126,14 @@ func newRangeTracker(logSize uint64) *rangeTracker {
 			el.PushBack(&Range{
 				First: 0,
 				N:     n,
-				State: Unknown,
+				State: Unchecked,
 			})
 		}
 		l := list.New()
 		l.PushBack(&Range{
 			First: 0,
 			N:     n,
-			State: Unknown,
+			State: Unchecked,
 		})
 		t = append(t, l)
 	}

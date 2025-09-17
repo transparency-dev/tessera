@@ -38,7 +38,7 @@ var (
 	// stateStyle defines how the different fsck.State types show up in the progress bar.
 	stateStyles = []stateStyle{
 		{
-			state:    fsck.Unknown,
+			state:    fsck.Unchecked,
 			style:    lipgloss.NewStyle().Foreground(lipgloss.Color("#313244")),
 			bar:      "◻",
 			priority: 1,
@@ -215,7 +215,7 @@ func (m *LayerProgressModel) ViewAs(rs []fsck.Range) string {
 // stateForRange figures out the right state style to use for the progress bar section covering range [f, f+n),
 // using the provided fsck status ranges.
 func stateForRange(rs []fsck.Range, f, n uint64) stateStyle {
-	ret := stateStylesByState[fsck.Unknown]
+	ret := stateStylesByState[fsck.Unchecked]
 	found := false
 	for _, r := range rs {
 		if r.First <= f && f < r.First+r.N {
