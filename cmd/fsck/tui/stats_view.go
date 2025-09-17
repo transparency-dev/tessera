@@ -27,10 +27,6 @@ import (
 	movingaverage "github.com/RobinUS2/golang-moving-average"
 )
 
-type StatsViewUpdateMsg struct {
-	Status fsck.Status
-}
-
 // NewStatsView returns a widet which displays fsck statistics.
 func NewStatsView() *StatsViewModel {
 	m := &StatsViewModel{
@@ -54,11 +50,14 @@ type StatsViewModel struct {
 	resourcesAvg *movingaverage.MovingAverage
 	errorsAvg    *movingaverage.MovingAverage
 
+	startTime  time.Time
 	lastUpdate time.Time
-	eta        time.Duration
+	eta        time.Time
 }
 
 func (m *StatsViewModel) Init() tea.Cmd {
+	m.startTime = time.Now()
+
 	return nil
 }
 
@@ -68,7 +67,7 @@ func (m *StatsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		return m, nil
-	case StatsViewUpdateMsg:
+	case FsckPanelUpdateMsg:
 		now := time.Now()
 		d := now.Sub(m.lastUpdate)
 		m.lastUpdate = now
@@ -92,8 +91,11 @@ func (m *StatsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, rs := range msg.Status.TileRanges {
 			totalResources += totalSize(rs)
 		}
-
-		m.eta = time.Duration(float64(totalResources-m.totalResources)/resourcesPerSecond) * time.Second
+		if totalResources > 0 {
+			elapsedTime := float64(now.Sub(m.startTime).Seconds())
+			complete := float64(m.totalResources) / float64(totalResources)
+			m.eta = now.Add(time.Duration(elapsedTime / complete))
+		}
 
 		return m, nil
 	default:
@@ -115,7 +117,7 @@ func (m *StatsViewModel) View() string {
 	resourcesFetched := lipgloss.NewStyle().Width(30).Render(formatTotalAndAverage("Resources", m.totalResources, m.resourcesAvg.Avg()))
 	errorsEncountered := lipgloss.NewStyle().Width(23).Render(formatTotalAndAverage("Errors", m.totalErrors, m.errorsAvg.Avg()))
 
-	eta := lipgloss.NewStyle().Width(15).Render(fmt.Sprintf("ETA: %s", m.eta))
+	eta := lipgloss.NewStyle().Width(55).Render(fmt.Sprintf("ETA: %s", humanize.Time(m.eta)))
 
 	return lipgloss.NewStyle().
 		Width(m.width).Render(

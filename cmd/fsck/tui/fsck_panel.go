@@ -94,7 +94,7 @@ func (m *FsckPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 
-		_, cmd = m.statsView.Update(StatsViewUpdateMsg{Status: msg.Status})
+		_, cmd = m.statsView.Update(msg)
 		cmds = append(cmds, cmd)
 
 		return m, tea.Batch(cmds...)
