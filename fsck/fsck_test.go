@@ -65,9 +65,9 @@ func TestTrimFullToPartial(t *testing.T) {
 
 			f := &fsckTree{
 				expectedResources: make(chan resource, 1),
-				fetcher: &fakeFetcher{
+				fetcher: newCountingFetcher(&fakeFetcher{
 					tile: test.storedTile,
-				},
+				}),
 				rangeTracker: newRangeTracker(1),
 			}
 
