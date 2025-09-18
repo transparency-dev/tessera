@@ -30,7 +30,7 @@ resource "aws_rds_cluster" "log_rds" {
   cluster_identifier = "${local.name}-cluster"
   engine             = "aurora-mysql"
   # TODO(phboneff): make sure that we want to pin this
-  engine_version  = "8.0.mysql_aurora.3.05.2"
+  engine_version  = "8.0"
   database_name   = "tessera"
   master_username = "root"
   # TODO(phboneff): move to either random strings / Secret Manager / IAM
