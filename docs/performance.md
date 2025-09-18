@@ -55,7 +55,28 @@ The table below shows some rough numbers of measured performance:
 
 ### POSIX
 
+Performance of the POSIX storage backend is highly dependent on the underlying infrastructure, some representative examples
+of the performance on different types of infratructure are given below.
+
 #### Local storage
+
+##### NVMe
+
+The log and hammer were both run in the same VM, with the log using a ZFS subvolume from the NVMe mirror.
+With antispam enabled, it was able to sustain around 10,000 write qps, using up to 7 cores for the server.
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│Read (8 workers): Current max: 20/s. Oversupply in last second: 0          │
+│Write (30000 workers): Current max: 10000/s. Oversupply in last second: 0  │
+│TreeSize: 5042936 (Δ 10567qps over 30s)                                    │
+│Time-in-queue: 1889ms/2990ms/3514ms (min/avg/max)                          │
+│Observed-time-to-integrate: 2255ms/3103ms/3607ms (min/avg/max)             │
+├───────────────────────────────────────────────────────────────────────────┤
+```
+
+
+##### SAS 12Gb HDD
 
 A single local instance on an 12-core VM with 8GB of RAM writing to local filesystem stored on a mirrored pair of SAS disks.
 
@@ -90,7 +111,7 @@ A 4 node CephFS cluster (1 admin, 3x storage nodes) running on E2 nodes sustaine
 
 #### GCP Free Tier VM Instance
 
-A small `e2-micro` free-tier VM is able to sustain > 1500 writes/s.
+A small `e2-micro` free-tier VM is able to sustain > 1500 writes/s using a mounted PersistentDisk to store the log.
 
 > [!NOTE]
 > Virtual CPUs (vCPUs) in virtualized environments often share physical CPU cores with other vCPUs and introduce variability
