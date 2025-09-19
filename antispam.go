@@ -22,7 +22,7 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 )
 
-// newInMemoryDedupe wraps an Add function to prevent duplicate entries being written to the underlying
+// newInMemoryDedup wraps an Add function to prevent duplicate entries being written to the underlying
 // storage by keeping an in-memory cache of recently seen entries.
 // Where an existing entry has already been `Add`ed, the previous `IndexFuture` will be returned.
 // When no entry is found in the cache, the delegate method will be called to store the entry, and
@@ -31,39 +31,39 @@ import (
 // Internally this uses a cache with a max size configured by the size parameter.
 // If the entry being `Add`ed is not found in the cache, then it calls the delegate.
 //
-// This object can be used in isolation, or in conjunction with a persistent dedupe implementation.
-// When using this with a persistent dedupe, the persistent layer should be the delegate of this
-// InMemoryDedupe. This allows recent duplicates to be deduplicated in memory, reducing the need to
+// This object can be used in isolation, or in conjunction with a persistent dedup implementation.
+// When using this with a persistent dedup, the persistent layer should be the delegate of this
+// InMemoryDedup. This allows recent duplicates to be deduplicated in memory, reducing the need to
 // make calls to a persistent storage.
-func newInMemoryDedupe(size uint) func(AddFn) AddFn {
+func newInMemoryDedup(size uint) func(AddFn) AddFn {
 	return func(af AddFn) AddFn {
 		c, err := lru.New[string, func() IndexFuture](int(size))
 		if err != nil {
 			panic(fmt.Errorf("lru.New(%d): %v", size, err))
 		}
-		dedupe := &inMemoryDedupe{
+		dedup := &inMemoryDedup{
 			delegate: af,
 			cache:    c,
 		}
-		return dedupe.add
+		return dedup.add
 	}
 }
 
-type inMemoryDedupe struct {
+type inMemoryDedup struct {
 	delegate func(ctx context.Context, e *Entry) IndexFuture
 	cache    *lru.Cache[string, func() IndexFuture]
 }
 
 // Add adds the entry to the underlying delegate only if e hasn't been recently seen. In either case,
 // an IndexFuture will be returned that the client can use to get the sequence number of this entry.
-func (d *inMemoryDedupe) add(ctx context.Context, e *Entry) IndexFuture {
+func (d *inMemoryDedup) add(ctx context.Context, e *Entry) IndexFuture {
 	ctx, span := tracer.Start(ctx, "tessera.Appender.inmemoryDedup.Add")
 	defer span.End()
 
 	id := string(e.Identity())
 
 	f := sync.OnceValue(func() IndexFuture {
-		// However many calls with the same entry come in and are deduped, we should only call delegate
+		// However many calls with the same entry come in and are deduplicated, we should only call delegate
 		// once for each unique entry:
 		df := d.delegate(ctx, e)
 
