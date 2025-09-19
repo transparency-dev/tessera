@@ -23,7 +23,7 @@ import (
 	"testing"
 )
 
-func TestDedupe(t *testing.T) {
+func TestDedup(t *testing.T) {
 	ctx := context.Background()
 	testCases := []struct {
 		desc     string
@@ -59,18 +59,18 @@ func TestDedupe(t *testing.T) {
 					return Index{Index: thisIdx}, nil
 				}
 			}
-			dedupeAdd := newInMemoryDedupe(256)(delegate)
+			dedupAdd := newInMemoryDedup(256)(delegate)
 
 			// Add foo, bar, baz to prime the cache to make things interesting
 			for _, s := range []string{"foo", "bar", "baz"} {
-				if _, err := dedupeAdd(ctx, NewEntry([]byte(s)))(); err != nil {
-					t.Fatalf("dedupeAdd(%q): %v", s, err)
+				if _, err := dedupAdd(ctx, NewEntry([]byte(s)))(); err != nil {
+					t.Fatalf("dedupAdd(%q): %v", s, err)
 				}
 			}
 
-			i, err := dedupeAdd(ctx, NewEntry([]byte(tC.newValue)))()
+			i, err := dedupAdd(ctx, NewEntry([]byte(tC.newValue)))()
 			if err != nil {
-				t.Fatalf("dedupeAdd(%q): %v", tC.newValue, err)
+				t.Fatalf("dedupAdd(%q): %v", tC.newValue, err)
 			}
 			if i.Index != tC.wantIdx {
 				t.Errorf("got Index != want Index (%d != %d)", i.Index, tC.wantIdx)
@@ -83,7 +83,7 @@ func TestDedupe(t *testing.T) {
 	}
 }
 
-func TestDedupeDoesNotCacheError(t *testing.T) {
+func TestDedupDoesNotCacheError(t *testing.T) {
 	idx := uint64(0)
 	rErr := true
 
@@ -106,24 +106,24 @@ func TestDedupeDoesNotCacheError(t *testing.T) {
 			return Index{Index: thisIdx}, err
 		}
 	}
-	dedupeAdd := newInMemoryDedupe(256)(delegate)
+	dedupAdd := newInMemoryDedup(256)(delegate)
 
 	k := "foo"
 	for i := range 10 {
-		idx, err := dedupeAdd(t.Context(), NewEntry([]byte(k)))()
+		idx, err := dedupAdd(t.Context(), NewEntry([]byte(k)))()
 
 		// We expect an error from the delegate the first time.
 		if i == 0 && err == nil {
-			t.Errorf("dedupeAdd(%q)@%d: was successful, want error", k, i)
+			t.Errorf("dedupAdd(%q)@%d: was successful, want error", k, i)
 			continue
 		}
 		// But the 2nd call should work.
 		if i > 0 && err != nil {
-			t.Errorf("dedupeAdd(%q)@%d: got %v, want no error", k, i, err)
+			t.Errorf("dedupAdd(%q)@%d: got %v, want no error", k, i, err)
 			continue
 		}
 
-		// After which, all subsequent adds should dedupe to that successful add.
+		// After which, all subsequent adds should dedup to that successful add.
 		if i > 1 && !idx.IsDup {
 			t.Errorf("got IsDup=false, want isDup=true")
 			continue
@@ -134,7 +134,7 @@ func TestDedupeDoesNotCacheError(t *testing.T) {
 	}
 }
 
-func BenchmarkDedupe(b *testing.B) {
+func BenchmarkDedup(b *testing.B) {
 	ctx := context.Background()
 	// Outer loop is for benchmark calibration, inside here is each individual run of the benchmark
 	for b.Loop() {
@@ -146,13 +146,13 @@ func BenchmarkDedupe(b *testing.B) {
 				return Index{Index: thisIdx}, nil
 			}
 		}
-		dedupeAdd := newInMemoryDedupe(256)(delegate)
+		dedupAdd := newInMemoryDedup(256)(delegate)
 		wg := &sync.WaitGroup{}
 		// Loop to create a bunch of leaves in parallel to test lock contention
 		for leafIndex := range 1024 {
 			wg.Add(1)
 			go func(index int) {
-				_, err := dedupeAdd(ctx, NewEntry(fmt.Appendf(nil, "leaf with value %d", index%sha256.Size)))()
+				_, err := dedupAdd(ctx, NewEntry(fmt.Appendf(nil, "leaf with value %d", index%sha256.Size)))()
 				if err != nil {
 					b.Error(err)
 				}
