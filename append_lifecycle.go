@@ -580,7 +580,7 @@ func (o AppendOptions) valid() error {
 //
 // For more details on how the antispam mechanism works, including tuning guidance, see docs/design/antispam.md.
 func (o *AppendOptions) WithAntispam(inMemEntries uint, as Antispam) *AppendOptions {
-	o.addDecorators = append(o.addDecorators, newInMemoryDedupe(inMemEntries))
+	o.addDecorators = append(o.addDecorators, newInMemoryDedup(inMemEntries))
 	if as != nil {
 		o.addDecorators = append(o.addDecorators, as.Decorator())
 		o.followers = append(o.followers, as.Follower(o.bundleIDHasher))
