@@ -49,8 +49,6 @@ const (
 	SchemaCompatibilityVersion = 1
 )
 
-var errPushback = fmt.Errorf("antispam %w", tessera.ErrPushback)
-
 // AntispamOpts allows configuration of some tunable options.
 type AntispamOpts struct {
 	// MaxBatchSize is the largest number of mutations permitted in a single write operation when
@@ -215,7 +213,7 @@ func (d *AntispamStorage) Decorator() func(f tessera.AddFn) tessera.AddFn {
 				//
 				// We may decide in the future that serving duplicate reads is more important than catching up as quickly
 				// as possible, in which case we'd move this check down below the call to index.
-				return func() (tessera.Index, error) { return tessera.Index{}, errPushback }
+				return func() (tessera.Index, error) { return tessera.Index{}, tessera.ErrPushbackAntispam }
 			}
 			idx, err := d.index(ctx, e.Identity())
 			if err != nil {

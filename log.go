@@ -15,19 +15,48 @@
 package tessera
 
 import (
-	"errors"
+	"strings"
 )
 
-// ErrPushback is returned by underlying storage implementations when a new entry cannot be accepted
-// due to overload in the system. This could be because there are too many entries with indices assigned
-// but which have not yet been integrated into the tree, or it could be because the antispam mechanism
-// is not able to keep up with recently added entries.
-//
-// Personalities encountering this error should apply back-pressure to the source of new entries
-// in an appropriate manner (e.g. for HTTP services, return a 503 with a Retry-After header).
-//
-// Personalities should check for this error using `errors.Is(e, ErrPushback)`.
-var ErrPushback = errors.New("pushback")
+type ErrorPushback struct {
+	base   *ErrorPushback
+	reason string
+}
+
+var (
+	// ErrPushback is returned by underlying storage implementations when a new entry cannot be accepted
+	// due to overload in the system. This could be because there are too many entries with indices assigned
+	// but which have not yet been integrated into the tree, or it could be because the antispam mechanism
+	// is not able to keep up with recently added entries.
+	//
+	// Personalities encountering this error should apply back-pressure to the source of new entries
+	// in an appropriate manner (e.g. for HTTP services, return a 503 with a Retry-After header).
+	//
+	// Personalities should check for this error using `errors.Is(e, ErrPushback)`, and `errors.As`
+	// to extract a Reason().
+	ErrPushback           = &ErrorPushback{}
+	ErrPushbackAntispam   = ErrPushback.withReason("antispam")
+	ErrPushbackSequencing = ErrPushback.withReason("sequencing")
+)
+
+func (p *ErrorPushback) Error() string {
+	return strings.Join([]string{"pushback", p.reason}, ": ")
+}
+
+func (p *ErrorPushback) withReason(r string) *ErrorPushback {
+	return &ErrorPushback{base: p, reason: r}
+}
+
+func (p *ErrorPushback) Reason() string {
+	return p.reason
+}
+
+func (p *ErrorPushback) Unwrap() error {
+	if p == nil {
+		return nil
+	}
+	return p.base
+}
 
 // Driver is the implementation-specific parts of Tessera. No methods are on here as this is not for public use.
 type Driver any
