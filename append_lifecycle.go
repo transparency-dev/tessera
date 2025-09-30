@@ -416,8 +416,8 @@ func (i *integrationStats) statsDecorator(delegate AddFn) AddFn {
 					attr = append(attr, attribute.String("tessera.pushback", "integration"))
 				case errors.Is(err, ErrPushback):
 					attr = append(attr, attribute.String("tessera.pushback", "other"))
-				// If it's not a pushback, just flag that it's an errored request to avoid high cardinality of attribute values.
 				default:
+					// If it's not a pushback, just flag that it's an errored request to avoid high cardinality of attribute values.
 					// TODO(al): We might want to bucket errors into OTel status codes in the future, though.
 					attr = append(attr, attribute.String("tessera.error.type", "_OTHER"))
 				}
