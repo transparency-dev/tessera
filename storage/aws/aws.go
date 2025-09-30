@@ -1021,7 +1021,7 @@ func (s *mySQLSequencer) assignEntries(ctx context.Context, entries []*tessera.E
 	// Check whether there are too many outstanding entries and we should apply
 	// back-pressure.
 	if outstanding := next - treeSize; outstanding > s.maxOutstanding {
-		return tessera.ErrPushbackSequencing
+		return tessera.ErrPushbackIntegration
 	}
 
 	sequencedEntries := make([]storage.SequencedEntry, len(entries))

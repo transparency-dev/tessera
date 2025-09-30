@@ -15,48 +15,31 @@
 package tessera
 
 import (
-	"strings"
+	"errors"
+	"fmt"
 )
-
-type ErrorPushback struct {
-	base   *ErrorPushback
-	reason string
-}
 
 var (
 	// ErrPushback is returned by underlying storage implementations when a new entry cannot be accepted
 	// due to overload in the system. This could be because there are too many entries with indices assigned
 	// but which have not yet been integrated into the tree, or it could be because the antispam mechanism
-	// is not able to keep up with recently added entries.
+	// is not able to keep up with recently added entries. It should always be wrapped with a more
+	// specific error to provide additional context to clients.
 	//
 	// Personalities encountering this error should apply back-pressure to the source of new entries
 	// in an appropriate manner (e.g. for HTTP services, return a 503 with a Retry-After header).
 	//
-	// Personalities should check for this error using `errors.Is(e, ErrPushback)`, and `errors.As`
-	// to extract a Reason().
-	ErrPushback           = &ErrorPushback{}
-	ErrPushbackAntispam   = ErrPushback.withReason("antispam")
-	ErrPushbackSequencing = ErrPushback.withReason("sequencing")
+	// Personalities should check for this error (wrapped or not) using `errors.Is(e, ErrPushback)`.
+	ErrPushback = errors.New("pushback")
+	// ErrPushbackAntispam is a wrapped ErrPushback. It is returned by underlying storage implementations
+	// when an entry cannot be accepted becasue the antispam follower is falling too far behind the size
+	// of the integrated tree.
+	ErrPushbackAntispam = fmt.Errorf("antispam %w", ErrPushback)
+	// ErrPushbackIntegration is a wrapped ErrPushback. It is returned by underlying storage implementations
+	// when an entry cannot be accepted becasue there are too many "in-flight" add requests - i.e. entries
+	// with sequence numbers  assigned, but which are not yet integrated into the log.
+	ErrPushbackIntegration = fmt.Errorf("integration %w", ErrPushback)
 )
-
-func (p *ErrorPushback) Error() string {
-	return strings.Join([]string{"pushback", p.reason}, ": ")
-}
-
-func (p *ErrorPushback) withReason(r string) *ErrorPushback {
-	return &ErrorPushback{base: p, reason: r}
-}
-
-func (p *ErrorPushback) Reason() string {
-	return p.reason
-}
-
-func (p *ErrorPushback) Unwrap() error {
-	if p == nil {
-		return nil
-	}
-	return p.base
-}
 
 // Driver is the implementation-specific parts of Tessera. No methods are on here as this is not for public use.
 type Driver any

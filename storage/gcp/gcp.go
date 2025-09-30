@@ -808,7 +808,7 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 		// Check whether there are too many outstanding entries and we should apply
 		// back-pressure.
 		if outstanding := next - treeSize; outstanding > int64(s.maxOutstanding) {
-			return tessera.ErrPushbackSequencing
+			return tessera.ErrPushbackIntegration
 		}
 
 		next := uint64(next) // Shadow next with a uint64 version of the same value to save on casts.
