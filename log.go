@@ -16,18 +16,30 @@ package tessera
 
 import (
 	"errors"
+	"fmt"
 )
 
-// ErrPushback is returned by underlying storage implementations when a new entry cannot be accepted
-// due to overload in the system. This could be because there are too many entries with indices assigned
-// but which have not yet been integrated into the tree, or it could be because the antispam mechanism
-// is not able to keep up with recently added entries.
-//
-// Personalities encountering this error should apply back-pressure to the source of new entries
-// in an appropriate manner (e.g. for HTTP services, return a 503 with a Retry-After header).
-//
-// Personalities should check for this error using `errors.Is(e, ErrPushback)`.
-var ErrPushback = errors.New("pushback")
+var (
+	// ErrPushback is returned by underlying storage implementations when a new entry cannot be accepted
+	// due to overload in the system. This could be because there are too many entries with indices assigned
+	// but which have not yet been integrated into the tree, or it could be because the antispam mechanism
+	// is not able to keep up with recently added entries. It should always be wrapped with a more
+	// specific error to provide context to clients.
+	//
+	// Personalities encountering this error should apply back-pressure to the source of new entries
+	// in an appropriate manner (e.g. for HTTP services, return a 503 with a Retry-After header).
+	//
+	// Personalities should check for this error (wrapped or not) using `errors.Is(e, ErrPushback)`.
+	ErrPushback = errors.New("pushback")
+	// ErrPushbackAntispam is a wrapped ErrPushback. It is returned by underlying storage implementations
+	// when an entry cannot be accepted becasue the antispam follower has fallen too far behind the size
+	// of the integrated tree.
+	ErrPushbackAntispam = fmt.Errorf("antispam %w", ErrPushback)
+	// ErrPushbackIntegration is a wrapped ErrPushback. It is returned by underlying storage implementations
+	// when an entry cannot be accepted becasue there are too many "in-flight" add requests - i.e. entries
+	// with sequence numbers assigned, but which are not yet integrated into the log.
+	ErrPushbackIntegration = fmt.Errorf("integration %w", ErrPushback)
+)
 
 // Driver is the implementation-specific parts of Tessera. No methods are on here as this is not for public use.
 type Driver any
