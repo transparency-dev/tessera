@@ -18,7 +18,7 @@ It can be run with the following command:
 $ go run github.com/transparency-dev/tessera/cmd/fsck@main --storage_url=http://localhost:2024/ --public_key=tessera.pub
 ```
 
-[!image](./tui.gif)
+![demo of fsck terminal ui](./tui.gif)
 
 Optional flags may be used to control the amount of parallelism used during the process, run the tool with `--help`
 for more details.
