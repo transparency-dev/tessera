@@ -17,6 +17,10 @@ echo "foo" > /tmp/stuff/foo
 echo "bar" > /tmp/stuff/bar
 echo "baz" > /tmp/stuff/baz
 
+# Make a blank dir where we'll store the log data
+export LOG_DIR="/tmp/tlog"
+mkdir "$LOG_DIR"
+
 # Integrate all of these leaves into the tree
 go run ./cmd/examples/posix-oneshot --storage_dir=${LOG_DIR} --entries="/tmp/stuff/*"
 
