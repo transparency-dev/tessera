@@ -7,19 +7,16 @@
 The commands below create a new log and add entries to it, and then show a few approaches to inspect the contents of the log.
 
 ```shell
-# Set the keys via environment variables
+# Set the keys via environment variables, and a local directory where our demo log will be built.
 export LOG_PRIVATE_KEY="PRIVATE+KEY+example.com/log/testdata+33d7b496+AeymY/SZAX0jZcJ8enZ5FY1Dz+wTML2yWSkK+9DSF3eg"
 export LOG_PUBLIC_KEY="example.com/log/testdata+33d7b496+AeHTu4Q3hEIMHNqc6fASMsq3rKNx280NI+oO5xCFkkSx"
+export LOG_DIR="/tmp/tlog"
 
 # Create files containing new leaves to add
 mkdir /tmp/stuff
 echo "foo" > /tmp/stuff/foo
 echo "bar" > /tmp/stuff/bar
 echo "baz" > /tmp/stuff/baz
-
-# Make a blank dir where we'll store the log data
-export LOG_DIR="/tmp/tlog"
-mkdir "$LOG_DIR"
 
 # Integrate all of these leaves into the tree
 go run ./cmd/examples/posix-oneshot --storage_dir=${LOG_DIR} --entries="/tmp/stuff/*"
