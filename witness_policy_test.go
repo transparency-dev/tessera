@@ -20,22 +20,48 @@ import (
 )
 
 func TestNewWitnessGroupFromPolicy(t *testing.T) {
-	policy := `
+	for _, test := range []struct {
+		name   string
+		policy string
+	}{
+		{
+			name: "tidy",
+			policy: `
 witness w1 sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/
 witness w2 example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
 group g1 all w1 w2
 quorum g1
-`
-	wg, err := NewWitnessGroupFromPolicy([]byte(policy))
-	if err != nil {
-		t.Fatalf("NewWitnessGroupFromPolicy() failed: %v", err)
-	}
+`,
+		}, {
+			name: "whitespace and comments",
+			policy: `
 
-	if wg.N != 2 {
-		t.Errorf("Expected top-level group to have N=2, got %d", wg.N)
-	}
-	if len(wg.Components) != 2 {
-		t.Fatalf("Expected top-level group to have 2 components, got %d", len(wg.Components))
+# comment
+witness   w1      sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r     https://sigsum.org/witness/    #comment
+  witness w2            example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM    https://example.com/witness/
+
+
+			     #comment
+group      g1    all     w1  w2
+
+		 quorum      g1
+`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+
+			wg, err := NewWitnessGroupFromPolicy([]byte(test.policy))
+			if err != nil {
+				t.Fatalf("NewWitnessGroupFromPolicy() failed: %v", err)
+			}
+
+			if wg.N != 2 {
+				t.Errorf("Expected top-level group to have N=2, got %d", wg.N)
+			}
+			if len(wg.Components) != 2 {
+				t.Fatalf("Expected top-level group to have 2 components, got %d", len(wg.Components))
+			}
+		})
 	}
 }
 
@@ -147,4 +173,3 @@ func TestNewWitnessGroupFromPolicy_Errors(t *testing.T) {
 		})
 	}
 }
-
