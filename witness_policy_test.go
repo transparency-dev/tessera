@@ -77,7 +77,8 @@ func TestNewWitnessGroupFromPolicy_GroupN(t *testing.T) {
 witness w1 sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/
 witness w2 example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
 witness w3 example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://example.com/witness/
-group g1 2 w1 w2 w3
+witness w4 remora.n621.de+da77ade7+BOvN63jn/bLvkieywe8R6UYAtVtNbZpXh34x7onlmtw2 https://example.com/remora
+group g1 2 w1 w2 w3 w4
 quorum g1
 `,
 			wantN: 2,
