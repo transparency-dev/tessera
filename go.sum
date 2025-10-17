@@ -1036,8 +1036,8 @@ github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o
 github.com/stretchr/testify v1.8.3/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/transparency-dev/formats v0.0.0-20250421220931-bb8ad4d07c26 h1:YTbkeFbzcer+42bIgo6Za2194nKwhZPgaZKsP76QffE=
-github.com/transparency-dev/formats v0.0.0-20250421220931-bb8ad4d07c26/go.mod h1:ODywn0gGarHMMdSkWT56ULoK8Hk71luOyRseKek9COw=
+github.com/transparency-dev/formats v0.0.0-20251017110053-404c0d5b696c h1:5a2XDQ2LiAUV+/RjckMyq9sXudfrPSuCY4FuPC1NyAw=
+github.com/transparency-dev/formats v0.0.0-20251017110053-404c0d5b696c/go.mod h1:g85IafeFJZLxlzZCDRu4JLpfS7HKzR+Hw9qRh3bVzDI=
 github.com/transparency-dev/merkle v0.0.2 h1:Q9nBoQcZcgPamMkGn7ghV8XiTZ/kRxn1yCG81+twTK4=
 github.com/transparency-dev/merkle v0.0.2/go.mod h1:pqSy+OXefQ1EDUVmAJ8MUhHB9TXGuzVAT58PqBoHz1A=
 github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e h1:JVG44RsyaB9T2KIHavMF/ppJZNG9ZpyihvCd0w101no=
