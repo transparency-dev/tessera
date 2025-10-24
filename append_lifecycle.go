@@ -787,7 +787,12 @@ func (o *AppendOptions) WithWitnesses(witnesses WitnessGroup, opts *WitnessOptio
 // WitnessOptions contains extra optional configuration for how Tessera should use/interact with
 // a user-provided WitnessGroup policy.
 type WitnessOptions struct {
-	// Timeout is the maximum time to wait for a response from witnesses.
+	// Timeout is the maximum time to wait while attempting to satisfy the configured witness policy.
+	//
+	// If the policy has not already been satisfied at the point this duration has passed, Tessera
+	// will stop waiting for more responses. The FailOpen option below controls whether or not the
+	// checkpoint will be published in this case.
+	//
 	// If unset, uses DefaultWitnessTimeout.
 	Timeout time.Duration
 
