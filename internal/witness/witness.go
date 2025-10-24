@@ -27,12 +27,50 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/transparency-dev/formats/log"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/internal/parse"
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/mod/sumdb/note"
+	"k8s.io/klog/v2"
 )
+
+var (
+	witnessReqsTotal    metric.Int64Counter
+	witnessReqHistogram metric.Int64Histogram
+	witnessRespsTotal   metric.Int64Counter
+
+	// custom histogram buckets as we're interested in 10-100s of millis.
+	witnessHistogramBuckets = []float64{0, 10, 20, 30, 40, 60, 80, 100, 120, 140, 160, 180, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000, 1200, 1400, 1600, 1800, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000}
+)
+
+func init() {
+	var err error
+
+	witnessReqsTotal, err = meter.Int64Counter(
+		"tessera.witness.request",
+		metric.WithDescription("Number of requests to the witnesses' submit endpoint"),
+		metric.WithUnit("{call}"))
+	if err != nil {
+		klog.Exitf("Failed to create witnessReqsTotal metric: %v", err)
+	}
+	witnessReqHistogram, err = meter.Int64Histogram(
+		"tessera.witness.duration",
+		metric.WithDescription("Duration of calls to the witnesses' submit endpoint"),
+		metric.WithUnit("ms"),
+		metric.WithExplicitBucketBoundaries(witnessHistogramBuckets...))
+	if err != nil {
+		klog.Exitf("Failed to create witnessReqHistogram metric: %v", err)
+	}
+	witnessRespsTotal, err = meter.Int64Counter(
+		"tessera.witness.response",
+		metric.WithDescription("Number of responses from the witnesses' submit endpoint"),
+		metric.WithUnit("{call}"))
+	if err != nil {
+		klog.Exitf("Failed to create witnessRespsTotal metric: %v", err)
+	}
+}
 
 var ErrPolicyNotSatisfied = errors.New("witness policy was not satisfied")
 
@@ -97,16 +135,11 @@ func (wg *WitnessGateway) Witness(ctx context.Context, cp []byte) ([]byte, error
 	defer cancel()
 
 	var waitGroup sync.WaitGroup
-	origin, size, hash, err := parse.CheckpointUnsafe(cp)
+	_, size, _, err := parse.CheckpointUnsafe(cp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse checkpoint from log: %v", err)
 	}
-	logCP := log.Checkpoint{
-		Origin: origin,
-		Size:   size,
-		Hash:   hash,
-	}
-	pb, err := client.NewProofBuilder(ctx, logCP.Size, wg.fetchTile)
+	pb, err := client.NewProofBuilder(ctx, size, wg.fetchTile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build proof builder: %v", err)
 	}
@@ -232,6 +265,10 @@ func (w *witness) update(ctx context.Context, cp []byte, size uint64, fetchProof
 	body += "\n"
 	body += string(cp)
 
+	start := time.Now()
+	nameAttr := witnessNameKey.String(w.verifier.Name())
+	witnessReqsTotal.Add(ctx, 1, metric.WithAttributes(nameAttr))
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.url, strings.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to construct request to %q: %v", w.url, err)
@@ -240,11 +277,18 @@ func (w *witness) update(ctx context.Context, cp []byte, size uint64, fetchProof
 	if err != nil {
 		return nil, fmt.Errorf("failed to post to witness at %q: %v", w.url, err)
 	}
+	defer func() {
+		_ = httpResp.Body.Close()
+	}()
 	rb, err := io.ReadAll(httpResp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read body from witness at %q: %v", w.url, err)
 	}
-	_ = httpResp.Body.Close()
+
+	statusAttr := witnessStatusKey.Int(httpResp.StatusCode)
+	witnessRespsTotal.Add(ctx, 1, metric.WithAttributes(nameAttr, statusAttr))
+	d := time.Since(start)
+	witnessReqHistogram.Record(ctx, d.Milliseconds(), metric.WithAttributes(nameAttr, statusAttr))
 
 	switch httpResp.StatusCode {
 	case http.StatusOK:
