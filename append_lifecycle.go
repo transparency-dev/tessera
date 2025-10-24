@@ -66,6 +66,7 @@ var (
 	appenderSignedSize        metric.Int64Gauge
 	appenderWitnessedSize     metric.Int64Gauge
 	appenderWitnessRequests   metric.Int64Counter
+	appenderWitnessHistogram  metric.Int64Histogram
 
 	followerEntriesProcessed metric.Int64Gauge
 	followerLag              metric.Int64Gauge
@@ -172,6 +173,15 @@ func init() {
 		metric.WithUnit("{call}"))
 	if err != nil {
 		klog.Exitf("Failed to create appenderWitnessRequests metric: %v", err)
+	}
+
+	appenderWitnessHistogram, err = meter.Int64Histogram(
+		"tessera.appender.witness.duration",
+		metric.WithDescription("Duration of calls to the configured witness group"),
+		metric.WithUnit("ms"),
+		metric.WithExplicitBucketBoundaries(histogramBuckets...))
+	if err != nil {
+		klog.Exitf("Failed to create appenderWitnessHistogram metric: %v", err)
 	}
 
 }
@@ -625,6 +635,8 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 
 			appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(witAttr...))
 			appenderWitnessedSize.Record(ctx, otel.Clamp64(size))
+			d := time.Since(start)
+			appenderWitnessHistogram.Record(ctx, d.Milliseconds(), metric.WithAttributes(witAttr...))
 		}
 
 		return cp, nil
