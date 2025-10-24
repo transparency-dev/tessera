@@ -51,6 +51,8 @@ const (
 	// The amount of data stored for each entry is small (32 bytes of hash + 8 bytes of index), so in the general case it should be fine
 	// to have a very large cache.
 	DefaultAntispamInMemorySize = 256 << 10
+	// DefaultWitnessTimeout is the default maximum time to wait for responses from configured witnesses.
+	DefaultWitnessTimeout = 5 * time.Second
 )
 
 var (
@@ -603,19 +605,27 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 		}
 		appenderSignedSize.Record(ctx, otel.Clamp64(size))
 
-		witAttr := []attribute.KeyValue{}
-		cp, err = wg.Witness(ctx, cp)
-		if err != nil {
-			if !o.witnessOpts.FailOpen {
-				appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(attribute.String("error.type", "failed")))
-				return nil, err
-			}
-			klog.Warningf("WitnessGateway: failing-open despite error: %v", err)
-			witAttr = append(witAttr, attribute.String("error.type", "failed_open"))
-		}
+		// Handle witnessing
+		{
+			start := time.Now()
 
-		appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(witAttr...))
-		appenderWitnessedSize.Record(ctx, otel.Clamp64(size))
+			ctx, cancel := context.WithTimeout(ctx, o.witnessOpts.Timeout)
+			defer cancel()
+
+			witAttr := []attribute.KeyValue{}
+			cp, err = wg.Witness(ctx, cp)
+			if err != nil {
+				if !o.witnessOpts.FailOpen {
+					appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(attribute.String("error.type", "failed")))
+					return nil, err
+				}
+				klog.Warningf("WitnessGateway: failing-open despite error: %v", err)
+				witAttr = append(witAttr, attribute.String("error.type", "failed_open"))
+			}
+
+			appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(witAttr...))
+			appenderWitnessedSize.Record(ctx, otel.Clamp64(size))
+		}
 
 		return cp, nil
 	}
@@ -753,6 +763,9 @@ func (o *AppendOptions) WithWitnesses(witnesses WitnessGroup, opts *WitnessOptio
 	if opts == nil {
 		opts = &WitnessOptions{}
 	}
+	if opts.Timeout == 0 {
+		opts.Timeout = DefaultWitnessTimeout
+	}
 
 	o.witnesses = witnesses
 	o.witnessOpts = *opts
@@ -762,6 +775,10 @@ func (o *AppendOptions) WithWitnesses(witnesses WitnessGroup, opts *WitnessOptio
 // WitnessOptions contains extra optional configuration for how Tessera should use/interact with
 // a user-provided WitnessGroup policy.
 type WitnessOptions struct {
+	// Timeout is the maximum time to wait for a response from witnesses.
+	// If unset, uses DefaultWitnessTimeout.
+	Timeout time.Duration
+
 	// FailOpen controls whether a checkpoint, for which the witness policy was unable to be met,
 	// should still be published.
 	//

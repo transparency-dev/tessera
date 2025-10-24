@@ -29,7 +29,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/transparency-dev/formats/log"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/internal/parse"
 	"go.opentelemetry.io/otel/metric"
@@ -136,16 +135,11 @@ func (wg *WitnessGateway) Witness(ctx context.Context, cp []byte) ([]byte, error
 	defer cancel()
 
 	var waitGroup sync.WaitGroup
-	origin, size, hash, err := parse.CheckpointUnsafe(cp)
+	_, size, _, err := parse.CheckpointUnsafe(cp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse checkpoint from log: %v", err)
 	}
-	logCP := log.Checkpoint{
-		Origin: origin,
-		Size:   size,
-		Hash:   hash,
-	}
-	pb, err := client.NewProofBuilder(ctx, logCP.Size, wg.fetchTile)
+	pb, err := client.NewProofBuilder(ctx, size, wg.fetchTile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build proof builder: %v", err)
 	}
