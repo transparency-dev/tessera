@@ -22,8 +22,7 @@ import (
 const name = "github.com/transparency-dev/tessera/internal/witness"
 
 var (
-	tracer = otel.Tracer(name)
-	meter  = otel.Meter(name)
+	meter = otel.Meter(name)
 )
 
 var (
