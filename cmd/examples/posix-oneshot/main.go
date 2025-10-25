@@ -35,9 +35,12 @@ import (
 )
 
 var (
-	storageDir  = flag.String("storage_dir", "", "Root directory to store log data.")
-	entries     = flag.String("entries", "", "File path glob of entries to add to the log.")
-	privKeyFile = flag.String("private_key", "", "Location of private key file. If unset, uses the contents of the LOG_PRIVATE_KEY environment variable.")
+	storageDir        = flag.String("storage_dir", "", "Root directory to store log data.")
+	entries           = flag.String("entries", "", "File path glob of entries to add to the log.")
+	privKeyFile       = flag.String("private_key", "", "Location of private key file. If unset, uses the contents of the LOG_PRIVATE_KEY environment variable.")
+	witnessPolicyFile = flag.String("witness_policy_file", "", "(Optional) Path to the file containing the witness policy in the format describe at https://git.glasklar.is/sigsum/core/sigsum-go/-/blob/main/doc/policy.md")
+	witnessTimeout    = flag.Duration("witness_timeout", tessera.DefaultWitnessTimeout, "Maximum time to wait for witness responses.")
+	witnessFailOpen   = flag.Bool("witness_fail_open", false, "Still publish a checkpoint even if witness policy could not be met")
 )
 
 const (
@@ -86,10 +89,29 @@ func main() {
 		batchSize = 1
 	}
 
-	appender, shutdown, r, err := tessera.NewAppender(ctx, driver, tessera.NewAppendOptions().
+	opts := tessera.NewAppendOptions().
 		WithCheckpointSigner(s).
 		WithCheckpointInterval(checkpointInterval).
-		WithBatching(batchSize, time.Second))
+		WithBatching(batchSize, time.Second)
+
+	if *witnessPolicyFile != "" {
+		f, err := os.ReadFile(*witnessPolicyFile)
+		if err != nil {
+			klog.Exitf("failed to read witness policy file %q: %v", *witnessPolicyFile, err)
+		}
+		wg, err := tessera.NewWitnessGroupFromPolicy(f)
+		if err != nil {
+			klog.Exitf("failed to create witness group from policy: %v", err)
+		}
+
+		wOpts := &tessera.WitnessOptions{
+			FailOpen: *witnessFailOpen,
+			Timeout:  *witnessTimeout,
+		}
+		opts.WithWitnesses(wg, wOpts)
+	}
+
+	appender, shutdown, r, err := tessera.NewAppender(ctx, driver, opts)
 	if err != nil {
 		klog.Exit(err)
 	}
