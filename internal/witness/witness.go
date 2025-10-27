@@ -99,7 +99,7 @@ type WitnessGroup interface {
 // in the group, and will ensure that the policy is satisfied before returning. All outbound
 // requests will be done using the given client. The tile fetcher is used for constructing
 // consistency proofs for the witnesses.
-func NewWitnessGateway(group WitnessGroup, client *http.Client, fetchTiles client.TileFetcherFunc) WitnessGateway {
+func NewWitnessGateway(group WitnessGroup, client *http.Client, oldSize uint64, fetchTiles client.TileFetcherFunc) WitnessGateway {
 	endpoints := group.Endpoints()
 	witnesses := make([]*witness, 0, len(endpoints))
 	for u, v := range endpoints {
@@ -107,7 +107,7 @@ func NewWitnessGateway(group WitnessGroup, client *http.Client, fetchTiles clien
 			client:   client,
 			url:      u,
 			verifier: v,
-			size:     0,
+			size:     oldSize,
 		})
 	}
 	return WitnessGateway{

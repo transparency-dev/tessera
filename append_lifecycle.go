@@ -604,7 +604,6 @@ func (o *AppendOptions) WithAntispam(inMemEntries uint, as Antispam) *AppendOpti
 
 // CheckpointPublisher returns a function which should be used to create, sign, and potentially witness a new checkpoint.
 func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client) func(context.Context, uint64, []byte) ([]byte, error) {
-	wg := witness.NewWitnessGateway(o.witnesses, httpClient, lr.ReadTile)
 	return func(ctx context.Context, size uint64, root []byte) ([]byte, error) {
 		ctx, span := tracer.Start(ctx, "tessera.CheckpointPublisher")
 		defer span.End()
@@ -617,6 +616,22 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 
 		// Handle witnessing
 		{
+			// Figure out the likely size the witnesses are aware of, but don't fail hard if we're unable
+			// to do so:
+			// a) it could be that this is the first checkpoint we're publishing
+			// b) the witnessing protocol has a fallback path in case we get it wrong, anyway.
+			var oldSize uint64
+			oldCP, err := lr.ReadCheckpoint(ctx)
+			if err != nil {
+				klog.Infof("Failed to fetch old checkpoint: %v", err)
+			} else {
+				_, oldSize, _, err = parse.CheckpointUnsafe(oldCP)
+				if err != nil {
+					return nil, fmt.Errorf("failed to parse old checkpoint: %v", err)
+				}
+			}
+			wg := witness.NewWitnessGateway(o.witnesses, httpClient, oldSize, lr.ReadTile)
+
 			start := time.Now()
 
 			ctx, cancel := context.WithTimeout(ctx, o.witnessOpts.Timeout)

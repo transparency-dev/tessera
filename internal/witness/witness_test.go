@@ -153,7 +153,7 @@ func TestWitnessGateway_Update(t *testing.T) {
 		t.Run(tC.desc, func(t *testing.T) {
 			ctx := context.Background()
 
-			g := witness.NewWitnessGateway(tC.group, ts.Client(), testLogTileFetcher)
+			g := witness.NewWitnessGateway(tC.group, ts.Client(), 0, testLogTileFetcher)
 
 			witnessedCP, err := g.Witness(ctx, logSignedCheckpoint)
 			if got, want := err != nil, tC.wantErr; got != want {
@@ -240,7 +240,7 @@ func TestWitness_UpdateRequest(t *testing.T) {
 				t.Fatal(err)
 			}
 			group := tessera.NewWitnessGroup(1, wit1)
-			wg := witness.NewWitnessGateway(group, ts.Client(), reader.ReadTile)
+			wg := witness.NewWitnessGateway(group, ts.Client(), 0, reader.ReadTile)
 			_, err = wg.Witness(ctx, logSignedCheckpoint)
 			if got, want := err != nil, tC.wantErr; got != want {
 				t.Fatalf("got != want (%t != %t): %v", got, want, err)
@@ -311,7 +311,7 @@ func TestWitness_UpdateResponse(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			g := witness.NewWitnessGateway(tessera.NewWitnessGroup(1, wit1), ts.Client(), testLogTileFetcher)
+			g := witness.NewWitnessGateway(tessera.NewWitnessGroup(1, wit1), ts.Client(), 0, testLogTileFetcher)
 			witnessed, err := g.Witness(ctx, logSignedCheckpoint)
 			if got, want := err != nil, tC.wantErr; got != want {
 				t.Fatalf("got != want (%t != %t): %v", got, want, err)
@@ -380,7 +380,7 @@ func TestWitnessStateEvolution(t *testing.T) {
 
 	ctx := context.Background()
 
-	g := witness.NewWitnessGateway(group, ts.Client(), testLogTileFetcher)
+	g := witness.NewWitnessGateway(group, ts.Client(), 0, testLogTileFetcher)
 	// This call will trigger case 0 and then case 1 in the witness handler above.
 	// case 0 will return a response that notifies the log that its view of the witness size is wrong.
 	// This method will then update its size and make a second request with a consistency proof, triggering case 1.
@@ -444,8 +444,8 @@ func TestWitnessReusesProofs(t *testing.T) {
 		tf2.Add(1)
 		return testLogTileFetcher(ctx, level, index, p)
 	}
-	g1 := witness.NewWitnessGateway(tessera.NewWitnessGroup(1, wit1), ts.Client(), cf1)
-	g2 := witness.NewWitnessGateway(tessera.NewWitnessGroup(2, wit1, wit2), ts.Client(), cf2)
+	g1 := witness.NewWitnessGateway(tessera.NewWitnessGroup(1, wit1), ts.Client(), 0, cf1)
+	g2 := witness.NewWitnessGateway(tessera.NewWitnessGroup(2, wit1, wit2), ts.Client(), 0, cf2)
 
 	for i := range 10 {
 		logSignedCheckpoint, _ := loadCheckpoint(t, i)
