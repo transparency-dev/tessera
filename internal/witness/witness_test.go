@@ -24,6 +24,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -323,6 +325,87 @@ func TestWitness_UpdateResponse(t *testing.T) {
 			sigs := witnessed[len(logSignedCheckpoint):]
 			if !bytes.Equal(sigs, tC.wantResult) {
 				t.Errorf("expected result %q but got %q", tC.body, sigs)
+			}
+		})
+	}
+}
+
+func TestWitnessConflict(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		witnessSeen uint64
+		oldSizeHint uint64
+		wantErr     bool
+	}{
+		{
+			name: "nothing seen before",
+		},
+		{
+			name:        "correct hint",
+			witnessSeen: 8,
+			oldSizeHint: 8,
+		},
+		{
+			name:        "hint stale - witness missed an update",
+			witnessSeen: 4,
+			oldSizeHint: 8,
+		},
+		{
+			name:        "log rolled back - witness is ahead of log",
+			witnessSeen: 20,
+			wantErr:     true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			logSignedCheckpoint, cp := loadCheckpoint(t, 9)
+
+			var wit1 tessera.Witness
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w1u := mustURL(t, wit1.URL)
+				if got, want := r.URL.String(), w1u.Path; got != want {
+					t.Fatalf("got request to URL %q but expected %q", got, want)
+				}
+
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("error reading body: %v", err)
+				}
+				lines := bytes.Split(body, []byte("\n"))
+				if len(lines) == 0 {
+					t.Fatal("empty body")
+				}
+				bits := strings.Split(string(lines[0]), " ")
+				if len(bits) != 2 || bits[0] != "old" {
+					t.Fatal("invalid old line")
+				}
+				oldSize, err := strconv.ParseUint(bits[1], 10, 64)
+				if err != nil {
+					t.Fatalf("Invalid old size %v", err)
+				}
+
+				if oldSize != test.witnessSeen {
+					t.Logf("Saw stale %d != %d", oldSize, test.witnessSeen)
+					w.Header().Add("Content-Type", "text/x.tlog.size")
+					w.WriteHeader(409)
+					_, _ = fmt.Fprintf(w, "%d\n", test.witnessSeen)
+					return
+				}
+
+				_, _ = w.Write(sigForSigner(t, cp, wit1Skey))
+				test.witnessSeen = oldSize
+			}))
+			baseURL := mustURL(t, ts.URL)
+			var err error
+			wit1, err = tessera.NewWitness(wit1Vkey, baseURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			group := tessera.NewWitnessGroup(1, wit1)
+			g := witness.NewWitnessGateway(group, ts.Client(), test.oldSizeHint, testLogTileFetcher)
+			_, err = g.Witness(t.Context(), logSignedCheckpoint)
+			if gotErr := err != nil; gotErr != test.wantErr {
+				t.Fatalf("Got err %v, want err %t", err, test.wantErr)
 			}
 		})
 	}
