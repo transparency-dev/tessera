@@ -319,13 +319,14 @@ func (w *witness) update(ctx context.Context, cp []byte, size uint64, fetchProof
 			if err != nil {
 				return nil, fmt.Errorf("witness at %q replied with x.tlog.size but body %q could not be parsed as decimal", w.url, bodyStr)
 			}
-			// These cases should not happen unless the witness is misbehaving.
-			// w.size <= newWitSize <= size must always be true.
+			// This case should not happen unless the witness is misbehaving; the witness can't have a larger checkpoint that the one we've just minted.
 			if newWitSize > size {
 				return nil, fmt.Errorf("witness at %q replied with x.tlog.size %d, larger than log size %d", w.url, newWitSize, size)
 			}
+			// This case can happen if our old size hint was wrong, e.g. we were previously unable to update this particular witnesses, but published the
+			// checkpoint anyway (either because we met the policy anyway, or we're in "fail open" mode).
 			if newWitSize < w.size {
-				return nil, fmt.Errorf("witness at %q replied with x.tlog.size %d, smaller than known size %d", w.url, newWitSize, w.size)
+				klog.Infof("Witness at %q replied with x.tlog.size %d, smaller than hint size %d, retrying with smaller size", w.url, newWitSize, w.size)
 			}
 			w.size = newWitSize
 			// Witnesses could cause this recursion to go on for longer than expected if the value they kept returning
