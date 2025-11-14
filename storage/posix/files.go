@@ -153,7 +153,7 @@ func (s *Storage) newAppender(ctx context.Context, o *logResourceStorage, opts *
 			case <-a.cpUpdated:
 			case <-time.After(i):
 			}
-			if err := a.publishCheckpoint(ctx, i); err != nil {
+			if err := a.publishCheckpoint(ctx, i, opts.CheckpointRepublishInterval()); err != nil {
 				klog.Warningf("publishCheckpoint: %v", err)
 			}
 		}
@@ -518,7 +518,7 @@ func (a *appender) initialise(ctx context.Context) error {
 			return fmt.Errorf("failed to write tree-state checkpoint: %v", err)
 		}
 		if a.newCP != nil {
-			if err := a.publishCheckpoint(ctx, 0); err != nil {
+			if err := a.publishCheckpoint(ctx, 0, 0); err != nil {
 				return fmt.Errorf("failed to publish checkpoint: %v", err)
 			}
 		}
@@ -602,7 +602,7 @@ func (s *Storage) readTreeState(ctx context.Context) (uint64, []byte, error) {
 // publishCheckpoint checks whether the currently published checkpoint (if any) is more than
 // minStaleness old, and, if so, creates and published a fresh checkpoint from the current
 // stored tree state.
-func (a *appender) publishCheckpoint(ctx context.Context, minStaleness time.Duration) error {
+func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, minStalenessRepub time.Duration) error {
 	now := time.Now()
 
 	// Lock the destination "published" checkpoint location:
@@ -616,21 +616,39 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStaleness time.Dura
 		}
 	}()
 
+	var publishedAge time.Duration
+	var publishedSize uint64
+	cpExists := true
 	info, err := a.s.stat(layout.CheckpointPath)
 	if errors.Is(err, os.ErrNotExist) {
 		klog.V(1).Infof("No checkpoint exists, publishing")
+		cpExists = false
 	} else if err != nil {
 		return fmt.Errorf("stat(%s): %v", layout.CheckpointPath, err)
 	} else {
-		if d := time.Since(info.ModTime()); d < minStaleness {
-			klog.V(1).Infof("publishCheckpoint: skipping publish because previous checkpoint published %v ago, less than %v", d, minStaleness)
+		publishedAge = time.Since(info.ModTime())
+		if publishedAge < minStalenessActive {
+			klog.V(1).Infof("publishCheckpoint: skipping publish because previous checkpoint published %v ago, less than %v", publishedAge, minStalenessActive)
 			return nil
 		}
+		publishedSize, err = a.publishedSize(ctx)
+		if err != nil {
+			klog.V(1).Infof("publishCheckpoint: skipping publish because unable to determine previously published size: %v", err)
+			return err
+		}
 	}
+
 	size, root, err := a.s.readTreeState(ctx)
 	if err != nil {
 		return fmt.Errorf("readTreeState: %v", err)
 	}
+	if cpExists && size == publishedSize {
+		if minStalenessRepub == 0 || publishedAge < minStalenessRepub {
+			klog.V(1).Infof("publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
+			return nil
+		}
+	}
+
 	cpRaw, err := a.newCP(ctx, size, root)
 	if err != nil {
 		return fmt.Errorf("newCP: %v", err)
@@ -645,6 +663,25 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStaleness time.Dura
 	posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
 
 	return nil
+}
+
+// publishedSize returns the size of tree that the currently published checkpoint, if any, commits to.
+//
+// If there is no currently published checkpoint zero will be returned without error.
+func (a *appender) publishedSize(ctx context.Context) (uint64, error) {
+	cp, err := a.logStorage.ReadCheckpoint(ctx)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("failed to read published checkpoint: %v", err)
+	}
+	_, pubSize, _, err := parse.CheckpointUnsafe(cp)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse published checkpoint: %v", err)
+	}
+	return pubSize, nil
+
 }
 
 // garbageCollectorJob is a long-running function which handles the removal of obsolete partial tiles
@@ -667,14 +704,9 @@ func (a *appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 		// Figure out the size of the latest published checkpoint - we can't be removing partial tiles implied by
 		// that checkpoint just because we've done an integration and know about a larger (but as yet unpublished)
 		// checkpoint!
-		cp, err := a.logStorage.ReadCheckpoint(ctx)
+		pubSize, err := a.publishedSize(ctx)
 		if err != nil {
-			klog.Warningf("Failed to get published checkpoint: %v", err)
-			continue
-		}
-		_, pubSize, _, err := parse.CheckpointUnsafe(cp)
-		if err != nil {
-			klog.Warningf("Failed to parse published checkpoint: %v", err)
+			klog.Warningf("GarbageCollect: %v", err)
 			continue
 		}
 
