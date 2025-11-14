@@ -85,6 +85,8 @@ func main() {
 
 	appender, shutdown, _, err := tessera.NewAppender(ctx, driver, tessera.NewAppendOptions().
 		WithCheckpointSigner(s, a...).
+		WithCheckpointInterval(time.Second).
+		WithCheckpointRepublishInterval(time.Minute).
 		WithBatching(256, time.Second).
 		WithAntispam(tessera.DefaultAntispamInMemorySize, antispam))
 	if err != nil {
