@@ -137,7 +137,11 @@ Once this process has been completed, a new entry will:
 ### Publishing
 
 Publishing is a background process that creates a new Checkpoint for the latest tree.
-This background process runs periodically (configurable via [WithCheckpointInterval](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithCheckpointInterval)) and performs the following steps:
+This background process runs periodically (configurable via
+[WithCheckpointInterval](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithCheckpointInterval)
+and
+[WithCheckpointRepublishInterval](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithCheckpointRepublishInterval))
+and performs the following steps:
   1. Create a new Checkpoint and sign it with the signer provided by [WithCheckpointSigner](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithCheckpointSigner)
   2. Contact witnesses and collect enough countersignatures to satisfy any witness policy configured by [WithWitnesses](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithWitnesses)
   3. If the witness policy is satisfied, make this new Checkpoint public available
