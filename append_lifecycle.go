@@ -43,6 +43,8 @@ const (
 	DefaultBatchMaxAge = 250 * time.Millisecond
 	// DefaultCheckpointInterval is used by storage implementations if no WithCheckpointInterval option is provided when instantiating it.
 	DefaultCheckpointInterval = 10 * time.Second
+	// DefaultCheckpointRepublishInterval is used by storage implementations if no WithCheckpointRepublishInterval option is provided when instantiating it.
+	DefaultCheckpointRepublishInterval = 10 * time.Minute
 	// DefaultPushbackMaxOutstanding is used by storage implementations if no WithPushback option is provided when instantiating it.
 	DefaultPushbackMaxOutstanding = 4096
 	// DefaultGarbageCollectionInterval is the default value used if no WithGarbageCollectionInterval option is provided.
@@ -538,14 +540,15 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 // instance.
 func NewAppendOptions() *AppendOptions {
 	return &AppendOptions{
-		batchMaxSize:              DefaultBatchMaxSize,
-		batchMaxAge:               DefaultBatchMaxAge,
-		entriesPath:               layout.EntriesPath,
-		bundleIDHasher:            defaultIDHasher,
-		checkpointInterval:        DefaultCheckpointInterval,
-		addDecorators:             make([]func(AddFn) AddFn, 0),
-		pushbackMaxOutstanding:    DefaultPushbackMaxOutstanding,
-		garbageCollectionInterval: DefaultGarbageCollectionInterval,
+		batchMaxSize:                DefaultBatchMaxSize,
+		batchMaxAge:                 DefaultBatchMaxAge,
+		entriesPath:                 layout.EntriesPath,
+		bundleIDHasher:              defaultIDHasher,
+		checkpointInterval:          DefaultCheckpointInterval,
+		checkpointRepublishInterval: DefaultCheckpointRepublishInterval,
+		addDecorators:               make([]func(AddFn) AddFn, 0),
+		pushbackMaxOutstanding:      DefaultPushbackMaxOutstanding,
+		garbageCollectionInterval:   DefaultGarbageCollectionInterval,
 	}
 }
 
@@ -564,9 +567,11 @@ type AppendOptions struct {
 	// bundleIDHasher knows how to create antispam leaf identities for entries in a serialised bundle.
 	bundleIDHasher func([]byte) ([][]byte, error)
 
-	checkpointInterval time.Duration
-	witnesses          WitnessGroup
-	witnessOpts        WitnessOptions
+	checkpointInterval          time.Duration
+	checkpointRepublishInterval time.Duration
+
+	witnesses   WitnessGroup
+	witnessOpts WitnessOptions
 
 	addDecorators []func(AddFn) AddFn
 	followers     []Follower
@@ -678,6 +683,10 @@ func (o AppendOptions) CheckpointInterval() time.Duration {
 	return o.checkpointInterval
 }
 
+func (o AppendOptions) CheckpointRepublishInterval() time.Duration {
+	return o.checkpointRepublishInterval
+}
+
 func (o AppendOptions) GarbageCollectionInterval() time.Duration {
 	return o.garbageCollectionInterval
 }
@@ -761,7 +770,7 @@ func (o *AppendOptions) WithPushback(maxOutstanding uint) *AppendOptions {
 }
 
 // WithCheckpointInterval configures the frequency at which Tessera will attempt to create & publish
-// a new checkpoint.
+// new checkpoints.
 //
 // Well behaved clients of the log will only "see" newly sequenced entries once a new checkpoint is published,
 // so it's important to set that value such that it works well with your ecosystem.
@@ -776,6 +785,15 @@ func (o *AppendOptions) WithPushback(maxOutstanding uint) *AppendOptions {
 // If this option isn't provided, storage implementations will use the DefaultCheckpointInterval const above.
 func (o *AppendOptions) WithCheckpointInterval(interval time.Duration) *AppendOptions {
 	o.checkpointInterval = interval
+	return o
+}
+
+// WithCheckpointRepublishInterval configures the frequency at which Tessera will attempt to re-publish
+// checkpoints where the log hasn't grown since the last checkpoint was published.
+//
+// Setting this to zero will disable republication of unchanged checkpoints.
+func (o *AppendOptions) WithCheckpointRepublishInterval(interval time.Duration) *AppendOptions {
+	o.checkpointRepublishInterval = interval
 	return o
 }
 
