@@ -58,7 +58,7 @@ func TestGarbageCollect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Appender: %v", err)
 	}
-	if err := appender.publishCheckpoint(ctx, 0); err != nil {
+	if err := appender.publishCheckpoint(ctx, 0, 0); err != nil {
 		t.Fatalf("publishCheckpoint: %v", err)
 	}
 
