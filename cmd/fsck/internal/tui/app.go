@@ -19,9 +19,7 @@ import (
 	"bufio"
 	"context"
 	"flag"
-	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/transparency-dev/tessera/cmd/fsck/tui"
@@ -29,7 +27,6 @@ import (
 	"k8s.io/klog/v2"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // RunApp runs the TUI app, using the provided fsck instance to fetch updates from to populate the UI.
@@ -45,9 +42,7 @@ func RunApp(ctx context.Context, f *fsck.Fsck) error {
 	go func() {
 		s := bufio.NewScanner(r)
 		for s.Scan() {
-			l := lipgloss.Width(s.Text())
-			txt := fmt.Sprintf("%s%s", strings.Repeat("\n", l), s.Text())
-			p.Send(tea.Println(txt)())
+			p.Send(tea.Println(s.Text())())
 		}
 	}()
 
