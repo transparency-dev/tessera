@@ -788,10 +788,10 @@ func (o *AppendOptions) WithCheckpointInterval(interval time.Duration) *AppendOp
 	return o
 }
 
-// WithCheckpointRepublishInterval configures the frequency at which Tessera will attempt to re-publish
+// WithCheckpointRepublishInterval configures the frequency at which Tessera will allow re-publishing
 // checkpoints where the log hasn't grown since the last checkpoint was published.
 //
-// Setting this to zero will disable republication of unchanged checkpoints.
+// Setting this less than or equal to zero will disable republication of unchanged checkpoints.
 func (o *AppendOptions) WithCheckpointRepublishInterval(interval time.Duration) *AppendOptions {
 	o.checkpointRepublishInterval = interval
 	return o
