@@ -27,7 +27,6 @@ import (
 	"k8s.io/klog/v2"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // RunApp runs the TUI app, using the provided fsck instance to fetch updates from to populate the UI.
@@ -43,9 +42,7 @@ func RunApp(ctx context.Context, f *fsck.Fsck) error {
 	go func() {
 		s := bufio.NewScanner(r)
 		for s.Scan() {
-			l := ansi.StringWidth(s.Text())
-			txt := ansi.InsertLine(l) + s.Text()
-			p.Send(tea.Println(txt)())
+			p.Send(tea.Println(s.Text())())
 		}
 	}()
 
