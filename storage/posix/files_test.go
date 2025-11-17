@@ -15,6 +15,9 @@
 package posix
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -113,6 +116,134 @@ func TestGarbageCollect(t *testing.T) {
 	f := fsck.New(vk.Name(), vk, lr, defaultMerkleLeafHasher, fsck.Opts{N: 1})
 	if err := f.Check(ctx); err != nil {
 		t.Fatalf("FSCK failed: %v", err)
+	}
+}
+
+func TestPublishTree(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		publishInterval   time.Duration
+		republishInterval time.Duration
+		attempts          []time.Duration
+		growTree          bool
+		wantUpdates       int
+	}{
+		{
+			name:            "publish: works ok",
+			publishInterval: 100 * time.Millisecond,
+			attempts:        []time.Duration{1 * time.Second},
+			growTree:        true,
+			wantUpdates:     1,
+		}, {
+			name:            "publish: too soon, skip update",
+			publishInterval: 10 * time.Second,
+			growTree:        true,
+			attempts:        []time.Duration{100 * time.Millisecond},
+			wantUpdates:     0,
+		}, {
+			name:            "publish: too soon, skip update, but recovers",
+			publishInterval: 2 * time.Second,
+			growTree:        true,
+			attempts:        []time.Duration{100 * time.Millisecond, 2 * time.Second},
+			wantUpdates:     1,
+		}, {
+			name:            "publish: many attempts, eventually one succeeds",
+			publishInterval: 1 * time.Second,
+			growTree:        true,
+			attempts:        []time.Duration{300 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond},
+			wantUpdates:     1,
+		}, {
+			name:              "republish: works ok",
+			publishInterval:   minCheckpointInterval,
+			republishInterval: 100 * time.Millisecond,
+			attempts:          []time.Duration{1 * time.Second},
+			wantUpdates:       1,
+		}, {
+			name:              "republish: too soon, skip update",
+			publishInterval:   minCheckpointInterval,
+			republishInterval: 10 * time.Second,
+			attempts:          []time.Duration{100 * time.Millisecond},
+			wantUpdates:       0,
+		}, {
+			name:              "republish: too soon, skip update, but recovers",
+			publishInterval:   minCheckpointInterval,
+			republishInterval: 2 * time.Second,
+			attempts:          []time.Duration{100 * time.Millisecond, 2 * time.Second},
+			wantUpdates:       1,
+		}, {
+			name:              "republish: many attempts, eventually one succeeds",
+			publishInterval:   minCheckpointInterval,
+			republishInterval: 1 * time.Second,
+			attempts:          []time.Duration{300 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond},
+			wantUpdates:       1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			s := &Storage{
+				cfg: Config{
+					HTTPClient: http.DefaultClient,
+					Path:       t.TempDir(),
+				},
+			}
+			sk, _ := mustGenerateKeys(t)
+			opts := tessera.NewAppendOptions().
+				WithCheckpointInterval(10*time.Minute). // Prevent tessera from publishing checkpoints on our behalf
+				WithBatching(1, minCheckpointInterval).
+				WithCheckpointSigner(sk)
+
+			logStorage := &logResourceStorage{
+				s:           s,
+				entriesPath: opts.EntriesPath(),
+			}
+			appender, lr, err := s.newAppender(ctx, logStorage, opts)
+			if err != nil {
+				t.Fatalf("Appender: %v", err)
+			}
+
+			// Add time as an extension line on the checkpoint so we can easily tell when it's been updated.
+			appender.newCP = func(_ context.Context, size uint64, hash []byte) ([]byte, error) {
+				return fmt.Appendf(nil, "origin\n%d\n%x\n%d\n,", size, hash, time.Now().Unix()), nil
+			}
+
+			if err := appender.publishCheckpoint(ctx, test.publishInterval, test.republishInterval); err != nil {
+				t.Fatalf("publishTree: %v", err)
+			}
+
+			updatesSeen := 0
+			cpOld, err := lr.ReadCheckpoint(ctx)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("ReadCheckpoint: %v", err)
+			}
+
+			if test.growTree {
+				// Fake the tree growing here - we don't want Tessera creating a new checkpoint for us, as we'll do that
+				// manually below.
+				if err := appender.s.writeTreeState(ctx, 1, []byte("root)")); err != nil {
+					t.Fatalf("writeTreeState: %v", err)
+				}
+			}
+
+			for _, d := range test.attempts {
+				time.Sleep(d)
+				if err := appender.publishCheckpoint(ctx, test.publishInterval, test.republishInterval); err != nil {
+					t.Fatalf("publishTree: %v", err)
+				}
+				cpNew, err := lr.ReadCheckpoint(ctx)
+				if err != nil {
+					t.Fatalf("ReadCheckpoint: %v", err)
+				}
+				if !bytes.Equal(cpOld, cpNew) {
+					updatesSeen++
+					cpOld = cpNew
+				}
+			}
+			if updatesSeen != test.wantUpdates {
+				t.Fatalf("Saw %d updates, want %d", updatesSeen, test.wantUpdates)
+			}
+		})
 	}
 }
 
