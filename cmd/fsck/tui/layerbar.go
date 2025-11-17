@@ -25,7 +25,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 )
 
 var (
@@ -200,7 +199,7 @@ func (m *LayerProgressModel) ViewAs(rs []fsck.Range) string {
 	// Render the pieces
 	percentView := m.percentageView(float64(byState[fsck.OK]) / float64(extent))
 	labelView := labelStyle.Inline(true).Render(m.label)
-	barWidth := m.width - ansi.StringWidth(labelView) - 1 - ansi.StringWidth(percentView) - 1
+	barWidth := m.width - lipgloss.Width(labelView) - 1 - lipgloss.Width(percentView) - 1
 	// Squash higher levels so the bars look a bit more tree-like.
 	levelSize := max(1, barWidth>>m.level)
 	barView := lipgloss.NewStyle().Width(barWidth).MaxWidth(barWidth).Align(lipgloss.Center).Inline(true).Render(renderBar(rs, levelSize))
