@@ -370,25 +370,29 @@ func TestPublishTree(t *testing.T) {
 		wantUpdates       int
 	}{
 		{
-			name:            "works ok",
-			publishInterval: 100 * time.Millisecond,
-			attempts:        []time.Duration{1 * time.Second},
-			wantUpdates:     1,
+			name:              "works ok",
+			publishInterval:   100 * time.Millisecond,
+			republishInterval: 100 * time.Millisecond,
+			attempts:          []time.Duration{1 * time.Second},
+			wantUpdates:       1,
 		}, {
-			name:            "too soon, skip update",
-			publishInterval: 10 * time.Second,
-			attempts:        []time.Duration{100 * time.Millisecond},
-			wantUpdates:     0,
+			name:              "too soon, skip update",
+			publishInterval:   10 * time.Second,
+			republishInterval: 10 * time.Second,
+			attempts:          []time.Duration{100 * time.Millisecond},
+			wantUpdates:       0,
 		}, {
-			name:            "too soon, skip update, but recovers",
-			publishInterval: 2 * time.Second,
-			attempts:        []time.Duration{100 * time.Millisecond, 2 * time.Second},
-			wantUpdates:     1,
+			name:              "too soon, skip update, but recovers",
+			publishInterval:   2 * time.Second,
+			republishInterval: 2 * time.Second,
+			attempts:          []time.Duration{100 * time.Millisecond, 2 * time.Second},
+			wantUpdates:       1,
 		}, {
-			name:            "many attempts, eventually one succeeds",
-			publishInterval: 1 * time.Second,
-			attempts:        []time.Duration{300 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond},
-			wantUpdates:     1,
+			name:              "many attempts, eventually one succeeds",
+			publishInterval:   1 * time.Second,
+			republishInterval: 1 * time.Second,
+			attempts:          []time.Duration{300 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond},
+			wantUpdates:       1,
 		}, {
 			name:              "republish needed",
 			publishInterval:   1 * time.Second,
@@ -422,20 +426,7 @@ func TestPublishTree(t *testing.T) {
 				t.Fatalf("storage.init: %v", err)
 			}
 
-			getLastPublishedSize := func(ctx context.Context) (uint64, error) {
-				cp, err := storage.logStore.getCheckpoint(ctx)
-				if err != nil {
-					return 0, err
-				}
-				// Checkpoint format in this test is "%d/%x,"
-				var size uint64
-				if _, err := fmt.Sscanf(string(cp), "%d/", &size); err != nil {
-					return 0, fmt.Errorf("failed to parse test checkpoint %q: %v", cp, err)
-				}
-				return size, nil
-			}
-
-			if err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, getLastPublishedSize, storage.publishCheckpoint); err != nil {
+			if err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, storage.publishCheckpoint); err != nil {
 				t.Fatalf("publishTree: %v", err)
 			}
 			cpOld := []byte("bananas")
@@ -445,7 +436,7 @@ func TestPublishTree(t *testing.T) {
 			updatesSeen := 0
 			for _, d := range test.attempts {
 				time.Sleep(d)
-				if err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, getLastPublishedSize, storage.publishCheckpoint); err != nil {
+				if err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, storage.publishCheckpoint); err != nil {
 					t.Fatalf("publishTree: %v", err)
 				}
 				cpNew, _, err := m.getObject(ctx, layout.CheckpointPath)

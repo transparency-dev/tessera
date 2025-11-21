@@ -112,7 +112,7 @@ type sequencer interface {
 	// nextIndex returns the next available index in the log.
 	nextIndex(ctx context.Context) (uint64, error)
 	// publishCheckpoint coordinates the publication of new checkpoints based on the current integrated tree.
-	publishCheckpoint(ctx context.Context, minAge, maxAge time.Duration, lastPublishedSize func(context.Context) (uint64, error), f func(ctx context.Context, size uint64, root []byte) error) error
+	publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(ctx context.Context, size uint64, root []byte) error) error
 	// garbageCollect coordinates the removal of unneeded partial tiles/entry bundles for the provided tree size, up to a maximum number of deletes per invocation.
 	garbageCollect(ctx context.Context, treeSize uint64, maxDeletes uint, removePrefix func(ctx context.Context, prefix string) error) error
 }
@@ -353,16 +353,7 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, i, republishInterva
 			ctx, span := tracer.Start(ctx, "tessera.storage.gcp.publishCheckpointJob")
 			defer span.End()
 
-			getLastPublishedSize := func(ctx context.Context) (uint64, error) {
-				cp, err := a.logStore.getCheckpoint(ctx)
-				if err != nil {
-					return 0, err
-				}
-				_, size, _, err := parse.CheckpointUnsafe(cp)
-				return size, err
-			}
-
-			if err := a.sequencer.publishCheckpoint(ctx, i, republishInterval, getLastPublishedSize, a.publishCheckpoint); err != nil {
+			if err := a.sequencer.publishCheckpoint(ctx, i, republishInterval, a.publishCheckpoint); err != nil {
 				klog.Warningf("publishCheckpoint failed: %v", err)
 			}
 		}()
@@ -741,24 +732,25 @@ func newSpannerCoordinator(ctx context.Context, dbPool *spanner.Client, maxOutst
 //     This table coordinates integration of the batches of entries stored in
 //     Seq into the committed tree state.
 func initDB(ctx context.Context, spannerDB string) error {
-	return createAndPrepareTables(
-		ctx, spannerDB,
+	return createAndPrepareTables(ctx, spannerDB,
 		[]string{
 			"CREATE TABLE IF NOT EXISTS Tessera (id INT64 NOT NULL, compatibilityVersion INT64 NOT NULL) PRIMARY KEY (id)",
 			"CREATE TABLE IF NOT EXISTS SeqCoord (id INT64 NOT NULL, next INT64 NOT NULL,) PRIMARY KEY (id)",
 			"CREATE TABLE IF NOT EXISTS Seq (id INT64 NOT NULL, seq INT64 NOT NULL, v BYTES(MAX),) PRIMARY KEY (id, seq)",
 			"CREATE TABLE IF NOT EXISTS IntCoord (id INT64 NOT NULL, seq INT64 NOT NULL, rootHash BYTES(32)) PRIMARY KEY (id)",
-			"CREATE TABLE IF NOT EXISTS PubCoord (id INT64 NOT NULL, publishedAt TIMESTAMP NOT NULL) PRIMARY KEY (id)",
+			"CREATE TABLE IF NOT EXISTS PubCoord (id INT64 NOT NULL, publishedAt TIMESTAMP NOT NULL, size INT64) PRIMARY KEY (id)",
 			"CREATE TABLE IF NOT EXISTS GCCoord (id INT64 NOT NULL, fromSize INT64 NOT NULL) PRIMARY KEY (id)",
+		},
+		[]string{
+			"ALTER TABLE PubCoord ADD COLUMN IF NOT EXISTS size INT64",
 		},
 		[][]*spanner.Mutation{
 			{spanner.Insert("Tessera", []string{"id", "compatibilityVersion"}, []any{0, SchemaCompatibilityVersion})},
 			{spanner.Insert("SeqCoord", []string{"id", "next"}, []any{0, 0})},
 			{spanner.Insert("IntCoord", []string{"id", "seq", "rootHash"}, []any{0, 0, rfc6962.DefaultHasher.EmptyRoot()})},
-			{spanner.Insert("PubCoord", []string{"id", "publishedAt"}, []any{0, time.Unix(0, 0)})},
+			{spanner.Insert("PubCoord", []string{"id", "publishedAt", "size"}, []any{0, time.Unix(0, 0), 0})},
 			{spanner.Insert("GCCoord", []string{"id", "fromSize"}, []any{0, 0})},
-		},
-	)
+		})
 }
 
 // checkDataCompatibility compares the Tessera library SchemaCompatibilityVersion with the one stored in the
@@ -1004,25 +996,31 @@ func (s *spannerCoordinator) nextIndex(ctx context.Context) (uint64, error) {
 	return uint64(nextSeq), nil
 }
 
-// publishCheckpoint checks when the last checkpoint was published, and if it was more than minAge ago, calls the provided
+// publishCheckpoint checks when the last checkpoint was published, and if appropriate, calls the provided
 // function to publish a new one.
+//
+// A checkpoint will not be published if either:
+//   - the currently published checkpoint was published less than minStaleActive ago
+//   - the new checkpoint is the same size as the currently published one, AND the currently published checkpoint
+//     was published less than minStaleRepub ago.
 //
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
-func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minAge, maxAge time.Duration, lastPublishedSize func(context.Context) (uint64, error), f func(context.Context, uint64, []byte) error) error {
+func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) error {
 	if _, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
-		pRow, err := txn.ReadRowWithOptions(ctx, "PubCoord", spanner.Key{0}, []string{"publishedAt"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+		pRow, err := txn.ReadRowWithOptions(ctx, "PubCoord", spanner.Key{0}, []string{"publishedAt", "size"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 		if err != nil {
 			return fmt.Errorf("failed to read PubCoord: %w", err)
 		}
 		var pubAt time.Time
-		if err := pRow.Column(0, &pubAt); err != nil {
-			return fmt.Errorf("failed to parse publishedAt: %v", err)
+		var lastSize spanner.NullInt64
+		if err := pRow.Columns(&pubAt, &lastSize); err != nil {
+			return fmt.Errorf("failed to parse PubCoord: %v", err)
 		}
 
 		cpAge := time.Since(pubAt)
-		if cpAge < minAge {
-			klog.V(1).Infof("publishCheckpoint: last checkpoint published %s ago (< required %s), not publishing new checkpoint", cpAge, minAge)
+		if cpAge < minStaleActive {
+			klog.V(1).Infof("publishCheckpoint: last checkpoint published %s ago (< required %s), not publishing new checkpoint", cpAge, minStaleActive)
 			return nil
 		}
 
@@ -1038,17 +1036,12 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minAge, maxA
 		}
 
 		currentSize := uint64(fromSeq)
-		shouldPublish := false
-		if maxAge > 0 && cpAge >= maxAge {
-			shouldPublish = true
-		}
-
+		shouldPublish := minStaleRepub > 0 && cpAge >= minStaleRepub
 		if !shouldPublish {
-			lastSize, err := lastPublishedSize(ctx)
-			if err != nil {
-				klog.Warningf("publishCheckpoint: failed to read last published size: %v", err)
+			if !lastSize.Valid {
+				// If we don't know the last published size, we should probably publish to be safe/self-heal.
 				shouldPublish = true
-			} else if currentSize > lastSize {
+			} else if currentSize > uint64(lastSize.Int64) {
 				shouldPublish = true
 			}
 		}
@@ -1063,7 +1056,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minAge, maxA
 		if err := f(ctx, currentSize, rootHash); err != nil {
 			return err
 		}
-		if err := txn.BufferWrite([]*spanner.Mutation{spanner.Update("PubCoord", []string{"id", "publishedAt"}, []any{0, time.Now()})}); err != nil {
+		if err := txn.BufferWrite([]*spanner.Mutation{spanner.Update("PubCoord", []string{"id", "publishedAt", "size"}, []any{0, time.Now(), int64(currentSize)})}); err != nil {
 			return err
 		}
 
@@ -1472,7 +1465,7 @@ func (m *MigrationStorage) buildTree(ctx context.Context, sourceSize uint64) (ui
 // This is intended to be used to create and initialise Spanner instances on first use.
 // DDL should likely be of the form "CREATE TABLE IF NOT EXISTS".
 // Mutation groups should likey be one or more spanner.Insert operations - AlreadyExists errors will be silently ignored.
-func createAndPrepareTables(ctx context.Context, spannerDB string, ddl []string, mutations [][]*spanner.Mutation) error {
+func createAndPrepareTables(ctx context.Context, spannerDB string, ddl []string, alter []string, mutations [][]*spanner.Mutation) error {
 	adminClient, err := database.NewDatabaseAdminClient(ctx)
 	if err != nil {
 		return err
@@ -1492,6 +1485,23 @@ func createAndPrepareTables(ctx context.Context, spannerDB string, ddl []string,
 	}
 	if err := op.Wait(ctx); err != nil {
 		return err
+	}
+
+	if len(alter) > 0 {
+		// The spannertest emulator appears to ignore IF NOT EXISTS in ALTER DATABASE statements, so
+		// we'll apply each update individually and ignore any AlreadyExists errors we see.
+		for _, a := range alter {
+			op, err := adminClient.UpdateDatabaseDdl(ctx, &adminpb.UpdateDatabaseDdlRequest{
+				Database:   spannerDB,
+				Statements: []string{a},
+			})
+			if err != nil { // && spanner.ErrCode(err) != codes.AlreadyExists {
+				return fmt.Errorf("updateDatabaseDdl: %v", err)
+			}
+			if err := op.Wait(ctx); err != nil && spanner.ErrCode(err) != codes.AlreadyExists {
+				return fmt.Errorf("failed to alter table: %v", err)
+			}
+		}
 	}
 
 	dbPool, err := spanner.NewClient(ctx, spannerDB)
