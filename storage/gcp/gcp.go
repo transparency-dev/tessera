@@ -112,7 +112,7 @@ type sequencer interface {
 	// nextIndex returns the next available index in the log.
 	nextIndex(ctx context.Context) (uint64, error)
 	// publishCheckpoint coordinates the publication of new checkpoints based on the current integrated tree.
-	publishCheckpoint(ctx context.Context, minAge time.Duration, f func(ctx context.Context, size uint64, root []byte) error) error
+	publishCheckpoint(ctx context.Context, minAge, maxAge time.Duration, lastPublishedSize func(context.Context) (uint64, error), f func(ctx context.Context, size uint64, root []byte) error) error
 	// garbageCollect coordinates the removal of unneeded partial tiles/entry bundles for the provided tree size, up to a maximum number of deletes per invocation.
 	garbageCollect(ctx context.Context, treeSize uint64, maxDeletes uint, removePrefix func(ctx context.Context, prefix string) error) error
 }
@@ -274,7 +274,7 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoord
 	}
 
 	go a.integrateEntriesJob(ctx)
-	go a.publishCheckpointJob(ctx, opts.CheckpointInterval())
+	go a.publishCheckpointJob(ctx, opts.CheckpointInterval(), opts.CheckpointRepublishInterval())
 	if i := opts.GarbageCollectionInterval(); i > 0 {
 		go a.garbageCollectorJob(ctx, i)
 	}
@@ -339,7 +339,7 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 // of the tree, once per interval.
 //
 // Blocks until ctx is done.
-func (a *Appender) publishCheckpointJob(ctx context.Context, i time.Duration) {
+func (a *Appender) publishCheckpointJob(ctx context.Context, i, republishInterval time.Duration) {
 	t := time.NewTicker(i)
 	defer t.Stop()
 	for {
@@ -352,7 +352,17 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, i time.Duration) {
 		func() {
 			ctx, span := tracer.Start(ctx, "tessera.storage.gcp.publishCheckpointJob")
 			defer span.End()
-			if err := a.sequencer.publishCheckpoint(ctx, i, a.publishCheckpoint); err != nil {
+
+			getLastPublishedSize := func(ctx context.Context) (uint64, error) {
+				cp, err := a.logStore.getCheckpoint(ctx)
+				if err != nil {
+					return 0, err
+				}
+				_, size, _, err := parse.CheckpointUnsafe(cp)
+				return size, err
+			}
+
+			if err := a.sequencer.publishCheckpoint(ctx, i, republishInterval, getLastPublishedSize, a.publishCheckpoint); err != nil {
 				klog.Warningf("publishCheckpoint failed: %v", err)
 			}
 		}()
@@ -999,7 +1009,7 @@ func (s *spannerCoordinator) nextIndex(ctx context.Context) (uint64, error) {
 //
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
-func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minAge time.Duration, f func(context.Context, uint64, []byte) error) error {
+func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minAge, maxAge time.Duration, lastPublishedSize func(context.Context) (uint64, error), f func(context.Context, uint64, []byte) error) error {
 	if _, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 		pRow, err := txn.ReadRowWithOptions(ctx, "PubCoord", spanner.Key{0}, []string{"publishedAt"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 		if err != nil {
@@ -1016,8 +1026,6 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minAge time.
 			return nil
 		}
 
-		klog.V(1).Infof("publishCheckpoint: updating checkpoint (replacing %s old checkpoint)", cpAge)
-
 		// Can't just use currentTree() here as the spanner emulator doesn't do nested transactions, so do it manually:
 		row, err := txn.ReadRow(ctx, "IntCoord", spanner.Key{0}, []string{"seq", "rootHash"})
 		if err != nil {
@@ -1028,7 +1036,31 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minAge time.
 		if err := row.Columns(&fromSeq, &rootHash); err != nil {
 			return fmt.Errorf("failed to parse integration coordination info: %v", err)
 		}
-		if err := f(ctx, uint64(fromSeq), rootHash); err != nil {
+
+		currentSize := uint64(fromSeq)
+		shouldPublish := false
+		if maxAge > 0 && cpAge >= maxAge {
+			shouldPublish = true
+		}
+
+		if !shouldPublish {
+			lastSize, err := lastPublishedSize(ctx)
+			if err != nil {
+				klog.Warningf("publishCheckpoint: failed to read last published size: %v", err)
+				shouldPublish = true
+			} else if currentSize > lastSize {
+				shouldPublish = true
+			}
+		}
+
+		if !shouldPublish {
+			klog.V(1).Infof("publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
+			return nil
+		}
+
+		klog.V(1).Infof("publishCheckpoint: updating checkpoint (replacing %s old checkpoint)", cpAge)
+
+		if err := f(ctx, currentSize, rootHash); err != nil {
 			return err
 		}
 		if err := txn.BufferWrite([]*spanner.Mutation{spanner.Update("PubCoord", []string{"id", "publishedAt"}, []any{0, time.Now()})}); err != nil {

@@ -363,10 +363,11 @@ func TestBundleRoundtrip(t *testing.T) {
 func TestPublishTree(t *testing.T) {
 	ctx := context.Background()
 	for _, test := range []struct {
-		name            string
-		publishInterval time.Duration
-		attempts        []time.Duration
-		wantUpdates     int
+		name              string
+		publishInterval   time.Duration
+		republishInterval time.Duration
+		attempts          []time.Duration
+		wantUpdates       int
 	}{
 		{
 			name:            "works ok",
@@ -388,6 +389,12 @@ func TestPublishTree(t *testing.T) {
 			publishInterval: 1 * time.Second,
 			attempts:        []time.Duration{300 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond},
 			wantUpdates:     1,
+		}, {
+			name:              "republish needed",
+			publishInterval:   1 * time.Second,
+			republishInterval: 2 * time.Second,
+			attempts:          []time.Duration{1500 * time.Millisecond, 2500 * time.Millisecond},
+			wantUpdates:       1,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -414,7 +421,21 @@ func TestPublishTree(t *testing.T) {
 			if err := storage.init(ctx); err != nil {
 				t.Fatalf("storage.init: %v", err)
 			}
-			if err := s.publishCheckpoint(ctx, test.publishInterval, storage.publishCheckpoint); err != nil {
+
+			getLastPublishedSize := func(ctx context.Context) (uint64, error) {
+				cp, err := storage.logStore.getCheckpoint(ctx)
+				if err != nil {
+					return 0, err
+				}
+				// Checkpoint format in this test is "%d/%x,"
+				var size uint64
+				if _, err := fmt.Sscanf(string(cp), "%d/", &size); err != nil {
+					return 0, fmt.Errorf("failed to parse test checkpoint %q: %v", cp, err)
+				}
+				return size, nil
+			}
+
+			if err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, getLastPublishedSize, storage.publishCheckpoint); err != nil {
 				t.Fatalf("publishTree: %v", err)
 			}
 			cpOld := []byte("bananas")
@@ -424,7 +445,7 @@ func TestPublishTree(t *testing.T) {
 			updatesSeen := 0
 			for _, d := range test.attempts {
 				time.Sleep(d)
-				if err := s.publishCheckpoint(ctx, test.publishInterval, storage.publishCheckpoint); err != nil {
+				if err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, getLastPublishedSize, storage.publishCheckpoint); err != nil {
 					t.Fatalf("publishTree: %v", err)
 				}
 				cpNew, _, err := m.getObject(ctx, layout.CheckpointPath)
