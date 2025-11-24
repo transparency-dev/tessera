@@ -43,14 +43,6 @@ var (
 	witnessFailOpen   = flag.Bool("witness_fail_open", false, "Still publish a checkpoint even if witness policy could not be met")
 )
 
-const (
-	// checkpointInterval is used as the value to pass to the WithCheckpointInterval option below.
-	// Since this is a short-lived command-line tool, we set this to a relatively low value so that
-	// the tool can publish the new checkpoint and exit relatively quickly after integrating the entries
-	// into the tree.
-	checkpointInterval = 100 * time.Millisecond
-)
-
 // entryInfo binds the actual bytes to be added as a leaf with a
 // user-recognisable name for the source of those bytes.
 // The name is only used below in order to inform the user of the
@@ -64,6 +56,8 @@ func main() {
 	klog.InitFlags(nil)
 	flag.Parse()
 	ctx := context.Background()
+
+	klog.V(1).Infof("Initialising driver")
 
 	// Gather the info needed for reading/writing checkpoints
 	s := getSignerOrDie()
@@ -81,6 +75,7 @@ func main() {
 		klog.Exitf("Failed to construct storage: %v", err)
 	}
 
+	klog.V(1).Infof("Reading entries")
 	// Evaluate the glob provided by the --entries flag to determine the files containing leaves
 	filesToAdd := readEntriesOrDie()
 	batchSize := uint(len(filesToAdd))
@@ -89,9 +84,11 @@ func main() {
 		batchSize = 1
 	}
 
+	klog.V(1).Infof("Configuring options")
 	opts := tessera.NewAppendOptions().
 		WithCheckpointSigner(s).
-		WithCheckpointInterval(checkpointInterval).
+		// Hint to Tessera the number of entries we're about to add via the batchSize parameter below,
+		// this will cause the batch to flush as soon as we've called Add on the final entry.
 		WithBatching(batchSize, time.Second)
 
 	if *witnessPolicyFile != "" {
@@ -111,15 +108,18 @@ func main() {
 		opts.WithWitnesses(wg, wOpts)
 	}
 
+	klog.V(1).Infof("Creating appender")
 	appender, shutdown, r, err := tessera.NewAppender(ctx, driver, opts)
 	if err != nil {
 		klog.Exit(err)
 	}
 
+	klog.V(1).Infof("Creating awaiter")
 	// We don't want to exit until our entries have been integrated into the tree, so we'll use Tessera's
 	// PublicationAwaiter to help with that.
 	await := tessera.NewPublicationAwaiter(ctx, r.ReadCheckpoint, 100*time.Millisecond)
 
+	klog.V(1).Infof("Adding entries")
 	// Add each of the leaves in order, and store the futures in a slice
 	// that we will check once all leaves are sent to storage.
 	indexFutures := make([]entryInfo, 0, len(filesToAdd))
@@ -133,6 +133,7 @@ func main() {
 		indexFutures = append(indexFutures, entryInfo{name: fp, f: f})
 	}
 
+	klog.V(1).Infof("Awaiting entries")
 	// Two options to ensure all work is done:
 	// 1) Check each of the futures to ensure that the leaves are sequenced.
 	for _, entry := range indexFutures {
@@ -142,11 +143,14 @@ func main() {
 		}
 		klog.Infof("%d: %v", seq.Index, entry.name)
 	}
+	klog.V(1).Infof("Futures resolved")
+	klog.V(1).Infof("Shutting down")
 
 	// 2) shutdown the appender
 	if err := shutdown(ctx); err != nil {
 		klog.Exitf("Failed to shut down cleanly: %v", err)
 	}
+	klog.V(1).Infof("Finished")
 }
 
 // Read log private key from file or environment variable
