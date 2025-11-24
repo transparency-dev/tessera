@@ -262,6 +262,11 @@ Now the fun part - writing to the log!
 The `AppendOptions` allow Tessera behaviour to be tuned.
 Take a look at the methods named `With*` on the `AppendOptions` struct in the root package, e.g. [`WithBatching`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithBatching) to see the available options are how they should be used.
 
+> [!Tip]
+> If you know ahead of time how many entries you want to add (e.g. if you're writing an "off-line" or batch tool,
+> which will process entries and then exit), you can pass that value as a performance hint to Tessera via the
+> _size_ parameter of `WithBatching`.
+ 
 Writing to the log follows this flow:
  1. Call `Add` with a new entry created with the data to be added as a leaf in the log.
     - This method returns a _future_ of the form `func() (Index, error)`.

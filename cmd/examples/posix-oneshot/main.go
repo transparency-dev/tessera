@@ -89,7 +89,12 @@ func main() {
 		WithCheckpointSigner(s).
 		// Hint to Tessera the number of entries we're about to add via the batchSize parameter below,
 		// this will cause the batch to flush as soon as we've called Add on the final entry.
-		WithBatching(batchSize, time.Second)
+		WithBatching(batchSize, 100*time.Millisecond).
+		// We're unlikely to ever wait this long to publish a checkpoint because of the batchSize hint
+		// passed in to the option above, but we set this interval low primarily such that if the user re-runs this
+		// tool to add further entries to the log, they don't have to wait for the previous checkpoint to
+		// become old enough to be overwritten.
+		WithCheckpointInterval(100 * time.Millisecond)
 
 	if *witnessPolicyFile != "" {
 		f, err := os.ReadFile(*witnessPolicyFile)
