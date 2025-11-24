@@ -339,8 +339,8 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 // of the tree, once per interval.
 //
 // Blocks until ctx is done.
-func (a *Appender) publishCheckpointJob(ctx context.Context, i, republishInterval time.Duration) {
-	t := time.NewTicker(i)
+func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republishInterval time.Duration) {
+	t := time.NewTicker(pubInterval)
 	defer t.Stop()
 	for {
 		select {
@@ -353,7 +353,7 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, i, republishInterva
 			ctx, span := tracer.Start(ctx, "tessera.storage.gcp.publishCheckpointJob")
 			defer span.End()
 
-			if err := a.sequencer.publishCheckpoint(ctx, i, republishInterval, a.publishCheckpoint); err != nil {
+			if err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.publishCheckpoint); err != nil {
 				klog.Warningf("publishCheckpoint failed: %v", err)
 			}
 		}()
