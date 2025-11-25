@@ -62,7 +62,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 const (
@@ -117,7 +117,7 @@ type sequencer interface {
 	nextIndex(ctx context.Context) (uint64, error)
 
 	// publishCheckpoint coordinates the publication of new checkpoints based on the current integrated tree.
-	publishCheckpoint(ctx context.Context, minAge time.Duration, f func(ctx context.Context, size uint64, root []byte) error) error
+	publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(ctx context.Context, size uint64, root []byte) error) error
 
 	// garbageCollect coordinates the removal of unneeded partial tiles/entry bundles for the provided tree size, up to a maximum number of deletes per invocation.
 	garbageCollect(ctx context.Context, treeSize uint64, maxDeletes uint, removePrefix func(ctx context.Context, prefix string) error) error
@@ -236,7 +236,7 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq sequencer, op
 	go r.integrateEntriesJob(ctx)
 
 	// Kick off go-routine which handles the publication of checkpoints.
-	go r.publishCheckpointJob(ctx, opts.CheckpointInterval())
+	go r.publishCheckpointJob(ctx, opts.CheckpointInterval(), opts.CheckpointRepublishInterval())
 
 	if i := opts.GarbageCollectionInterval(); i > 0 {
 		go r.garbageCollectorJob(ctx, i)
@@ -291,8 +291,8 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 // of the tree, once per interval.
 //
 // This function does not return until the passed in context is done.
-func (a *Appender) publishCheckpointJob(ctx context.Context, interval time.Duration) {
-	t := time.NewTicker(interval)
+func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republishInterval time.Duration) {
+	t := time.NewTicker(pubInterval)
 	defer t.Stop()
 	for {
 		select {
@@ -301,7 +301,7 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, interval time.Durat
 		case <-a.treeUpdated:
 		case <-t.C:
 		}
-		if err := a.sequencer.publishCheckpoint(ctx, interval, a.publishCheckpoint); err != nil {
+		if err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.publishCheckpoint); err != nil {
 			klog.Warningf("publishCheckpoint: %v", err)
 		}
 	}
@@ -941,9 +941,32 @@ func (s *mySQLSequencer) initDB(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS PubCoord(
 			id INT UNSIGNED NOT NULL,
 			publishedAt BIGINT NOT NULL,
+			size BIGINT UNSIGNED,
 			PRIMARY KEY (id)
 		)`); err != nil {
 		return err
+	}
+
+	// Attempt to migrate the schema for existing tables.
+	//
+	// Of course MySQL doesn't support IF NOT EXISTS for ADD COLUMN. MariaDB does, but we can't rely on that
+	// here unless we try to divine which DBMS we're _actually_ talking to.
+	//
+	// In theory MariaDB and AuroraDB are MySQL compatible, and that should extend to error codes (MariaDB explicitly
+	// says that error codes between 1000 and 1800 are identical
+	// (https://mariadb.com/docs/server/reference/error-codes/mariadb-error-code-reference).
+	//
+	// So we'll just do it the MySQL way, and ignore any "already exists" error we get back.
+	if _, err := s.dbPool.ExecContext(ctx, `ALTER TABLE PubCoord ADD COLUMN size BIGINT UNSIGNED`); err != nil {
+		if e, ok := err.(*mysql.MySQLError); ok {
+			// If this is anything other than ER_DUP_FIELDNAME (1060), then fail.
+			if e.Number != 1060 {
+				return fmt.Errorf("failed to add column to PubCoord: %v", err)
+			}
+		} else {
+			// Also fail if it wasn't a MySQL error.
+			return fmt.Errorf("failed to add column to PubCoord: %v", err)
+		}
 	}
 
 	if _, err := s.dbPool.ExecContext(ctx,
@@ -972,7 +995,7 @@ func (s *mySQLSequencer) initDB(ctx context.Context) error {
 		return err
 	}
 	if _, err := s.dbPool.ExecContext(ctx,
-		`INSERT IGNORE INTO PubCoord (id, publishedAt) VALUES (0, 0)`); err != nil {
+		`INSERT IGNORE INTO PubCoord (id, publishedAt, size) VALUES (0, 0, 0)`); err != nil {
 		return err
 	}
 	if _, err := s.dbPool.ExecContext(ctx,
@@ -1187,7 +1210,7 @@ func (s *mySQLSequencer) nextIndex(ctx context.Context) (uint64, error) {
 //
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
-func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minAge time.Duration, f func(context.Context, uint64, []byte) error) error {
+func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) error {
 	tx, err := s.dbPool.Begin()
 	if err != nil {
 		return err
@@ -1198,18 +1221,17 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minAge time.Dura
 		}
 	}()
 
-	pRow := tx.QueryRowContext(ctx, "SELECT publishedAt FROM PubCoord WHERE id = ? FOR UPDATE", 0)
+	pRow := tx.QueryRowContext(ctx, "SELECT publishedAt, size FROM PubCoord WHERE id = ? FOR UPDATE", 0)
 	var pubAt int64
-	if err := pRow.Scan(&pubAt); err != nil {
-		return fmt.Errorf("failed to parse publishedAt: %v", err)
+	var lastSize sql.NullInt64
+	if err := pRow.Scan(&pubAt, &lastSize); err != nil {
+		return fmt.Errorf("failed to parse PubCoord: %v", err)
 	}
 	cpAge := time.Since(time.Unix(pubAt, 0))
-	if cpAge < minAge {
-		klog.V(1).Infof("publishCheckpoint: last checkpoint published %s ago (< required %s), not publishing new checkpoint", cpAge, minAge)
+	if cpAge < minStaleActive {
+		klog.V(1).Infof("publishCheckpoint: last checkpoint published %s ago (< required %s), not publishing new checkpoint", cpAge, minStaleActive)
 		return nil
 	}
-
-	klog.V(1).Infof("publishCheckpoint: updating checkpoint (replacing %s old checkpoint)", cpAge)
 
 	row := tx.QueryRowContext(ctx, "SELECT seq, rootHash FROM IntCoord WHERE id = ?", 0)
 	var fromSeq uint64
@@ -1218,11 +1240,30 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minAge time.Dura
 		return fmt.Errorf("failed to read IntCoord: %v", err)
 	}
 
+	currentSize := fromSeq
+	shouldPublish := minStaleRepub > 0 && cpAge >= minStaleRepub
+
+	if !shouldPublish {
+		if !lastSize.Valid {
+			// If we don't know the last published size, we should probably publish to be safe/self-heal.
+			shouldPublish = true
+		} else if currentSize > uint64(lastSize.Int64) {
+			shouldPublish = true
+		}
+	}
+
+	if !shouldPublish {
+		klog.V(1).Infof("publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
+		return nil
+	}
+
+	klog.V(1).Infof("publishCheckpoint: updating checkpoint (replacing %s old checkpoint)", cpAge)
+
 	if err := f(ctx, fromSeq, rootHash); err != nil {
 		return err
 	}
 
-	if _, err := tx.ExecContext(ctx, "UPDATE PubCoord SET publishedAt=? WHERE id=?", time.Now().Unix(), 0); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE PubCoord SET publishedAt=?, size=? WHERE id=?", time.Now().Unix(), currentSize, 0); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

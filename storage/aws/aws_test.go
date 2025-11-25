@@ -380,31 +380,42 @@ func TestPublishTree(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name            string
-		publishInterval time.Duration
-		attempts        []time.Duration
-		wantUpdates     int
+		name              string
+		publishInterval   time.Duration
+		republishInterval time.Duration
+		attempts          []time.Duration
+		wantUpdates       int
 	}{
 		{
-			name:            "works ok",
-			publishInterval: 100 * time.Millisecond,
-			attempts:        []time.Duration{1 * time.Second},
-			wantUpdates:     1,
+			name:              "works ok",
+			publishInterval:   100 * time.Millisecond,
+			republishInterval: 100 * time.Millisecond,
+			attempts:          []time.Duration{1 * time.Second},
+			wantUpdates:       1,
 		}, {
-			name:            "too soon, skip update",
-			publishInterval: 10 * time.Second,
-			attempts:        []time.Duration{100 * time.Millisecond},
-			wantUpdates:     0,
+			name:              "too soon, skip update",
+			publishInterval:   10 * time.Second,
+			republishInterval: 10 * time.Second,
+			attempts:          []time.Duration{100 * time.Millisecond},
+			wantUpdates:       0,
 		}, {
-			name:            "too soon, skip update, but recovers",
-			publishInterval: 2 * time.Second,
-			attempts:        []time.Duration{100 * time.Millisecond, 2 * time.Second},
-			wantUpdates:     1,
+			name:              "too soon, skip update, but recovers",
+			publishInterval:   2 * time.Second,
+			republishInterval: 2 * time.Second,
+			attempts:          []time.Duration{100 * time.Millisecond, 2 * time.Second},
+			wantUpdates:       1,
 		}, {
-			name:            "many attempts, eventually one succeeds",
-			publishInterval: 1 * time.Second,
-			attempts:        []time.Duration{300 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond},
-			wantUpdates:     1,
+			name:              "many attempts, eventually one succeeds",
+			publishInterval:   1 * time.Second,
+			republishInterval: 1 * time.Second,
+			attempts:          []time.Duration{300 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond},
+			wantUpdates:       1,
+		}, {
+			name:              "republish needed",
+			publishInterval:   1 * time.Second,
+			republishInterval: 2 * time.Second,
+			attempts:          []time.Duration{1500 * time.Millisecond, 2500 * time.Millisecond},
+			wantUpdates:       1,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -430,7 +441,7 @@ func TestPublishTree(t *testing.T) {
 			if err := storage.init(ctx); err != nil {
 				t.Fatalf("storage.init: %v", err)
 			}
-			if err := s.publishCheckpoint(ctx, test.publishInterval, storage.publishCheckpoint); err != nil {
+			if err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, storage.publishCheckpoint); err != nil {
 				t.Fatalf("publishTree: %v", err)
 			}
 			cpOld := []byte("bananas")
@@ -440,7 +451,7 @@ func TestPublishTree(t *testing.T) {
 			updatesSeen := 0
 			for _, d := range test.attempts {
 				time.Sleep(d)
-				if err := s.publishCheckpoint(ctx, test.publishInterval, storage.publishCheckpoint); err != nil {
+				if err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, storage.publishCheckpoint); err != nil {
 					t.Fatalf("publishTree: %v", err)
 				}
 				cpNew, err := m.getObject(ctx, layout.CheckpointPath)
