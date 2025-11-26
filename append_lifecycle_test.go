@@ -16,7 +16,11 @@ package tessera
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/mod/sumdb/note"
 )
 
 func TestMemoize(t *testing.T) {
@@ -53,4 +57,59 @@ func TestMemoize(t *testing.T) {
 	if c.Index != d.Index {
 		t.Fatalf("c(=%d) != d(=%d)", c.Index, d.Index)
 	}
+}
+
+const testSignerKey = "PRIVATE+KEY+example.com/log/testdata+33d7b496+AeymY/SZAX0jZcJ8enZ5FY1Dz+wTML2yWSkK+9DSF3eg"
+
+func TestAppendOptionsValid(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		opts            *AppendOptions
+		wantErrContains string
+	}{
+		{
+			name: "Valid",
+			opts: NewAppendOptions().WithCheckpointSigner(mustCreateSigner(t, testSignerKey)),
+		}, {
+			name: "Valid: CheckpointRepublishInterval == CheckpointInterval",
+			opts: NewAppendOptions().
+				WithCheckpointSigner(mustCreateSigner(t, testSignerKey)).
+				WithCheckpointInterval(10 * time.Second).
+				WithCheckpointRepublishInterval(10 * time.Second),
+		}, {
+			name: "Error: CheckpointRepublishInterval < CheckpointInterval",
+			opts: NewAppendOptions().
+				WithCheckpointSigner(mustCreateSigner(t, testSignerKey)).
+				WithCheckpointInterval(10 * time.Second).
+				WithCheckpointRepublishInterval(9 * time.Second),
+			wantErrContains: "WithCheckpointRepublishInterval",
+		}, {
+			name:            "Error: No CheckpointSigner",
+			opts:            NewAppendOptions(),
+			wantErrContains: "WithCheckpointSigner",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.opts.valid()
+			switch gotErr, wantErr := err != nil, test.wantErrContains != ""; {
+			case gotErr && !wantErr:
+				t.Fatalf("Got unexpected error %q, want no error", err)
+			case !gotErr && wantErr:
+				t.Fatalf("Got no error, expected error")
+			case gotErr:
+				if !strings.Contains(err.Error(), test.wantErrContains) {
+					t.Fatalf("Got err %q, want error containing %q", err.Error(), test.wantErrContains)
+				}
+			}
+		})
+	}
+}
+
+func mustCreateSigner(t *testing.T, k string) note.Signer {
+	t.Helper()
+	s, err := note.NewSigner(k)
+	if err != nil {
+		t.Fatalf("Failed to create signer: %v", err)
+	}
+	return s
 }

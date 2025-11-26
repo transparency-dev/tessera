@@ -585,6 +585,9 @@ func (o AppendOptions) valid() error {
 	if o.newCP == nil {
 		return errors.New("invalid AppendOptions: WithCheckpointSigner must be set")
 	}
+	if o.checkpointRepublishInterval > 0 && o.checkpointRepublishInterval < o.checkpointInterval {
+		return fmt.Errorf("invalid AppendOptions: WithCheckpointRepublishInterval (%d) is smaller than WithCheckpointInterval (%d)", o.checkpointRepublishInterval, o.checkpointInterval)
+	}
 	return nil
 }
 
