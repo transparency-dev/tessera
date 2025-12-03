@@ -45,7 +45,8 @@ jobs:
           sudo /etc/init.d/mysql start
           mysql -e "CREATE DATABASE IF NOT EXISTS $DB_DATABASE;" -u$DB_USER -p$DB_PASSWORD
       - name: Test with Go
-        run: go test -v -race ./storage/mysql/... -is_mysql_test_optional=false
+        # Parallel tests are disabled for the MySQL test database to always be in a known state.
+        run: go test -p=1 -v -race ./storage/mysql/... -is_mysql_test_optional=false
 
   test-aws-mysql:
     env:

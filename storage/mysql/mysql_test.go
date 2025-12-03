@@ -170,7 +170,7 @@ func TestGetTile(t *testing.T) {
 	ctx := context.Background()
 	addFn, r, _ := newTestMySQLStorage(t, ctx)
 
-	awaiter := tessera.NewPublicationAwaiter(ctx, r.ReadCheckpoint, 10*time.Millisecond)
+	awaiter := tessera.NewPublicationAwaiter(ctx, r.ReadCheckpoint, 1*time.Second)
 
 	treeSize := 258
 
