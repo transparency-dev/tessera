@@ -90,7 +90,7 @@ func TestGarbageCollect(t *testing.T) {
 		}
 
 		t.Logf("Running GC at size  %d", size)
-		if err := s.garbageCollect(ctx, size, 1000); err != nil {
+		if err := s.garbageCollect(ctx, size, 1000, appender.logStorage.entriesPath); err != nil {
 			t.Fatalf("garbageCollect: %v", err)
 		}
 

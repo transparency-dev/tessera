@@ -513,7 +513,7 @@ func TestGarbageCollect(t *testing.T) {
 		}
 
 		t.Logf("Running GC at size  %d", size)
-		if err := s.garbageCollect(ctx, size, 1000, m.deleteObjectsWithPrefix); err != nil {
+		if err := s.garbageCollect(ctx, size, 1000, m.deleteObjectsWithPrefix, appender.logStore.entriesPath); err != nil {
 			t.Fatalf("garbageCollect: %v", err)
 		}
 

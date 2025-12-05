@@ -710,7 +710,7 @@ func (a *appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 			continue
 		}
 
-		if err := a.s.garbageCollect(ctx, pubSize, maxBundlesPerRun); err != nil {
+		if err := a.s.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStorage.entriesPath); err != nil {
 			klog.Warningf("GarbageCollect failed: %v", err)
 			continue
 		}
@@ -757,7 +757,7 @@ func (s *Storage) readGCState() (uint64, error) {
 	return gs.FromSize, nil
 }
 
-func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint) error {
+func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint, entriesPath func(uint64, uint8) string) error {
 	// Lock the gc location:
 	unlock, err := s.lockFile(ctx, gcStateLock)
 	if err != nil {
@@ -789,7 +789,7 @@ func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundle
 		}
 
 		// GC any partial versions of the entry bundle itself and the tile which sits immediately above it.
-		if err := s.removeDirAll(layout.EntriesPath(ri.Index, 0) + ".p/"); err != nil {
+		if err := s.removeDirAll(entriesPath(ri.Index, 0) + ".p/"); err != nil {
 			return err
 		}
 		if err := s.removeDirAll(layout.TilePath(0, ri.Index, 0) + ".p/"); err != nil {
