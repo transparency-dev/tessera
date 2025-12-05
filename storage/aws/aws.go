@@ -120,7 +120,7 @@ type sequencer interface {
 	publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(ctx context.Context, size uint64, root []byte) error) error
 
 	// garbageCollect coordinates the removal of unneeded partial tiles/entry bundles for the provided tree size, up to a maximum number of deletes per invocation.
-	garbageCollect(ctx context.Context, treeSize uint64, maxDeletes uint, removePrefix func(ctx context.Context, prefix string) error) error
+	garbageCollect(ctx context.Context, treeSize uint64, maxDeletes uint, removePrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) error
 }
 
 // consumeFunc is the signature of a function which can consume entries from the sequencer.
@@ -341,7 +341,7 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 				return
 			}
 
-			if err := a.sequencer.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStore.objStore.deleteObjectsWithPrefix); err != nil {
+			if err := a.sequencer.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStore.objStore.deleteObjectsWithPrefix, a.logStore.entriesPath); err != nil {
 				klog.Warningf("GarbageCollect failed: %v", err)
 				return
 			}
@@ -1279,7 +1279,7 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 //
 // Uses the `GCCoord` table to ensure that only one binary is actively garbage collecting at any given time, and to track progress so that we don't
 // needlessly attempt to GC over regions which have already been cleaned.
-func (s *mySQLSequencer) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint, deleteWithPrefix func(ctx context.Context, prefix string) error) error {
+func (s *mySQLSequencer) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint, deleteWithPrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) error {
 	tx, err := s.dbPool.Begin()
 	if err != nil {
 		return err
@@ -1310,7 +1310,7 @@ func (s *mySQLSequencer) garbageCollect(ctx context.Context, treeSize uint64, ma
 		}
 
 		// GC any partial versions of the entry bundle itself and the tile which sits immediately above it.
-		eg.Go(func() error { return deleteWithPrefix(ctx, layout.EntriesPath(ri.Index, 0)+".p/") })
+		eg.Go(func() error { return deleteWithPrefix(ctx, entriesPath(ri.Index, 0)+".p/") })
 		eg.Go(func() error { return deleteWithPrefix(ctx, layout.TilePath(0, ri.Index, 0)+".p/") })
 		fromSize += uint64(ri.N)
 		d++
