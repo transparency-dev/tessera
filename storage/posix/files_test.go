@@ -90,21 +90,21 @@ func TestGarbageCollect(t *testing.T) {
 		}
 
 		t.Logf("Running GC at size  %d", size)
-		if err := s.garbageCollect(ctx, size, 1000); err != nil {
+		if err := s.garbageCollect(ctx, size, 1000, appender.logStorage.entriesPath); err != nil {
 			t.Fatalf("garbageCollect: %v", err)
 		}
 
 		// Compare any remaining partial resources to the list of places
 		// we'd expect them to be, given the tree size.
 		wantPartialPrefixes := make(map[string]struct{})
-		for _, p := range expectedPartialPrefixes(size) {
+		for _, p := range expectedPartialPrefixes(size, appender.logStorage.entriesPath) {
 			wantPartialPrefixes[p] = struct{}{}
 		}
 		allPartialDirs, err := findAllPartialDirs(t, s.cfg.Path)
 		if err != nil {
 			t.Fatalf("findAllPartials: %v", err)
 		}
-		for _, k := range allPartialDirs {
+		for k := range allPartialDirs {
 			if _, ok := wantPartialPrefixes[k]; !ok {
 				t.Errorf("Found unwanted partial: %s", k)
 			}
@@ -116,6 +116,135 @@ func TestGarbageCollect(t *testing.T) {
 	f := fsck.New(vk.Name(), vk, lr, defaultMerkleLeafHasher, fsck.Opts{N: 1})
 	if err := f.Check(ctx); err != nil {
 		t.Fatalf("FSCK failed: %v", err)
+	}
+}
+
+func TestGarbageCollectOption(t *testing.T) {
+	batchSize := uint64(60000)
+	integrateEvery := uint64(31343)
+	garbageCollectionInterval := 100 * time.Millisecond
+
+	for _, test := range []struct {
+		name                          string
+		withCTLayout                  bool
+		withGarbageCollectionInterval time.Duration
+	}{
+		{
+			name:                          "on",
+			withGarbageCollectionInterval: garbageCollectionInterval,
+			withCTLayout:                  false,
+		},
+		{
+			name:                          "on-ct",
+			withGarbageCollectionInterval: garbageCollectionInterval,
+			withCTLayout:                  true,
+		},
+		{
+			name:                          "off",
+			withGarbageCollectionInterval: time.Duration(0),
+			withCTLayout:                  false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+
+			s := &Storage{
+				cfg: Config{
+					HTTPClient: http.DefaultClient,
+					Path:       t.TempDir(),
+				},
+			}
+			sk, vk := mustGenerateKeys(t)
+
+			opts := tessera.NewAppendOptions().
+				WithCheckpointInterval(1200*time.Millisecond).
+				WithBatching(uint(batchSize), 100*time.Millisecond).
+				WithGarbageCollectionInterval(test.withGarbageCollectionInterval).
+				WithCheckpointSigner(sk)
+
+			if test.withCTLayout {
+				opts.WithCTLayout()
+			}
+
+			logStorage := &logResourceStorage{
+				s:           s,
+				entriesPath: opts.EntriesPath(),
+			}
+			appender, lr, err := s.newAppender(ctx, logStorage, opts)
+			if err != nil {
+				t.Fatalf("Appender: %v", err)
+			}
+			if err := appender.publishCheckpoint(ctx, 0, 0); err != nil {
+				t.Fatalf("publishCheckpoint: %v", err)
+			}
+
+			// Build a reasonably-sized tree with a bunch of partial resouces present, and wait for
+			// it to be published.
+			treeSize := uint64(256 * 384)
+
+			a := tessera.NewPublicationAwaiter(ctx, lr.ReadCheckpoint, 100*time.Millisecond)
+			wantPartialPrefixes := make(map[string]struct{})
+
+			// Grow the tree several times to check continued correct operation over lifetime of the log.
+			// Let garbage collection happen in the background.
+			for size := uint64(0); size < treeSize; {
+				t.Logf("Adding entries from %d", size)
+				for range batchSize {
+					f := appender.Add(ctx, tessera.NewEntry(fmt.Appendf(nil, "entry %d", size)))
+					if size%integrateEvery == 0 {
+						t.Logf("Awaiting entry  %d", size)
+						if _, _, err := a.Await(ctx, f); err != nil {
+							t.Fatalf("Await: %v", err)
+						}
+						// If garbage collection is off, we want partial tiles and bundles to stick around.
+						if test.withGarbageCollectionInterval == time.Duration(0) {
+							for _, p := range expectedPartialPrefixes(size, appender.logStorage.entriesPath) {
+								wantPartialPrefixes[p] = struct{}{}
+							}
+						}
+					}
+					size++
+				}
+				t.Logf("Awaiting tree at size  %d", size)
+				if _, _, err := a.Await(ctx, func() (tessera.Index, error) { return tessera.Index{Index: size - 1}, nil }); err != nil {
+					t.Fatalf("Await final tree: %v", err)
+				}
+
+				// Leave a bit of time for Garbage Collection to run.
+				time.Sleep(3 * garbageCollectionInterval)
+
+				// Compare any remaining partial resources to the list of places
+				// we'd expect them to be, given the tree size.
+
+				// Regardless of whether garbage collection is on, partial tiles corresponding to the last
+				// checkpoint should alway be here.
+				for _, p := range expectedPartialPrefixes(size, appender.logStorage.entriesPath) {
+					wantPartialPrefixes[p] = struct{}{}
+				}
+				allPartialDirs, err := findAllPartialDirs(t, s.cfg.Path)
+				if err != nil {
+					t.Fatalf("findAllPartials: %v", err)
+				}
+				// If gargabe collection is on, no partial tiles other than the ones we expect should be
+				// present.
+				for k := range allPartialDirs {
+					if _, ok := wantPartialPrefixes[k]; !ok && test.withGarbageCollectionInterval > 0 {
+						t.Errorf("Found unwanted partial: %s", k)
+					}
+					delete(wantPartialPrefixes, k)
+				}
+				for k := range wantPartialPrefixes {
+					t.Errorf("Did not find expected partial: %s", k)
+				}
+			}
+
+			// And finally, for good measure, assert that all the resources implied by the log's checkpoint
+			// are present.
+			f := fsck.New(vk.Name(), vk, lr, defaultMerkleLeafHasher, fsck.Opts{N: 1})
+			if err := f.Check(ctx); err != nil {
+				t.Fatalf("FSCK failed: %v", err)
+			}
+		})
 	}
 }
 
@@ -247,16 +376,16 @@ func TestPublishTree(t *testing.T) {
 	}
 }
 
-func findAllPartialDirs(t *testing.T, root string) ([]string, error) {
+func findAllPartialDirs(t *testing.T, root string) (map[string]struct{}, error) {
 	t.Helper()
 	if !strings.HasSuffix(root, "/") {
 		root += "/"
 	}
 
-	dirs := make([]string, 0)
+	dirs := make(map[string]struct{})
 	f := func(path string, d os.DirEntry, err error) error {
 		if d.IsDir() && strings.Contains(d.Name(), ".p") {
-			dirs = append(dirs, strings.TrimPrefix(path, root))
+			dirs[strings.TrimPrefix(path, root)] = struct{}{}
 		}
 		return nil
 	}
@@ -267,13 +396,13 @@ func findAllPartialDirs(t *testing.T, root string) ([]string, error) {
 // tree of the provided size to have partial resources.
 //
 // These are really just the right-hand tiles/entry bundle in the tree.
-func expectedPartialPrefixes(size uint64) []string {
+func expectedPartialPrefixes(size uint64, entriesPath func(uint64, uint8) string) []string {
 	r := []string{}
 	for l, c := uint64(0), size; c > 0; l, c = l+1, c>>8 {
 		idx, p := c/256, c%256
 		if p != 0 {
 			if l == 0 {
-				r = append(r, layout.EntriesPath(idx, 0)+".p")
+				r = append(r, entriesPath(idx, 0)+".p")
 			}
 			r = append(r, layout.TilePath(l, idx, 0)+".p")
 		}
