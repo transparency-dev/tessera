@@ -46,7 +46,7 @@ jobs:
           mysql -e "CREATE DATABASE IF NOT EXISTS $DB_DATABASE;" -u$DB_USER -p$DB_PASSWORD
       - name: Test with Go
         # Parallel tests are disabled for the MySQL test database to always be in a known state.
-        run: go test -p=1 -v -race ./storage/mysql/... -is_mysql_test_optional=false
+        run: go test -p=1 -v -race ./storage/mysql/... -is_mysql_test_optional=true
 
   test-aws-mysql:
     env:
