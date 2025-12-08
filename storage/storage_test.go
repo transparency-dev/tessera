@@ -1,4 +1,4 @@
-// Copyright 2024 The Tessera authors. All Rights Reserved.
+// Copyright 2025 The Tessera authors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -50,13 +50,12 @@ func TestForbiddenFunction(t *testing.T) {
 		// Read the file content
 		content, err := os.ReadFile(path)
 		if err != nil {
-			t.Logf("Could not read %s: %v", path, err)
-			return nil // Don't fail the test if a file is unreadable, just skip
+			return err
 		}
 
 		// Check for the forbidden string
 		if strings.Contains(string(content), forbiddenName) {
-			t.Errorf("\n[FAIL] Found forbidden call '%s' in file: %s", forbiddenName, path)
+			t.Errorf("Found forbidden call %q in file %q", forbiddenName, path)
 		}
 
 		return nil
