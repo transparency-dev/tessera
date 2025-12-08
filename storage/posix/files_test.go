@@ -196,6 +196,7 @@ func TestGarbageCollectOption(t *testing.T) {
 						if _, _, err := a.Await(ctx, f); err != nil {
 							t.Fatalf("Await: %v", err)
 						}
+						// If garbage collection is off, we want partial tiles and bundles to stick around.
 						if test.withGarbageCollectionInterval == time.Duration(0) {
 							for _, p := range expectedPartialPrefixes(size, appender.logStorage.entriesPath) {
 								wantPartialPrefixes[p] = struct{}{}
@@ -214,6 +215,9 @@ func TestGarbageCollectOption(t *testing.T) {
 
 				// Compare any remaining partial resources to the list of places
 				// we'd expect them to be, given the tree size.
+
+				// Regardless of whether garbage collection is on, partial tiles corresponding to the last
+				// checkpoint should alway be here.
 				for _, p := range expectedPartialPrefixes(size, appender.logStorage.entriesPath) {
 					wantPartialPrefixes[p] = struct{}{}
 				}
@@ -221,6 +225,8 @@ func TestGarbageCollectOption(t *testing.T) {
 				if err != nil {
 					t.Fatalf("findAllPartials: %v", err)
 				}
+				// If gargabe collection is on, no partial tiles other than the ones we expect should be
+				// present.
 				for k := range allPartialDirs {
 					if _, ok := wantPartialPrefixes[k]; !ok && test.withGarbageCollectionInterval > 0 {
 						t.Errorf("Found unwanted partial: %s", k)
