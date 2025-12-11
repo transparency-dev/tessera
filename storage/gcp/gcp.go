@@ -720,7 +720,7 @@ func newSpannerCoordinator(ctx context.Context, dbPool *spanner.Client, maxOutst
 
 // initDB ensures that the coordination DB is initialised correctly.
 //
-// The database schema consists of 3 tables:
+// The database schema consists of 5 tables:
 //   - SeqCoord
 //     This table only ever contains a single row which tracks the next available
 //     sequence number.
@@ -731,6 +731,12 @@ func newSpannerCoordinator(ctx context.Context, dbPool *spanner.Client, maxOutst
 //   - IntCoord
 //     This table coordinates integration of the batches of entries stored in
 //     Seq into the committed tree state.
+//   - PubCoord
+//     This table coordinates publication of checkpoints representing the
+//     committed tree state.
+//   - GCCoord
+//     This table coordinates garbage collection of unneeded partial tiles
+//     and entry bundles.
 func initDB(ctx context.Context, spannerDB string) error {
 	return createAndPrepareTables(ctx, spannerDB,
 		[]string{
