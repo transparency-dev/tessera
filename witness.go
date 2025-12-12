@@ -46,8 +46,9 @@ type policyComponent interface {
 // policy provided, and which can be passed directly to the WithWitnesses
 // appender lifecycle option.
 //
-// The policy must be structured as per the description in
-// https://git.glasklar.is/sigsum/core/sigsum-go/-/blob/main/doc/policy.md
+// The policy structure is as described by [Sigsum's policy format](https://git.glasklar.is/sigsum/core/sigsum-go/-/blob/main/doc/policy.md)
+// but with the difference that the configured witness keys MUST be signature type `0x04` `vkey`s as specified
+// by C2SP [signed-note](https://github.com/C2SP/C2SP/blob/main/signed-note.md#verifier-keys).
 func NewWitnessGroupFromPolicy(p []byte) (WitnessGroup, error) {
 	scanner := bufio.NewScanner(bytes.NewBuffer(p))
 	components := make(map[string]policyComponent)
