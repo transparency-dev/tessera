@@ -332,15 +332,18 @@ Logs are required to be append-only data structures.
 This property can be verified by witnesses, and signatures from witnesses can be provided in the published checkpoint to increase confidence for users of the log.
 
 Personalities can configure Tessera with options that specify witnesses compatible with the [C2SP Witness Protocol](https://github.com/C2SP/C2SP/blob/main/tlog-witness.md).
-Configuring the witnesses is done by creating a top-level [`WitnessGroup`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#WitnessGroup) that contains either sub `WitnessGroup`s or [`Witness`es](https://pkg.go.dev/github.com/transparency-dev/tessera@main#Witness).
-Each `Witness` is configured with a URL at which the witness can be requested to make witnessing operations via the C2SP Witness Protocol, and a Verifier for the key that it must sign with.
+Configuring the witnesses is done by either using the [`NewWitnessGroupFromPolicy`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#NewWitnessGroupFromPolicy)
+helper, or programatically creating a top-level [`WitnessGroup`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#WitnessGroup) that contains either
+sub `WitnessGroup`s, or [`Witness`es](https://pkg.go.dev/github.com/transparency-dev/tessera@main#Witness).
+
+Each `Witness` is configured with a URL at which the witness can be reached, and a `Verifier` for the key that it must sign with.
 `WitnessGroup`s are configured with their sub-components, and a number of these components that must be satisfied in order for the group to be satisfied.
 
 These primitives allow arbitrarily complex witness policies to be specified.
 
 Once a top-level `WitnessGroup` is configured, it is passed in to the `Appender` lifecycle options using
 [AppendOptions#WithWitnesses](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithWitnesses).
-If this method is not called then no witnessing will be configured.
+If this option is not set, no witnessing will be configured.
 
 > [!Note]
 > If the policy cannot be satisfied then no checkpoint will be published.
