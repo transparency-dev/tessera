@@ -488,7 +488,7 @@ func TestGarbageCollect(t *testing.T) {
 		t.Fatalf("publishCheckpoint: %v", err)
 	}
 
-	// Build a reasonably-sized tree with a bunch of partial resouces present, and wait for
+	// Build a reasonably-sized tree with a bunch of partial resources present, and wait for
 	// it to be published.
 	treeSize := uint64(256 * 384)
 
@@ -602,7 +602,7 @@ func TestGarbageCollectOption(t *testing.T) {
 				t.Fatalf("publishCheckpoint: %v", err)
 			}
 
-			// Build a reasonably-sized tree with a bunch of partial resouces present, and wait for
+			// Build a reasonably-sized tree with a bunch of partial resources present, and wait for
 			// it to be published.
 			treeSize := uint64(256 * 384)
 
