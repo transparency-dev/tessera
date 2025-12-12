@@ -641,7 +641,7 @@ func TestGarbageCollectOption(t *testing.T) {
 				// we'd expect them to be, given the tree size.
 
 				// Regardless of whether garbage collection is on, partial tiles corresponding to the last
-				// checkpoint should alway be here.
+				// checkpoint should always be here.
 				for _, p := range expectedPartialPrefixes(size, appender.logStore.entriesPath) {
 					wantPartialPrefixes[p] = struct{}{}
 				}
@@ -651,7 +651,7 @@ func TestGarbageCollectOption(t *testing.T) {
 						allPartialDirs[strings.SplitAfter(k, ".p/")[0]] = struct{}{}
 					}
 				}
-				// If gargabe collection is on, no partial tiles other than the ones we expect should be
+				// If garbage collection is on, no partial tiles other than the ones we expect should be
 				// present.
 				for p := range allPartialDirs {
 					if _, ok := wantPartialPrefixes[p]; !ok && test.withGarbageCollectionInterval > 0 {
