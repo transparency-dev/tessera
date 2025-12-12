@@ -65,7 +65,7 @@ func newSpannerDB(t *testing.T) (*spanner.Client, func()) {
 }
 
 func TestSpannerSequencerAssignEntries(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	db, close := newSpannerDB(t)
 	defer close()
 
@@ -93,7 +93,7 @@ func TestSpannerSequencerAssignEntries(t *testing.T) {
 }
 
 func TestSpannerSequencerPushback(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, test := range []struct {
 		name           string
@@ -148,7 +148,7 @@ func TestSpannerSequencerPushback(t *testing.T) {
 }
 
 func TestSpannerSequencerRoundTrip(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	db, close := newSpannerDB(t)
 	defer close()
 
@@ -200,7 +200,7 @@ func TestSpannerSequencerRoundTrip(t *testing.T) {
 }
 
 func TestCheckDataCompatibility(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	db, close := newSpannerDB(t)
 	defer close()
 
@@ -253,7 +253,7 @@ func makeTile(t *testing.T, size uint64) *api.HashTile {
 }
 
 func TestTileRoundtrip(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	m := newMemObjStore()
 	s := &logResourceStore{
 		objStore: m,
@@ -317,7 +317,7 @@ func makeBundle(t *testing.T, idx uint64, size int) []byte {
 }
 
 func TestBundleRoundtrip(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	m := newMemObjStore()
 	s := &logResourceStore{
 		objStore:    m,
@@ -361,7 +361,7 @@ func TestBundleRoundtrip(t *testing.T) {
 }
 
 func TestPublishTree(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	for _, test := range []struct {
 		name              string
 		publishInterval   time.Duration
