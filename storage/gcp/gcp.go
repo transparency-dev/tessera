@@ -641,7 +641,6 @@ func (a *Appender) updateEntryBundles(ctx context.Context, fromSeq uint64, entri
 		return nil
 	}
 
-	numAdded := uint64(0)
 	bundleIndex, entriesInBundle := fromSeq/layout.EntryBundleWidth, fromSeq%layout.EntryBundleWidth
 	bundleWriter := &bytes.Buffer{}
 	if entriesInBundle > 0 {
@@ -675,8 +674,6 @@ func (a *Appender) updateEntryBundles(ctx context.Context, fromSeq uint64, entri
 			return fmt.Errorf("bundleWriter.Write: %v", err)
 		}
 		entriesInBundle++
-		fromSeq++
-		numAdded++
 		if entriesInBundle == layout.EntryBundleWidth {
 			//  This bundle is full, so we need to write it out...
 			klog.V(1).Infof("In-memory bundle idx %d is full, attempting write to GCS", bundleIndex)
