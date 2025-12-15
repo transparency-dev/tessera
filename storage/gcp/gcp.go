@@ -1098,7 +1098,7 @@ func (s *spannerCoordinator) garbageCollect(ctx context.Context, treeSize uint64
 		eg := errgroup.Group{}
 		// GC the tree in "vertical" chunks defined by entry bundles.
 		for ri := range layout.Range(fromSize, treeSize-fromSize, treeSize) {
-			// Only known-full bundles are in-scope for for GC, so exit if the current bundle is partial or
+			// Only known-full bundles are in-scope for GC, so exit if the current bundle is partial or
 			// we've reached our limit of chunks.
 			if ri.Partial > 0 || d > maxBundles {
 				break
