@@ -168,7 +168,12 @@ func TestAppend(t *testing.T) {
 
 func TestGetTile(t *testing.T) {
 	ctx := context.Background()
-	addFn, r, _ := newTestMySQLStorage(t, ctx)
+	addFn, shutdown, r := newTestMySQLStorage(t, ctx)
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
 
 	awaiter := tessera.NewPublicationAwaiter(ctx, r.ReadCheckpoint, 1*time.Second)
 
@@ -258,7 +263,12 @@ func TestGetTile(t *testing.T) {
 
 func TestReadMissingTile(t *testing.T) {
 	ctx := context.Background()
-	_, r, _ := newTestMySQLStorage(t, ctx)
+	_, shutdown, r := newTestMySQLStorage(t, ctx)
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
 
 	for _, test := range []struct {
 		name         string
@@ -292,7 +302,12 @@ func TestReadMissingTile(t *testing.T) {
 
 func TestReadMissingEntryBundle(t *testing.T) {
 	ctx := context.Background()
-	_, r, _ := newTestMySQLStorage(t, ctx)
+	_, shutdown, r := newTestMySQLStorage(t, ctx)
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
 
 	for _, test := range []struct {
 		name  string
@@ -326,7 +341,12 @@ func TestReadMissingEntryBundle(t *testing.T) {
 func TestParallelAdd(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	addFn, _, _ := newTestMySQLStorage(t, ctx)
+	addFn, shutdown, _ := newTestMySQLStorage(t, ctx)
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
 
 	for _, test := range []struct {
 		name  string
@@ -362,7 +382,12 @@ func TestParallelAdd(t *testing.T) {
 
 func TestTileRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	addFn, r, _ := newTestMySQLStorage(t, ctx)
+	addFn, shutdown, r := newTestMySQLStorage(t, ctx)
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
 
 	for _, test := range []struct {
 		name  string
@@ -413,7 +438,12 @@ func TestTileRoundTrip(t *testing.T) {
 
 func TestEntryBundleRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	addFn, r, _ := newTestMySQLStorage(t, ctx)
+	addFn, shutdown, r := newTestMySQLStorage(t, ctx)
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
 
 	for _, test := range []struct {
 		name  string
@@ -459,7 +489,7 @@ func TestEntryBundleRoundTrip(t *testing.T) {
 	}
 }
 
-func newTestMySQLStorage(t *testing.T, ctx context.Context) (tessera.AddFn, tessera.LogReader, *Storage) {
+func newTestMySQLStorage(t *testing.T, ctx context.Context) (tessera.AddFn, func(context.Context) error, tessera.LogReader) {
 	t.Helper()
 	initDatabaseSchema(ctx)
 
@@ -468,12 +498,12 @@ func newTestMySQLStorage(t *testing.T, ctx context.Context) (tessera.AddFn, tess
 		t.Fatalf("Failed to create mysql.Storage: %v", err)
 	}
 
-	a, _, r, err := tessera.NewAppender(ctx, s, tessera.NewAppendOptions().
+	a, shutdown, r, err := tessera.NewAppender(ctx, s, tessera.NewAppendOptions().
 		WithCheckpointSigner(noteSigner).
 		WithCheckpointInterval(time.Second).
 		WithBatching(128, 100*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return a.Add, r, s
+	return a.Add, shutdown, r
 }
