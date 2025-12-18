@@ -168,7 +168,7 @@ func TestAppend(t *testing.T) {
 
 func TestGetTile(t *testing.T) {
 	ctx := context.Background()
-	addFn, shutdown, r, _ := newTestMySQLStorage(t, ctx)
+	addFn, shutdown, r := newTestMySQLStorage(t, ctx)
 	defer func() {
 		if err := shutdown(ctx); err != nil {
 			t.Errorf("shutdown: %v", err)
@@ -263,7 +263,7 @@ func TestGetTile(t *testing.T) {
 
 func TestReadMissingTile(t *testing.T) {
 	ctx := context.Background()
-	_, shutdown, r, _ := newTestMySQLStorage(t, ctx)
+	_, shutdown, r := newTestMySQLStorage(t, ctx)
 	defer func() {
 		if err := shutdown(ctx); err != nil {
 			t.Errorf("shutdown: %v", err)
@@ -302,7 +302,7 @@ func TestReadMissingTile(t *testing.T) {
 
 func TestReadMissingEntryBundle(t *testing.T) {
 	ctx := context.Background()
-	_, shutdown, r, _ := newTestMySQLStorage(t, ctx)
+	_, shutdown, r := newTestMySQLStorage(t, ctx)
 	defer func() {
 		if err := shutdown(ctx); err != nil {
 			t.Errorf("shutdown: %v", err)
@@ -341,7 +341,7 @@ func TestReadMissingEntryBundle(t *testing.T) {
 func TestParallelAdd(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	addFn, shutdown, _, _ := newTestMySQLStorage(t, ctx)
+	addFn, shutdown, _ := newTestMySQLStorage(t, ctx)
 	defer func() {
 		if err := shutdown(ctx); err != nil {
 			t.Errorf("shutdown: %v", err)
@@ -382,7 +382,7 @@ func TestParallelAdd(t *testing.T) {
 
 func TestTileRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	addFn, shutdown, r, _ := newTestMySQLStorage(t, ctx)
+	addFn, shutdown, r := newTestMySQLStorage(t, ctx)
 	defer func() {
 		if err := shutdown(ctx); err != nil {
 			t.Errorf("shutdown: %v", err)
@@ -438,7 +438,7 @@ func TestTileRoundTrip(t *testing.T) {
 
 func TestEntryBundleRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	addFn, shutdown, r, _ := newTestMySQLStorage(t, ctx)
+	addFn, shutdown, r := newTestMySQLStorage(t, ctx)
 	defer func() {
 		if err := shutdown(ctx); err != nil {
 			t.Errorf("shutdown: %v", err)
@@ -489,7 +489,7 @@ func TestEntryBundleRoundTrip(t *testing.T) {
 	}
 }
 
-func newTestMySQLStorage(t *testing.T, ctx context.Context) (tessera.AddFn, func(context.Context) error, tessera.LogReader, *Storage) {
+func newTestMySQLStorage(t *testing.T, ctx context.Context) (tessera.AddFn, func(context.Context) error, tessera.LogReader) {
 	t.Helper()
 	initDatabaseSchema(ctx)
 
@@ -505,5 +505,5 @@ func newTestMySQLStorage(t *testing.T, ctx context.Context) (tessera.AddFn, func
 	if err != nil {
 		t.Fatal(err)
 	}
-	return a.Add, shutdown, r, s
+	return a.Add, shutdown, r
 }
