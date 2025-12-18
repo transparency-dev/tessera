@@ -169,7 +169,11 @@ func TestAppend(t *testing.T) {
 func TestGetTile(t *testing.T) {
 	ctx := context.Background()
 	addFn, shutdown, r, _ := newTestMySQLStorage(t, ctx)
-	defer shutdown(ctx)
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
 
 	awaiter := tessera.NewPublicationAwaiter(ctx, r.ReadCheckpoint, 1*time.Second)
 
@@ -260,7 +264,11 @@ func TestGetTile(t *testing.T) {
 func TestReadMissingTile(t *testing.T) {
 	ctx := context.Background()
 	_, shutdown, r, _ := newTestMySQLStorage(t, ctx)
-	defer shutdown(ctx)
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
 
 	for _, test := range []struct {
 		name         string
@@ -295,7 +303,11 @@ func TestReadMissingTile(t *testing.T) {
 func TestReadMissingEntryBundle(t *testing.T) {
 	ctx := context.Background()
 	_, shutdown, r, _ := newTestMySQLStorage(t, ctx)
-	defer shutdown(ctx)
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
 
 	for _, test := range []struct {
 		name  string
@@ -330,7 +342,11 @@ func TestParallelAdd(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	addFn, shutdown, _, _ := newTestMySQLStorage(t, ctx)
-	defer shutdown(ctx)
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
 
 	for _, test := range []struct {
 		name  string
@@ -367,7 +383,11 @@ func TestParallelAdd(t *testing.T) {
 func TestTileRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	addFn, shutdown, r, _ := newTestMySQLStorage(t, ctx)
-	defer shutdown(ctx)
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
 
 	for _, test := range []struct {
 		name  string
@@ -419,7 +439,11 @@ func TestTileRoundTrip(t *testing.T) {
 func TestEntryBundleRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	addFn, shutdown, r, _ := newTestMySQLStorage(t, ctx)
-	defer shutdown(ctx)
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
 
 	for _, test := range []struct {
 		name  string
