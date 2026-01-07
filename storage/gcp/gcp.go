@@ -45,6 +45,7 @@ import (
 	database "cloud.google.com/go/spanner/admin/database/apiv1"
 	adminpb "cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
 	"cloud.google.com/go/spanner/apiv1/spannerpb"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
 	gcs "cloud.google.com/go/storage"
@@ -1020,17 +1021,15 @@ func (s *spannerCoordinator) nextIndex(ctx context.Context) (uint64, error) {
 //
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
-func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) error {
-	const (
-		outcomeUnknown = iota
-		outcomePublished
-		outcomeSkipped
-		outcomeSkippedNoGrowth
-	)
-	outcome := outcomeUnknown
+func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) (err error) {
+	// outcomeAttrs is used to track any attributes which need to be attached to metrics based on the outcome of the attempt to publish.
+	var outcomeAttrs []attribute.KeyValue
 	start := time.Now()
 
 	if _, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+		// Reset outcome attributes from any prior transaction attempts.
+		outcomeAttrs = []attribute.KeyValue{}
+
 		pRow, err := txn.ReadRowWithOptions(ctx, "PubCoord", spanner.Key{0}, []string{"publishedAt", "size"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 		if err != nil {
 			return fmt.Errorf("failed to read PubCoord: %w", err)
@@ -1044,7 +1043,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 		cpAge := time.Since(pubAt)
 		if cpAge < minStaleActive {
 			klog.V(1).Infof("publishCheckpoint: last checkpoint published %s ago (< required %s), not publishing new checkpoint", cpAge, minStaleActive)
-			outcome = outcomeSkipped
+			outcomeAttrs = append(outcomeAttrs, errorTypeKey.String("skipped"))
 			return nil
 		}
 
@@ -1072,7 +1071,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 
 		if !shouldPublish {
 			klog.V(1).Infof("publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
-			outcome = outcomeSkippedNoGrowth
+			outcomeAttrs = append(outcomeAttrs, errorTypeKey.String("skipped_no_growth"))
 			return nil
 		}
 
@@ -1085,23 +1084,13 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 			return err
 		}
 
-		outcome = outcomePublished
 		return nil
 	}); err != nil {
 		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		return err
 	}
-	switch outcome {
-	case outcomePublished:
-		opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
-		publishCount.Add(ctx, 1)
-	case outcomeSkipped:
-		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped")))
-	case outcomeSkippedNoGrowth:
-		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped_no_growth")))
-	default:
-		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("unknown")))
-	}
+	opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
+	publishCount.Add(ctx, 1, metric.WithAttributes(outcomeAttrs...))
 	return nil
 }
 

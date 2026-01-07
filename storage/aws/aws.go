@@ -1214,12 +1214,18 @@ func (s *mySQLSequencer) nextIndex(ctx context.Context) (uint64, error) {
 //
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
-func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) error {
+func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) (err error) {
 	start := time.Now()
+	defer func() {
+		// Detect any errors and update metrics accordingly.
+		// Non-error cases are explicitly handled in the body of the function below.
+		if err != nil {
+			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
+		}
+	}()
 
 	tx, err := s.dbPool.Begin()
 	if err != nil {
-		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		return err
 	}
 	defer func() {
@@ -1232,7 +1238,6 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 	var pubAt int64
 	var lastSize sql.NullInt64
 	if err := pRow.Scan(&pubAt, &lastSize); err != nil {
-		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		return fmt.Errorf("failed to parse PubCoord: %v", err)
 	}
 	cpAge := time.Since(time.Unix(pubAt, 0))
@@ -1246,7 +1251,6 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 	var fromSeq uint64
 	var rootHash []byte
 	if err := row.Scan(&fromSeq, &rootHash); err != nil {
-		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		return fmt.Errorf("failed to read IntCoord: %v", err)
 	}
 
@@ -1271,16 +1275,13 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 	klog.V(1).Infof("publishCheckpoint: updating checkpoint (replacing %s old checkpoint)", cpAge)
 
 	if err := f(ctx, fromSeq, rootHash); err != nil {
-		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		return err
 	}
 
 	if _, err := tx.ExecContext(ctx, "UPDATE PubCoord SET publishedAt=?, size=? WHERE id=?", time.Now().Unix(), currentSize, 0); err != nil {
-		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		return err
 	}
 	opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
