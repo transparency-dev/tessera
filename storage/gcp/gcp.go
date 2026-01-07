@@ -45,6 +45,7 @@ import (
 	database "cloud.google.com/go/spanner/admin/database/apiv1"
 	adminpb "cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
 	"cloud.google.com/go/spanner/apiv1/spannerpb"
+	"go.opentelemetry.io/otel/metric"
 
 	gcs "cloud.google.com/go/storage"
 	"github.com/google/go-cmp/cmp"
@@ -473,16 +474,23 @@ func (lrs *logResourceStore) getCheckpoint(ctx context.Context) ([]byte, error) 
 //
 // The location to which the tile is written is defined by the tile layout spec.
 func (s *logResourceStore) setTile(ctx context.Context, level, index uint64, partial uint8, data []byte) error {
+	start := time.Now()
+
 	tPath := layout.TilePath(level, index, partial)
-	return s.objStore.setObject(ctx, tPath, data, &gcs.Conditions{DoesNotExist: true}, logContType, logCacheControl)
+	err := s.objStore.setObject(ctx, tPath, data, &gcs.Conditions{DoesNotExist: true}, logContType, logCacheControl)
+	opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("writeTile")))
+	return err
 }
 
 // getTile retrieves the raw tile from the provided location.
 //
 // The location to which the tile is written is defined by the tile layout spec.
 func (s *logResourceStore) getTile(ctx context.Context, level, index uint64, partial uint8) ([]byte, error) {
+	start := time.Now()
+
 	tPath := layout.TilePath(level, index, partial)
 	d, _, err := s.objStore.getObject(ctx, tPath)
+	opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("readTile")))
 	return d, err
 }
 
@@ -641,6 +649,7 @@ func (a *Appender) updateEntryBundles(ctx context.Context, fromSeq uint64, entri
 		return nil
 	}
 
+	numAdded := uint64(0)
 	bundleIndex, entriesInBundle := fromSeq/layout.EntryBundleWidth, fromSeq%layout.EntryBundleWidth
 	bundleWriter := &bytes.Buffer{}
 	if entriesInBundle > 0 {
@@ -674,6 +683,8 @@ func (a *Appender) updateEntryBundles(ctx context.Context, fromSeq uint64, entri
 			return fmt.Errorf("bundleWriter.Write: %v", err)
 		}
 		entriesInBundle++
+		fromSeq++
+		numAdded++
 		if entriesInBundle == layout.EntryBundleWidth {
 			//  This bundle is full, so we need to write it out...
 			klog.V(1).Infof("In-memory bundle idx %d is full, attempting write to GCS", bundleIndex)
@@ -1010,6 +1021,15 @@ func (s *spannerCoordinator) nextIndex(ctx context.Context) (uint64, error) {
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
 func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) error {
+	const (
+		outcomeUnknown = iota
+		outcomePublished
+		outcomeSkipped
+		outcomeSkippedNoGrowth
+	)
+	outcome := outcomeUnknown
+	start := time.Now()
+
 	if _, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 		pRow, err := txn.ReadRowWithOptions(ctx, "PubCoord", spanner.Key{0}, []string{"publishedAt", "size"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 		if err != nil {
@@ -1024,6 +1044,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 		cpAge := time.Since(pubAt)
 		if cpAge < minStaleActive {
 			klog.V(1).Infof("publishCheckpoint: last checkpoint published %s ago (< required %s), not publishing new checkpoint", cpAge, minStaleActive)
+			outcome = outcomeSkipped
 			return nil
 		}
 
@@ -1051,6 +1072,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 
 		if !shouldPublish {
 			klog.V(1).Infof("publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
+			outcome = outcomeSkippedNoGrowth
 			return nil
 		}
 
@@ -1063,9 +1085,22 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 			return err
 		}
 
+		outcome = outcomePublished
 		return nil
 	}); err != nil {
+		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		return err
+	}
+	switch outcome {
+	case outcomePublished:
+		opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
+		publishCount.Add(ctx, 1)
+	case outcomeSkipped:
+		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped")))
+	case outcomeSkippedNoGrowth:
+		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped_no_growth")))
+	default:
+		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("unknown")))
 	}
 	return nil
 }
@@ -1095,7 +1130,7 @@ func (s *spannerCoordinator) garbageCollect(ctx context.Context, treeSize uint64
 		eg := errgroup.Group{}
 		// GC the tree in "vertical" chunks defined by entry bundles.
 		for ri := range layout.Range(fromSize, treeSize-fromSize, treeSize) {
-			// Only known-full bundles are in-scope for GC, so exit if the current bundle is partial or
+			// Only known-full bundles are in-scope for for GC, so exit if the current bundle is partial or
 			// we've reached our limit of chunks.
 			if ri.Partial > 0 || d > maxBundles {
 				break

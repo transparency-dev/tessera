@@ -608,6 +608,7 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 	// Lock the destination "published" checkpoint location:
 	unlock, err := a.s.lockFile(ctx, publishLock)
 	if err != nil {
+		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		return fmt.Errorf("lockFile(%s): %v", publishLock, err)
 	}
 	defer func() {
@@ -624,43 +625,51 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 		klog.V(1).Infof("No checkpoint exists, publishing")
 		cpExists = false
 	} else if err != nil {
+		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		return fmt.Errorf("stat(%s): %v", layout.CheckpointPath, err)
 	} else {
 		publishedAge = time.Since(info.ModTime())
 		if publishedAge < minStalenessActive {
 			klog.V(1).Infof("publishCheckpoint: skipping publish because previous checkpoint published %v ago, less than %v", publishedAge, minStalenessActive)
+			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped")))
 			return nil
 		}
 		publishedSize, err = a.publishedSize(ctx)
 		if err != nil {
 			klog.V(1).Infof("publishCheckpoint: skipping publish because unable to determine previously published size: %v", err)
+			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 			return err
 		}
 	}
 
 	size, root, err := a.s.readTreeState(ctx)
 	if err != nil {
+		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		return fmt.Errorf("readTreeState: %v", err)
 	}
 	if cpExists && size == publishedSize {
 		if minStalenessRepub == 0 || publishedAge < minStalenessRepub {
 			klog.V(1).Infof("publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
+			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped_no_growth")))
 			return nil
 		}
 	}
 
 	cpRaw, err := a.newCP(ctx, size, root)
 	if err != nil {
+		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		return fmt.Errorf("newCP: %v", err)
 	}
 
 	if err := a.s.createOverwrite(layout.CheckpointPath, cpRaw); err != nil {
+		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		return fmt.Errorf("createOverwrite(%s): %v", layout.CheckpointPath, err)
 	}
 
 	klog.V(2).Infof("Published latest checkpoint: %d, %x", size, root)
 
 	posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
+	publishCount.Add(ctx, 1)
 
 	return nil
 }

@@ -26,10 +26,12 @@ const name = "github.com/transparency-dev/tessera/storage/posix"
 var (
 	meter = otel.Meter(name)
 
-	opNameKey = attribute.Key("op_name")
+	errorTypeKey = attribute.Key("error.type")
+	opNameKey    = attribute.Key("op_name")
 )
 
 var (
+	publishCount      metric.Int64Counter
 	posixOpsHistogram metric.Int64Histogram
 
 	// Custom histogram buckets as we're interested in low-millis upto low-seconds.
@@ -46,5 +48,13 @@ func init() {
 		metric.WithExplicitBucketBoundaries(histogramBuckets...))
 	if err != nil {
 		klog.Exitf("Failed to create posixOptsHistogram metric: %v", err)
+	}
+
+	publishCount, err = meter.Int64Counter(
+		"tessera.appender.checkpoint.publication.counter",
+		metric.WithDescription("Number of checkpoint publication attempts by result"),
+		metric.WithUnit("{call}"))
+	if err != nil {
+		klog.Exitf("Failed to create checkpoint publication counter metric: %v", err)
 	}
 }
