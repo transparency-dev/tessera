@@ -1214,12 +1214,12 @@ func (s *mySQLSequencer) nextIndex(ctx context.Context) (uint64, error) {
 //
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
-func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) (err error) {
+func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) (errR error) {
 	start := time.Now()
 	defer func() {
 		// Detect any errors and update metrics accordingly.
 		// Non-error cases are explicitly handled in the body of the function below.
-		if err != nil {
+		if errR != nil {
 			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		}
 	}()

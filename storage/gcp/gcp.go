@@ -1016,7 +1016,7 @@ func (s *spannerCoordinator) nextIndex(ctx context.Context) (uint64, error) {
 //
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
-func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) (err error) {
+func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) error {
 	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.publishCheckpoint")
 	defer span.End()
 
@@ -1117,7 +1117,7 @@ func (s *spannerCoordinator) garbageCollect(ctx context.Context, treeSize uint64
 		eg := errgroup.Group{}
 		// GC the tree in "vertical" chunks defined by entry bundles.
 		for ri := range layout.Range(fromSize, treeSize-fromSize, treeSize) {
-			// Only known-full bundles are in-scope for for GC, so exit if the current bundle is partial or
+			// Only known-full bundles are in-scope for GC, so exit if the current bundle is partial or
 			// we've reached our limit of chunks.
 			if ri.Partial > 0 || d > maxBundles {
 				break

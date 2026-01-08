@@ -602,12 +602,12 @@ func (s *Storage) readTreeState(ctx context.Context) (uint64, []byte, error) {
 // publishCheckpoint checks whether the currently published checkpoint (if any) is more than
 // minStaleness old, and, if so, creates and published a fresh checkpoint from the current
 // stored tree state.
-func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, minStalenessRepub time.Duration) (err error) {
+func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, minStalenessRepub time.Duration) (errR error) {
 	now := time.Now()
 	defer func() {
 		// Detect any errors and update metrics accordingly.
 		// Non-error cases are explicitly handled in the body of the function below.
-		if err != nil {
+		if errR != nil {
 			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		}
 	}()
