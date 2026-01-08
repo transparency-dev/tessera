@@ -17,14 +17,46 @@ package aws
 import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"k8s.io/klog/v2"
 )
 
 const name = "github.com/transparency-dev/tessera/storage/aws"
 
 var (
+	meter  = otel.Meter(name)
 	tracer = otel.Tracer(name)
 )
 
 var (
+	errorTypeKey  = attribute.Key("error.type")
 	objectPathKey = attribute.Key("tessera.objectPath")
+	opNameKey     = attribute.Key("op_name")
+
+	opsHistogram metric.Int64Histogram
+	publishCount metric.Int64Counter
+
+	// Custom histogram buckets as we're interested in low-millis upto low-seconds.
+	histogramBuckets = []float64{0, 1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200, 1400, 1600, 1800, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000}
 )
+
+func init() {
+	var err error
+
+	opsHistogram, err = meter.Int64Histogram(
+		"tessera.appender.ops.duration",
+		metric.WithDescription("Duration of calls to storage operations"),
+		metric.WithUnit("ms"),
+		metric.WithExplicitBucketBoundaries(histogramBuckets...))
+	if err != nil {
+		klog.Exitf("Failed to create opsHistogram metric: %v", err)
+	}
+
+	publishCount, err = meter.Int64Counter(
+		"tessera.appender.checkpoint.publication.counter",
+		metric.WithDescription("Number of checkpoint publication attempts by result"),
+		metric.WithUnit("{call}"))
+	if err != nil {
+		klog.Exitf("Failed to create checkpoint publication counter metric: %v", err)
+	}
+}

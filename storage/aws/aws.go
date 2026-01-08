@@ -59,6 +59,7 @@ import (
 	"github.com/transparency-dev/tessera/internal/migrate"
 	"github.com/transparency-dev/tessera/internal/parse"
 	storage "github.com/transparency-dev/tessera/storage/internal"
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
 
@@ -301,7 +302,7 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 		case <-a.treeUpdated:
 		case <-t.C:
 		}
-		if err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.publishCheckpoint); err != nil {
+		if err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.updateCheckpoint); err != nil {
 			klog.Warningf("publishCheckpoint: %v", err)
 		}
 	}
@@ -380,7 +381,7 @@ func (a *Appender) init(ctx context.Context) error {
 	return nil
 }
 
-func (a *Appender) publishCheckpoint(ctx context.Context, size uint64, root []byte) error {
+func (a *Appender) updateCheckpoint(ctx context.Context, size uint64, root []byte) error {
 	cpRaw, err := a.newCP(ctx, size, root)
 	if err != nil {
 		return fmt.Errorf("newCP: %v", err)
@@ -390,7 +391,7 @@ func (a *Appender) publishCheckpoint(ctx context.Context, size uint64, root []by
 		return fmt.Errorf("writeCheckpoint: %v", err)
 	}
 
-	klog.V(2).Infof("Published latest checkpoint: %d, %x", size, root)
+	klog.V(2).Infof("Created and stored latest checkpoint: %d, %x", size, root)
 
 	return nil
 }
@@ -718,6 +719,7 @@ func (lrs *logResourceStore) setCheckpoint(ctx context.Context, cpRaw []byte) er
 //
 // The location to which the tile is written is defined by the tile layout spec.
 func (lrs *logResourceStore) setTile(ctx context.Context, level, index, logSize uint64, tile *api.HashTile) error {
+	start := time.Now()
 	data, err := tile.MarshalText()
 	if err != nil {
 		return err
@@ -725,7 +727,9 @@ func (lrs *logResourceStore) setTile(ctx context.Context, level, index, logSize 
 	tPath := layout.TilePath(level, index, layout.PartialTileSize(level, index, logSize))
 	klog.V(2).Infof("StoreTile: %s (%d entries)", tPath, len(tile.Nodes))
 
-	return lrs.objStore.setObjectIfNoneMatch(ctx, tPath, data, logContType, logCacheControl)
+	err = lrs.objStore.setObjectIfNoneMatch(ctx, tPath, data, logContType, logCacheControl)
+	opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("writeTile")))
+	return err
 }
 
 // getTiles returns the tiles with the given tile-coords for the specified log size.
@@ -1210,7 +1214,16 @@ func (s *mySQLSequencer) nextIndex(ctx context.Context) (uint64, error) {
 //
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
-func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) error {
+func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) (errR error) {
+	start := time.Now()
+	defer func() {
+		// Detect any errors and update metrics accordingly.
+		// Non-error cases are explicitly handled in the body of the function below.
+		if errR != nil {
+			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
+		}
+	}()
+
 	tx, err := s.dbPool.Begin()
 	if err != nil {
 		return err
@@ -1230,6 +1243,7 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 	cpAge := time.Since(time.Unix(pubAt, 0))
 	if cpAge < minStaleActive {
 		klog.V(1).Infof("publishCheckpoint: last checkpoint published %s ago (< required %s), not publishing new checkpoint", cpAge, minStaleActive)
+		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped")))
 		return nil
 	}
 
@@ -1254,6 +1268,7 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 
 	if !shouldPublish {
 		klog.V(1).Infof("publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
+		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped_no_growth")))
 		return nil
 	}
 
@@ -1269,6 +1284,8 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
+	publishCount.Add(ctx, 1)
 	tx = nil
 
 	return nil

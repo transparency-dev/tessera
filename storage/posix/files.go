@@ -602,8 +602,15 @@ func (s *Storage) readTreeState(ctx context.Context) (uint64, []byte, error) {
 // publishCheckpoint checks whether the currently published checkpoint (if any) is more than
 // minStaleness old, and, if so, creates and published a fresh checkpoint from the current
 // stored tree state.
-func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, minStalenessRepub time.Duration) error {
+func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, minStalenessRepub time.Duration) (errR error) {
 	now := time.Now()
+	defer func() {
+		// Detect any errors and update metrics accordingly.
+		// Non-error cases are explicitly handled in the body of the function below.
+		if errR != nil {
+			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
+		}
+	}()
 
 	// Lock the destination "published" checkpoint location:
 	unlock, err := a.s.lockFile(ctx, publishLock)
@@ -629,6 +636,7 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 		publishedAge = time.Since(info.ModTime())
 		if publishedAge < minStalenessActive {
 			klog.V(1).Infof("publishCheckpoint: skipping publish because previous checkpoint published %v ago, less than %v", publishedAge, minStalenessActive)
+			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped")))
 			return nil
 		}
 		publishedSize, err = a.publishedSize(ctx)
@@ -640,11 +648,13 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 
 	size, root, err := a.s.readTreeState(ctx)
 	if err != nil {
+		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		return fmt.Errorf("readTreeState: %v", err)
 	}
 	if cpExists && size == publishedSize {
 		if minStalenessRepub == 0 || publishedAge < minStalenessRepub {
 			klog.V(1).Infof("publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
+			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped_no_growth")))
 			return nil
 		}
 	}
@@ -661,6 +671,7 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 	klog.V(2).Infof("Published latest checkpoint: %d, %x", size, root)
 
 	posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
+	publishCount.Add(ctx, 1)
 
 	return nil
 }

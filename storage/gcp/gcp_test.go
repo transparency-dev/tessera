@@ -426,7 +426,7 @@ func TestPublishTree(t *testing.T) {
 				t.Fatalf("storage.init: %v", err)
 			}
 
-			if err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, storage.publishCheckpoint); err != nil {
+			if err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, storage.updateCheckpoint); err != nil {
 				t.Fatalf("publishTree: %v", err)
 			}
 			cpOld := []byte("bananas")
@@ -436,7 +436,7 @@ func TestPublishTree(t *testing.T) {
 			updatesSeen := 0
 			for _, d := range test.attempts {
 				time.Sleep(d)
-				if err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, storage.publishCheckpoint); err != nil {
+				if err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, storage.updateCheckpoint); err != nil {
 					t.Fatalf("publishTree: %v", err)
 				}
 				cpNew, _, err := m.getObject(ctx, layout.CheckpointPath)
@@ -484,7 +484,7 @@ func TestGarbageCollect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newAppender: %v", err)
 	}
-	if err := appender.publishCheckpoint(ctx, 0, []byte("")); err != nil {
+	if err := appender.updateCheckpoint(ctx, 0, []byte("")); err != nil {
 		t.Fatalf("publishCheckpoint: %v", err)
 	}
 
@@ -598,7 +598,7 @@ func TestGarbageCollectOption(t *testing.T) {
 			if err != nil {
 				t.Fatalf("newAppender: %v", err)
 			}
-			if err := appender.publishCheckpoint(ctx, 0, []byte("")); err != nil {
+			if err := appender.updateCheckpoint(ctx, 0, []byte("")); err != nil {
 				t.Fatalf("publishCheckpoint: %v", err)
 			}
 

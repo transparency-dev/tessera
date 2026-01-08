@@ -45,6 +45,8 @@ import (
 	database "cloud.google.com/go/spanner/admin/database/apiv1"
 	adminpb "cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
 	"cloud.google.com/go/spanner/apiv1/spannerpb"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	gcs "cloud.google.com/go/storage"
 	"github.com/google/go-cmp/cmp"
@@ -349,14 +351,9 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 		case <-a.cpUpdated:
 		case <-t.C:
 		}
-		func() {
-			ctx, span := tracer.Start(ctx, "tessera.storage.gcp.publishCheckpointJob")
-			defer span.End()
-
-			if err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.publishCheckpoint); err != nil {
-				klog.Warningf("publishCheckpoint failed: %v", err)
-			}
-		}()
+		if err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.updateCheckpoint); err != nil {
+			klog.Warningf("publishCheckpoint failed: %v", err)
+		}
 	}
 }
 
@@ -427,8 +424,8 @@ func (a *Appender) init(ctx context.Context) error {
 	return nil
 }
 
-func (a *Appender) publishCheckpoint(ctx context.Context, size uint64, root []byte) error {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.publishCheckpoint")
+func (a *Appender) updateCheckpoint(ctx context.Context, size uint64, root []byte) error {
+	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.updateCheckpoint")
 	defer span.End()
 	span.SetAttributes(treeSizeKey.Int64(otel.Clamp64(size)))
 
@@ -441,7 +438,7 @@ func (a *Appender) publishCheckpoint(ctx context.Context, size uint64, root []by
 		return fmt.Errorf("writeCheckpoint: %v", err)
 	}
 
-	klog.V(2).Infof("Published latest checkpoint: %d, %x", size, root)
+	klog.V(2).Infof("Created and stored latest checkpoint: %d, %x", size, root)
 
 	return nil
 
@@ -473,16 +470,23 @@ func (lrs *logResourceStore) getCheckpoint(ctx context.Context) ([]byte, error) 
 //
 // The location to which the tile is written is defined by the tile layout spec.
 func (s *logResourceStore) setTile(ctx context.Context, level, index uint64, partial uint8, data []byte) error {
+	start := time.Now()
+
 	tPath := layout.TilePath(level, index, partial)
-	return s.objStore.setObject(ctx, tPath, data, &gcs.Conditions{DoesNotExist: true}, logContType, logCacheControl)
+	err := s.objStore.setObject(ctx, tPath, data, &gcs.Conditions{DoesNotExist: true}, logContType, logCacheControl)
+	opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("writeTile")))
+	return err
 }
 
 // getTile retrieves the raw tile from the provided location.
 //
 // The location to which the tile is written is defined by the tile layout spec.
 func (s *logResourceStore) getTile(ctx context.Context, level, index uint64, partial uint8) ([]byte, error) {
+	start := time.Now()
+
 	tPath := layout.TilePath(level, index, partial)
 	d, _, err := s.objStore.getObject(ctx, tPath)
+	opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("readTile")))
 	return d, err
 }
 
@@ -641,6 +645,7 @@ func (a *Appender) updateEntryBundles(ctx context.Context, fromSeq uint64, entri
 		return nil
 	}
 
+	numAdded := uint64(0)
 	bundleIndex, entriesInBundle := fromSeq/layout.EntryBundleWidth, fromSeq%layout.EntryBundleWidth
 	bundleWriter := &bytes.Buffer{}
 	if entriesInBundle > 0 {
@@ -674,6 +679,8 @@ func (a *Appender) updateEntryBundles(ctx context.Context, fromSeq uint64, entri
 			return fmt.Errorf("bundleWriter.Write: %v", err)
 		}
 		entriesInBundle++
+		fromSeq++
+		numAdded++
 		if entriesInBundle == layout.EntryBundleWidth {
 			//  This bundle is full, so we need to write it out...
 			klog.V(1).Infof("In-memory bundle idx %d is full, attempting write to GCS", bundleIndex)
@@ -1010,7 +1017,17 @@ func (s *spannerCoordinator) nextIndex(ctx context.Context) (uint64, error) {
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
 func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) error {
+	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.publishCheckpoint")
+	defer span.End()
+
+	// outcomeAttrs is used to track any attributes which need to be attached to metrics based on the outcome of the attempt to publish.
+	var outcomeAttrs []attribute.KeyValue
+	start := time.Now()
+
 	if _, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+		// Reset outcome attributes from any prior transaction attempts.
+		outcomeAttrs = []attribute.KeyValue{}
+
 		pRow, err := txn.ReadRowWithOptions(ctx, "PubCoord", spanner.Key{0}, []string{"publishedAt", "size"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 		if err != nil {
 			return fmt.Errorf("failed to read PubCoord: %w", err)
@@ -1024,6 +1041,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 		cpAge := time.Since(pubAt)
 		if cpAge < minStaleActive {
 			klog.V(1).Infof("publishCheckpoint: last checkpoint published %s ago (< required %s), not publishing new checkpoint", cpAge, minStaleActive)
+			outcomeAttrs = append(outcomeAttrs, errorTypeKey.String("skipped"))
 			return nil
 		}
 
@@ -1051,6 +1069,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 
 		if !shouldPublish {
 			klog.V(1).Infof("publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
+			outcomeAttrs = append(outcomeAttrs, errorTypeKey.String("skipped_no_growth"))
 			return nil
 		}
 
@@ -1065,8 +1084,11 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 
 		return nil
 	}); err != nil {
+		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 		return err
 	}
+	opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
+	publishCount.Add(ctx, 1, metric.WithAttributes(outcomeAttrs...))
 	return nil
 }
 
