@@ -351,14 +351,9 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 		case <-a.cpUpdated:
 		case <-t.C:
 		}
-		func() {
-			ctx, span := tracer.Start(ctx, "tessera.storage.gcp.publishCheckpointJob")
-			defer span.End()
-
-			if err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.publishCheckpoint); err != nil {
-				klog.Warningf("publishCheckpoint failed: %v", err)
-			}
-		}()
+		if err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.updateCheckpoint); err != nil {
+			klog.Warningf("publishCheckpoint failed: %v", err)
+		}
 	}
 }
 
@@ -429,8 +424,8 @@ func (a *Appender) init(ctx context.Context) error {
 	return nil
 }
 
-func (a *Appender) publishCheckpoint(ctx context.Context, size uint64, root []byte) error {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.publishCheckpoint")
+func (a *Appender) updateCheckpoint(ctx context.Context, size uint64, root []byte) error {
+	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.updateCheckpoint")
 	defer span.End()
 	span.SetAttributes(treeSizeKey.Int64(otel.Clamp64(size)))
 
@@ -443,7 +438,7 @@ func (a *Appender) publishCheckpoint(ctx context.Context, size uint64, root []by
 		return fmt.Errorf("writeCheckpoint: %v", err)
 	}
 
-	klog.V(2).Infof("Published latest checkpoint: %d, %x", size, root)
+	klog.V(2).Infof("Created and stored latest checkpoint: %d, %x", size, root)
 
 	return nil
 
@@ -1022,6 +1017,9 @@ func (s *spannerCoordinator) nextIndex(ctx context.Context) (uint64, error) {
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
 func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) (err error) {
+	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.publishCheckpoint")
+	defer span.End()
+
 	// outcomeAttrs is used to track any attributes which need to be attached to metrics based on the outcome of the attempt to publish.
 	var outcomeAttrs []attribute.KeyValue
 	start := time.Now()

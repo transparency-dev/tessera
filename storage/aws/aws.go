@@ -302,7 +302,7 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 		case <-a.treeUpdated:
 		case <-t.C:
 		}
-		if err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.publishCheckpoint); err != nil {
+		if err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.updateCheckpoint); err != nil {
 			klog.Warningf("publishCheckpoint: %v", err)
 		}
 	}
@@ -381,7 +381,7 @@ func (a *Appender) init(ctx context.Context) error {
 	return nil
 }
 
-func (a *Appender) publishCheckpoint(ctx context.Context, size uint64, root []byte) error {
+func (a *Appender) updateCheckpoint(ctx context.Context, size uint64, root []byte) error {
 	cpRaw, err := a.newCP(ctx, size, root)
 	if err != nil {
 		return fmt.Errorf("newCP: %v", err)
@@ -391,7 +391,7 @@ func (a *Appender) publishCheckpoint(ctx context.Context, size uint64, root []by
 		return fmt.Errorf("writeCheckpoint: %v", err)
 	}
 
-	klog.V(2).Infof("Published latest checkpoint: %d, %x", size, root)
+	klog.V(2).Infof("Created and stored latest checkpoint: %d, %x", size, root)
 
 	return nil
 }
