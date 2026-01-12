@@ -903,7 +903,7 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 			endSeq = l
 		}
 
-		klog.V(1).Infof("Consuming bundles start from %d to at most %d", fromSeq, endSeq)
+		klog.V(1).Infof("Consuming bundles start from %d to at most %d", fromSeq, endSeq-1)
 
 		// Now read the sequenced starting at the index we got above.
 		rows := txn.ReadWithOptions(ctx, "Seq",
