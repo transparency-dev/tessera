@@ -808,13 +808,12 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 
 	_, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 		// First we need to grab the next available sequence number from the SeqCoord table.
-		row, err := txn.ReadRowWithOptions(ctx, "SeqCoord", spanner.Key{0}, []string{"id", "next"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+		row, err := txn.ReadRowWithOptions(ctx, "SeqCoord", spanner.Key{0}, []string{"next"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 		if err != nil {
 			return fmt.Errorf("failed to read SeqCoord: %w", err)
 		}
-		var id int64
-		if err := row.Columns(&id, &next); err != nil {
-			return fmt.Errorf("failed to parse id column: %v", err)
+		if err := row.Columns(&next); err != nil {
+			return fmt.Errorf("failed to parse next column: %v", err)
 		}
 
 		// Check whether there are too many outstanding entries and we should apply
