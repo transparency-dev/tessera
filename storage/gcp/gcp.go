@@ -261,11 +261,11 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoord
 
 	reader := &LogReader{
 		lrs: *a.logStore,
-		integratedSize: func(context.Context) (uint64, error) {
+		integratedSize: func(ctx context.Context) (uint64, error) {
 			s, _, err := a.sequencer.currentTree(ctx)
 			return s, err
 		},
-		nextIndex: func(context.Context) (uint64, error) {
+		nextIndex: func(ctx context.Context) (uint64, error) {
 			return a.sequencer.nextIndex(ctx)
 		},
 	}
@@ -1333,7 +1333,7 @@ func (s *Storage) MigrationWriter(ctx context.Context, opts *tessera.MigrationOp
 
 	r := &LogReader{
 		lrs: *m.logStore,
-		integratedSize: func(context.Context) (uint64, error) {
+		integratedSize: func(ctx context.Context) (uint64, error) {
 			s, _, err := m.sequencer.currentTree(ctx)
 			return s, err
 		},
