@@ -212,11 +212,11 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq sequencer, op
 	logStore := &logResourceStore{
 		objStore:    o,
 		entriesPath: opts.EntriesPath(),
-		integratedSize: func(context.Context) (uint64, error) {
+		integratedSize: func(ctx context.Context) (uint64, error) {
 			s, _, err := seq.currentTree(ctx)
 			return s, err
 		},
-		nextIndex: func(context.Context) (uint64, error) {
+		nextIndex: func(ctx context.Context) (uint64, error) {
 			return seq.nextIndex(ctx)
 		},
 	}
