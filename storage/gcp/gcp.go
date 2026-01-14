@@ -317,23 +317,21 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 		case <-t.C:
 		}
 
-		func() {
-			ctx, span := tracer.Start(ctx, "tessera.storage.gcp.integrateEntriesJob")
-			defer span.End()
+		ctx, span := tracer.Start(ctx, "tessera.storage.gcp.integrateEntriesJob")
+		defer span.End()
 
-			// Don't quickloop for now, it causes issues updating checkpoint too frequently.
-			cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
+		// Don't quickloop for now, it causes issues updating checkpoint too frequently.
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
 
-			if _, err := a.sequencer.consumeEntries(cctx, DefaultIntegrationSizeLimit, a.integrateEntries, false); err != nil {
-				klog.Errorf("integrateEntriesJob: %v", err)
-				return
-			}
-			select {
-			case a.cpUpdated <- struct{}{}:
-			default:
-			}
-		}()
+		if _, err := a.sequencer.consumeEntries(cctx, DefaultIntegrationSizeLimit, a.integrateEntries, false); err != nil {
+			klog.Errorf("integrateEntriesJob: %v", err)
+			return
+		}
+		select {
+		case a.cpUpdated <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -373,29 +371,28 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 			return
 		case <-t.C:
 		}
-		func() {
-			ctx, span := tracer.Start(ctx, "tessera.storage.gcp.garbageCollectTask")
-			defer span.End()
 
-			// Figure out the size of the latest published checkpoint - we can't be removing partial tiles implied by
-			// that checkpoint just because we've done an integration and know about a larger (but as yet unpublished)
-			// checkpoint!
-			cp, err := a.logStore.getCheckpoint(ctx)
-			if err != nil {
-				klog.Warningf("Failed to get published checkpoint: %v", err)
-				return
-			}
-			_, pubSize, _, err := parse.CheckpointUnsafe(cp)
-			if err != nil {
-				klog.Warningf("Failed to parse published checkpoint: %v", err)
-				return
-			}
+		ctx, span := tracer.Start(ctx, "tessera.storage.gcp.garbageCollectTask")
+		defer span.End()
 
-			if err := a.sequencer.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStore.objStore.deleteObjectsWithPrefix, a.logStore.entriesPath); err != nil {
-				klog.Warningf("GarbageCollect failed: %v", err)
-				return
-			}
-		}()
+		// Figure out the size of the latest published checkpoint - we can't be removing partial tiles implied by
+		// that checkpoint just because we've done an integration and know about a larger (but as yet unpublished)
+		// checkpoint!
+		cp, err := a.logStore.getCheckpoint(ctx)
+		if err != nil {
+			klog.Warningf("Failed to get published checkpoint: %v", err)
+			return
+		}
+		_, pubSize, _, err := parse.CheckpointUnsafe(cp)
+		if err != nil {
+			klog.Warningf("Failed to parse published checkpoint: %v", err)
+			return
+		}
+
+		if err := a.sequencer.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStore.objStore.deleteObjectsWithPrefix, a.logStore.entriesPath); err != nil {
+			klog.Warningf("GarbageCollect failed: %v", err)
+			return
+		}
 	}
 
 }
