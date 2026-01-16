@@ -508,7 +508,7 @@ func (s *logResourceStore) getTiles(ctx context.Context, tileIDs []storage.TileI
 			if err != nil {
 				if errors.Is(err, gcs.ErrObjectNotExist) {
 					// Depending on context, this may be ok.
-					// We'll signal to higher levels that it wasn't found by retuning a nil for this tile.
+					// We'll signal to higher levels that it wasn't found by returning a nil for this tile.
 					return nil
 				}
 				return err

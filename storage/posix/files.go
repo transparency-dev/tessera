@@ -403,7 +403,7 @@ func (lrs *logResourceStorage) readTile(ctx context.Context, level, index uint64
 	t, err := lrs.ReadTile(ctx, level, index, p)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			// We'll signal to higher levels that it wasn't found by retuning a nil for this tile.
+			// We'll signal to higher levels that it wasn't found by returning a nil for this tile.
 			return nil, nil
 		}
 		return nil, err
@@ -793,7 +793,7 @@ func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundle
 	d := uint(0)
 	// GC the tree in "vertical" chunks defined by entry bundles.
 	for ri := range layout.Range(fromSize, treeSize-fromSize, treeSize) {
-		// Only known-full bundles are in-scope for for GC, so exit if the current bundle is partial or
+		// Only known-full bundles are in-scope for GC, so exit if the current bundle is partial or
 		// we've reached our limit of chunks.
 		if ri.Partial > 0 || d > maxBundles {
 			break
@@ -888,7 +888,7 @@ func (s *Storage) MigrationWriter(ctx context.Context, opts *tessera.MigrationOp
 	return r, r.logStorage, nil
 }
 
-// MigrationStorgage implements the tessera.MigrationTarget lifecycle contract.
+// MigrationStorage implements the tessera.MigrationTarget lifecycle contract.
 type MigrationStorage struct {
 	s            *Storage
 	logStorage   *logResourceStorage

@@ -56,7 +56,7 @@ The table below shows some rough numbers of measured performance:
 ### POSIX
 
 Performance of the POSIX storage backend is highly dependent on the underlying infrastructure, some representative examples
-of the performance on different types of infratructure are given below.
+of the performance on different types of infrastructure are given below.
 
 #### Local storage
 
@@ -136,7 +136,7 @@ Figures below were measured using VMs on GCP in order to provide an idea of size
 achieve the results.
 
 > [!NOTE]
-> Note that for Tessera on GCP deployments, we **strongly recommended* using the Tessera GCP storage implementation instead.
+> Note that for Tessera on GCP deployments, we **strongly recommend** using the Tessera GCP storage implementation instead.
 
 
 ### GCP free-tier + CloudSQL

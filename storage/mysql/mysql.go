@@ -631,7 +631,7 @@ func (s *Storage) MigrationWriter(ctx context.Context, opts *tessera.MigrationOp
 	}, s, nil
 }
 
-// MigrationStorgage implements the tessera.MigrationTarget lifecycle contract.
+// MigrationStorage implements the tessera.MigrationTarget lifecycle contract.
 type MigrationStorage struct {
 	s            *Storage
 	bundleHasher func([]byte) ([][]byte, error)

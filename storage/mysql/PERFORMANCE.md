@@ -44,7 +44,7 @@ MiB Swap:      0.0 total,      0.0 free,      0.0 used.     37.3 avail Mem
 
 #### Steps
 
-1. Create a [GCP free tier](https://cloud.google.com/free/docs/free-cloud-features#free-tier) e2-micro VM instance in us-central1 (iowa).
+1. Create a [GCP free tier](https://cloud.google.com/free/docs/free-cloud-features#free-tier) e2-micro VM instance in us-central1 (Iowa).
 
 1. [Install Go](https://go.dev/doc/install)
    
@@ -123,7 +123,7 @@ The bottleneck comes from CPU usage of the `cmd/conformance/mysql` binary on the
 
 1. Create a MySQL instance on Cloud SQL.
 
-1. Create a [GCP free tier](https://cloud.google.com/free/docs/free-cloud-features#free-tier) e2-micro VM instance in us-central1 (iowa).
+1. Create a [GCP free tier](https://cloud.google.com/free/docs/free-cloud-features#free-tier) e2-micro VM instance in us-central1 (Iowa).
 
 1. Setup VPC peering.
 
@@ -211,7 +211,7 @@ MiB Swap:      0.0 total,      0.0 free,      0.0 used.    403.2 avail Mem
 
 #### Steps
 
-1. Create a [GCP free tier](https://cloud.google.com/free/docs/free-cloud-features#free-tier) e2-micro VM instance in us-central1 (iowa).
+1. Create a [GCP free tier](https://cloud.google.com/free/docs/free-cloud-features#free-tier) e2-micro VM instance in us-central1 (Iowa).
 
 1. [Install Go](https://go.dev/doc/install)
    
