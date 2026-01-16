@@ -10,7 +10,7 @@ This design leverages those to safely maintain a Merkle tree log on disk, in a f
 which can be exposed directly via a read-only endpoint to clients of the log (for example,
 using `nginx` or similar).
 
-In contrast with some of other storage backends, sequencing and integration of entries into
+In contrast with some of the other storage backends, sequencing and integration of entries into
 the tree is synchronous.
 
 The implementation uses a `.state/` directory to coordinate operation.
