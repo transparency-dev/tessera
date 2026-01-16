@@ -162,7 +162,7 @@ endpoint.
     to add leaves to the log and inspect its contents.
 
 > [!IMPORTANT]  
-> Do not forget to delete all the resources to avoid incuring any further cost
+> Do not forget to delete all the resources to avoid incurring any further cost
 > when you're done using the log. The easiest way to do this, is to [close the account](https://docs.aws.amazon.com/accounts/latest/reference/manage-acct-closing.html).
 > If you prefer to delete the resources with `terragrunt destroy`, bear in mind
 > that this command might not destroy all the resources that were created (like

@@ -88,7 +88,7 @@ jobs:
           TESSERA_SIGNER: unused
           TESSERA_VERIFIER: unused
 
-      ## Generate a new keys for the log to use, and export them to environment
+      ## Generate new keys for the log to use, and export them to environment
       ## variables for Terragrunt to use.
       - name: Generate Tessera keys
         id: generate-keys
@@ -110,7 +110,7 @@ jobs:
       ##   - a conformance service, with multiple conformance binary instances
       ##   - a hammer task definition (but no execution)
       # TODO(phboneff): AuroraDB takes a long time to be brought up and down
-      #  consider keeping it around between tests / using Aurora Serveless
+      #  consider keeping it around between tests / using Aurora Serverless
       - name: Terragrunt apply
         id: terragrunt-apply
         uses: gruntwork-io/terragrunt-action@5e86476ca61eaf74adb9c0525745f29f921f2199 # v3.1.0

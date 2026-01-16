@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// aws is a simple personality allowing to run conformance/compliance/performance tests and showing how to use the Tessera AWS storage implmentation.
+// aws is a simple personality allowing to run conformance/compliance/performance tests and showing how to use the Tessera AWS storage implementation.
 package main
 
 import (
@@ -162,7 +162,7 @@ func storageConfigFromFlags() aws.Config {
 	if *dbUser == "" {
 		klog.Exit("--db_user must be set")
 	}
-	// Empty passord isn't an option with AuroraDB MySQL.
+	// Empty password isn't an option with AuroraDB MySQL.
 	if *dbPassword == "" {
 		klog.Exit("--db_password must be set")
 	}
@@ -217,7 +217,7 @@ func antispamMysqlConfig() *mysql.Config {
 	if *dbUser == "" {
 		klog.Exit("--db_user must be set")
 	}
-	// Empty passord isn't an option with AuroraDB MySQL.
+	// Empty password isn't an option with AuroraDB MySQL.
 	if *dbPassword == "" {
 		klog.Exit("--db_password must be set")
 	}

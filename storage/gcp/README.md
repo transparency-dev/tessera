@@ -43,7 +43,7 @@ made obsolete by the continued growth of the log.
 
 ## Life of a leaf
 
-1. Leaves are submitted by the binary built using Tessera via a call the storage's `Add` func.
+1. Leaves are submitted by the binary built using Tessera via a call to the storage's `Add` func.
 1. The storage library batches these entries up, and, after a configurable period of time has elapsed
    or the batch reaches a configurable size threshold, the batch is written to the `Seq` table which effectively
    assigns a sequence numbers to the entries using the following algorithm:

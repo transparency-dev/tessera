@@ -10,7 +10,7 @@ This design leverages those to safely maintain a Merkle tree log on disk, in a f
 which can be exposed directly via a read-only endpoint to clients of the log (for example,
 using `nginx` or similar).
 
-In contrast with some of other other storage backends, sequencing and integration of entries into
+In contrast with some of the other storage backends, sequencing and integration of entries into
 the tree is synchronous.
 
 The implementation uses a `.state/` directory to coordinate operation.
@@ -34,7 +34,7 @@ of actions we can avoid corrupt or partially written files being part of the tre
 1. The storage library batches these entries up in memory, and, after a configurable period of time has elapsed
    or the batch reaches a configurable size threshold, the batch is sequenced and appended to the tree:
    1. An advisory lock is taken on `.state/treeState.lock` file.
-      This helps prevent multiple frontends from stepping on each other, but isn't necesary for safety.
+      This helps prevent multiple frontends from stepping on each other, but isn't necessary for safety.
    1. Flushed entries are assigned contiguous sequence numbers, and written out into entry bundle files.
    1. Integrate newly added leaves into Merkle tree, and write tiles out as files.
    1. Update `./state/treeState` file with the new size & root hash.

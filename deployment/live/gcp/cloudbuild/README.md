@@ -7,7 +7,7 @@ The CloudBuild pipeline is triggered on commits to the `main` branch of the repo
 is responsible for:
  1. Building the `cmd/gcp/conformance` docker image from the `main` branch,
  2. Creating a fresh conformance testing environment,
- 3. Running the conformance test against the newly build conformance docker image,
+ 3. Running the conformance test against the newly built conformance docker image,
  4. Turning-down the conformance testing environment.
 
 ## Initial setup

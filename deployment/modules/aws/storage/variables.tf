@@ -1,5 +1,5 @@
 variable "prefix_name" {
-  description = "Common prefix to use when naming resources, ensures unicity of the s3 bucket name."
+  description = "Common prefix to use when naming resources, ensures uniqueness of the s3 bucket name."
   type        = string
 }
 

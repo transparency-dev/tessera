@@ -6,7 +6,7 @@ ENV GOFLAGS=$GOFLAGS
 # Move to working directory /build
 WORKDIR /build
 
-# Copy and download dependency using go mod
+# Copy and download dependencies using go mod
 COPY go.mod .
 COPY go.sum .
 RUN go mod download

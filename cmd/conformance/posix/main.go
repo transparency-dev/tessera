@@ -15,7 +15,7 @@
 // posix runs a web server that allows new entries to be POSTed to
 // a tlog-tiles log stored on a posix filesystem. It allows to run
 // conformance/compliance/performance tests and showing how to use
-// the Tessera POSIX storage implmentation.
+// the Tessera POSIX storage implementation.
 package main
 
 import (
@@ -47,7 +47,7 @@ var (
 )
 
 func init() {
-	flag.Func("additional_private_key", "Location of addition private key, may be specified multiple times", func(s string) error {
+	flag.Func("additional_private_key", "Location of additional private key, may be specified multiple times", func(s string) error {
 		additionalPrivateKeyFiles = append(additionalPrivateKeyFiles, s)
 		return nil
 	})

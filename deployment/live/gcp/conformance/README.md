@@ -37,7 +37,7 @@ You'll need the following tools installed:
 > you create a new project so that you can easily clean up at the end.
 
 Once you've got a Google Cloud project you want to use, have configured your local `gcloud`
-tool use use it, and authenticated as a principle with sufficient ACLs for the project:
+tool to use it, and authenticated as a principal with sufficient ACLs for the project:
 
 ```bash
 gcloud config set project {YOUR PROJECT}
