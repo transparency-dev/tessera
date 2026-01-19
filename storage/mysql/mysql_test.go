@@ -125,10 +125,12 @@ func initDatabaseSchema(ctx context.Context) {
 	if _, err := db.ExecContext(ctx, string(rawSchema)); err != nil {
 		klog.Fatalf("Failed to execute init database schema: %v", err)
 	}
+
+	klog.Info("Database schema initialized successfully")
 }
 
 func TestAppend(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, test := range []struct {
 		name    string
@@ -157,17 +159,24 @@ func TestAppend(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
-			_, _, _, err = tessera.NewAppender(ctx, drv, test.opts)
+			_, shutdown, _, err := tessera.NewAppender(ctx, drv, test.opts)
 			gotErr := err != nil
 			if gotErr != test.wantErr {
 				t.Errorf("got err: %v", err)
+			}
+			// Skip shutdown if NewAppender failed.
+			if err != nil {
+				t.SkipNow()
+			}
+			if err := shutdown(ctx); err != nil {
+				t.Errorf("shutdown: %v", err)
 			}
 		})
 	}
 }
 
 func TestGetTile(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	addFn, shutdown, r := newTestMySQLStorage(t, ctx)
 	defer func() {
 		if err := shutdown(ctx); err != nil {
@@ -262,7 +271,7 @@ func TestGetTile(t *testing.T) {
 }
 
 func TestReadMissingTile(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	_, shutdown, r := newTestMySQLStorage(t, ctx)
 	defer func() {
 		if err := shutdown(ctx); err != nil {
@@ -301,7 +310,7 @@ func TestReadMissingTile(t *testing.T) {
 }
 
 func TestReadMissingEntryBundle(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	_, shutdown, r := newTestMySQLStorage(t, ctx)
 	defer func() {
 		if err := shutdown(ctx); err != nil {
@@ -340,7 +349,7 @@ func TestReadMissingEntryBundle(t *testing.T) {
 
 func TestParallelAdd(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := t.Context()
 	addFn, shutdown, _ := newTestMySQLStorage(t, ctx)
 	defer func() {
 		if err := shutdown(ctx); err != nil {
@@ -381,7 +390,7 @@ func TestParallelAdd(t *testing.T) {
 }
 
 func TestTileRoundTrip(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	addFn, shutdown, r := newTestMySQLStorage(t, ctx)
 	defer func() {
 		if err := shutdown(ctx); err != nil {
@@ -437,7 +446,7 @@ func TestTileRoundTrip(t *testing.T) {
 }
 
 func TestEntryBundleRoundTrip(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	addFn, shutdown, r := newTestMySQLStorage(t, ctx)
 	defer func() {
 		if err := shutdown(ctx); err != nil {
