@@ -255,12 +255,12 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 
 		// Busy loop while there are entries to be consumed from the stream
 		for streamDone := false; !streamDone; {
-			_, err := f.as.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
-				ctx, span := tracer.Start(ctx, "tessera.antispam.gcp.FollowTxn")
+			_, err := f.as.dbPool.ReadWriteTransaction(ctx, func(txctx context.Context, txn *spanner.ReadWriteTransaction) error {
+				txctx, span := tracer.Start(txctx, "tessera.antispam.gcp.FollowTxn")
 				defer span.End()
 
 				// Figure out the last entry we used to populate our antispam storage.
-				row, err := txn.ReadRowWithOptions(ctx, "FollowCoord", spanner.Key{0}, []string{"nextIdx"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+				row, err := txn.ReadRowWithOptions(txctx, "FollowCoord", spanner.Key{0}, []string{"nextIdx"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 				if err != nil {
 					return err
 				}
@@ -273,7 +273,9 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 
 				followFrom := uint64(nextIdx)
 				if followFrom >= logSize {
-					// Our view of the log is out of date, update it
+					// Our view of the log is out of date, update it.
+					// We use ctx here because Cloud Spanner doesn't support nested transactions.
+					// This is okay because we're only reading the log size, not modifying anything.
 					logSize, err = lr.IntegratedSize(ctx)
 					if err != nil {
 						streamDone = true
@@ -305,7 +307,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 						return logSize, nil
 					}
 					numFetchers := uint(10)
-					next, stop = iter.Pull2(client.Entries(client.EntryBundles(ctx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
+					next, stop = iter.Pull2(client.Entries(client.EntryBundles(txctx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
 				}
 
 				if curIndex == followFrom && curEntries != nil {
@@ -350,7 +352,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 					for i, e := range curEntries {
 						ms = append(ms, spanner.Insert("IDSeq", []string{"h", "idx"}, []any{e, int64(curIndex + uint64(i))}))
 					}
-					if err := f.updateIndex(ctx, txn, ms); err != nil {
+					if err := f.updateIndex(txctx, txn, ms); err != nil {
 						return err
 					}
 				}
