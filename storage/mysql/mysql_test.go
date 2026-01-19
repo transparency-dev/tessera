@@ -164,11 +164,12 @@ func TestAppend(t *testing.T) {
 			if gotErr != test.wantErr {
 				t.Errorf("got err: %v", err)
 			}
-			// Check whether shutdown is nil as NewAppender can fail.
-			if shutdown != nil {
-				if err := shutdown(ctx); err != nil {
-					t.Errorf("shutdown: %v", err)
-				}
+			// Skip shutdown if NewAppender failed.
+			if err != nil {
+				t.SkipNow()
+			}
+			if err := shutdown(ctx); err != nil {
+				t.Errorf("shutdown: %v", err)
 			}
 		})
 	}
