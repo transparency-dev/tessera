@@ -175,6 +175,9 @@ func New(ctx context.Context, cfg Config) (tessera.Driver, error) {
 	} else {
 		printDragonsWarning()
 	}
+	if cfg.HTTPClient == nil {
+		cfg.HTTPClient = http.DefaultClient
+	}
 
 	return &Storage{
 		cfg: cfg,
