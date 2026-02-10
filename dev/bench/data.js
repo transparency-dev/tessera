@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770731330238,
+  "lastUpdate": 1770738790261,
   "repoUrl": "https://github.com/transparency-dev/tessera",
   "entries": {
     "Benchmark": [
@@ -57168,6 +57168,198 @@ window.BENCHMARK_DATA = {
             "value": 14373,
             "unit": "allocs/op",
             "extra": "1801 times\n4 procs"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8cbb0048f71a430f04f7e720afd607f1f266766a",
+          "message": "Bump the all-go-deps group with 5 updates (#858)\n\nBumps the all-go-deps group with 5 updates:\n\n| Package | From | To |\n| --- | --- | --- |\n| [github.com/dgraph-io/badger/v4](https://github.com/dgraph-io/badger) | `4.9.0` | `4.9.1` |\n| [golang.org/x/mod](https://github.com/golang/mod) | `0.32.0` | `0.33.0` |\n| [google.golang.org/api](https://github.com/googleapis/google-api-go-client) | `0.264.0` | `0.265.0` |\n| [golang.org/x/crypto](https://github.com/golang/crypto) | `0.47.0` | `0.48.0` |\n| [golang.org/x/net](https://github.com/golang/net) | `0.49.0` | `0.50.0` |\n\n\nUpdates `github.com/dgraph-io/badger/v4` from 4.9.0 to 4.9.1\n- [Release notes](https://github.com/dgraph-io/badger/releases)\n- [Changelog](https://github.com/dgraph-io/badger/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/dgraph-io/badger/compare/v4.9.0...v4.9.1)\n\nUpdates `golang.org/x/mod` from 0.32.0 to 0.33.0\n- [Commits](https://github.com/golang/mod/compare/v0.32.0...v0.33.0)\n\nUpdates `google.golang.org/api` from 0.264.0 to 0.265.0\n- [Release notes](https://github.com/googleapis/google-api-go-client/releases)\n- [Changelog](https://github.com/googleapis/google-api-go-client/blob/main/CHANGES.md)\n- [Commits](https://github.com/googleapis/google-api-go-client/compare/v0.264.0...v0.265.0)\n\nUpdates `golang.org/x/crypto` from 0.47.0 to 0.48.0\n- [Commits](https://github.com/golang/crypto/compare/v0.47.0...v0.48.0)\n\nUpdates `golang.org/x/net` from 0.49.0 to 0.50.0\n- [Commits](https://github.com/golang/net/compare/v0.49.0...v0.50.0)\n\n---\nupdated-dependencies:\n- dependency-name: github.com/dgraph-io/badger/v4\n  dependency-version: 4.9.1\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: all-go-deps\n- dependency-name: golang.org/x/mod\n  dependency-version: 0.33.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: google.golang.org/api\n  dependency-version: 0.265.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: golang.org/x/crypto\n  dependency-version: 0.48.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: golang.org/x/net\n  dependency-version: 0.50.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-02-10T15:51:32Z",
+          "tree_id": "bb74aca342298d86aa1a6633cc54161f8aefdaa3",
+          "url": "https://github.com/transparency-dev/tessera/commit/8cbb0048f71a430f04f7e720afd607f1f266766a"
+        },
+        "date": 1770738788683,
+        "tool": "go",
+        "benches": [
+          {
+            "name": "BenchmarkDedup",
+            "value": 4019254,
+            "unit": "ns/op\t  988930 B/op\t   23907 allocs/op",
+            "extra": "339 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedup - ns/op",
+            "value": 4019254,
+            "unit": "ns/op",
+            "extra": "339 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedup - B/op",
+            "value": 988930,
+            "unit": "B/op",
+            "extra": "339 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedup - allocs/op",
+            "value": 23907,
+            "unit": "allocs/op",
+            "extra": "339 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait",
+            "value": 1479117,
+            "unit": "ns/op\t     691 B/op\t      13 allocs/op",
+            "extra": "849 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait - ns/op",
+            "value": 1479117,
+            "unit": "ns/op",
+            "extra": "849 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait - B/op",
+            "value": 691,
+            "unit": "B/op",
+            "extra": "849 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "849 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction",
+            "value": 231045,
+            "unit": "ns/op\t    3697 B/op\t      46 allocs/op",
+            "extra": "5125 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - ns/op",
+            "value": 231045,
+            "unit": "ns/op",
+            "extra": "5125 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - B/op",
+            "value": 3697,
+            "unit": "B/op",
+            "extra": "5125 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - allocs/op",
+            "value": 46,
+            "unit": "allocs/op",
+            "extra": "5125 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText",
+            "value": 7943,
+            "unit": "ns/op\t    6528 B/op\t       1 allocs/op",
+            "extra": "131626 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - ns/op",
+            "value": 7943,
+            "unit": "ns/op",
+            "extra": "131626 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - B/op",
+            "value": 6528,
+            "unit": "B/op",
+            "extra": "131626 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - allocs/op",
+            "value": 1,
+            "unit": "allocs/op",
+            "extra": "131626 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe",
+            "value": 223.1,
+            "unit": "ns/op\t     224 B/op\t       5 allocs/op",
+            "extra": "5233742 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - ns/op",
+            "value": 223.1,
+            "unit": "ns/op",
+            "extra": "5233742 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - B/op",
+            "value": 224,
+            "unit": "B/op",
+            "extra": "5233742 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - allocs/op",
+            "value": 5,
+            "unit": "allocs/op",
+            "extra": "5233742 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate",
+            "value": 350933,
+            "unit": "ns/op\t  279558 B/op\t    3085 allocs/op",
+            "extra": "3909 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - ns/op",
+            "value": 350933,
+            "unit": "ns/op",
+            "extra": "3909 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - B/op",
+            "value": 279558,
+            "unit": "B/op",
+            "extra": "3909 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - allocs/op",
+            "value": 3085,
+            "unit": "allocs/op",
+            "extra": "3909 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue",
+            "value": 676699,
+            "unit": "ns/op\t  503012 B/op\t   14373 allocs/op",
+            "extra": "1729 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - ns/op",
+            "value": 676699,
+            "unit": "ns/op",
+            "extra": "1729 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - B/op",
+            "value": 503012,
+            "unit": "B/op",
+            "extra": "1729 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - allocs/op",
+            "value": 14373,
+            "unit": "allocs/op",
+            "extra": "1729 times\n4 procs"
           }
         ]
       }
