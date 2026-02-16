@@ -25,6 +25,10 @@ import (
 	"golang.org/x/crypto/cryptobyte"
 )
 
+// ctEntrySizeLimit is the maximum permitted serialized entry size when Tessera is configured for static-ct logs.
+// Note that storage implementations MAY impose a lower limit due to infrastructure limitations.
+const ctEntrySizeLimit = 256 << 10
+
 // NewCertificateTransparencyAppender returns a function which knows how to add a CT-specific entry type to the log.
 //
 // This entry point MUST ONLY be used for CT logs participating in the CT ecosystem.
@@ -60,6 +64,7 @@ func convertCTEntry(e *ctonly.Entry) *Entry {
 func (o *AppendOptions) WithCTLayout() *AppendOptions {
 	o.entriesPath = ctEntriesPath
 	o.bundleIDHasher = ctBundleIDHasher
+	o.maxEntrySize = ctEntrySizeLimit
 	return o
 }
 

@@ -55,6 +55,9 @@ const (
 	DefaultAntispamInMemorySize = 256 << 10
 	// DefaultWitnessTimeout is the default maximum time to wait for responses from configured witnesses.
 	DefaultWitnessTimeout = 5 * time.Second
+
+	// DefaultEntrySizeLimit is the maximum possible size of data for a single entry, as specified by C2SP tlog-tiles.
+	DefaultEntrySizeLimit = 1<<16 - 1
 )
 
 var (
@@ -269,6 +272,7 @@ func NewAppender(ctx context.Context, d Driver, opts *AppendOptions) (*Appender,
 	for i := len(opts.addDecorators) - 1; i >= 0; i-- {
 		a.Add = opts.addDecorators[i](a.Add)
 	}
+	a.Add = entrySizeLimitDecorator(a.Add, opts.maxEntrySize)
 	sd := &integrationStats{}
 	a.Add = sd.statsDecorator(a.Add)
 	for _, f := range opts.followers {
@@ -297,6 +301,19 @@ func NewAppender(ctx context.Context, d Driver, opts *AppendOptions) (*Appender,
 		return memoizeFuture(t.Add(ctx, entry))
 	}
 	return a, t.Shutdown, r, nil
+}
+
+// entrySizeLimitDecorator wraps a delegate AddFn with logic which will return an error if
+// it is called with an entry larger than the provided max size.
+func entrySizeLimitDecorator(d AddFn, maxSize uint) AddFn {
+	return func(ctx context.Context, entry *Entry) IndexFuture {
+		if sz := uint(len(entry.Data())); sz > maxSize {
+			return func() (Index, error) {
+				return Index{}, fmt.Errorf("entry data too large (%d > %d)", sz, maxSize)
+			}
+		}
+		return d(ctx, entry)
+	}
 }
 
 // memoizeFuture wraps an AddFn delegate with logic to ensure that the delegate is called at most
@@ -543,6 +560,7 @@ func NewAppendOptions() *AppendOptions {
 		batchMaxSize:                DefaultBatchMaxSize,
 		batchMaxAge:                 DefaultBatchMaxAge,
 		entriesPath:                 layout.EntriesPath,
+		maxEntrySize:                DefaultEntrySizeLimit,
 		bundleIDHasher:              defaultIDHasher,
 		checkpointInterval:          DefaultCheckpointInterval,
 		checkpointRepublishInterval: DefaultCheckpointRepublishInterval,
@@ -564,6 +582,16 @@ type AppendOptions struct {
 
 	// EntriesPath knows how to format entry bundle paths.
 	entriesPath func(n uint64, p uint8) string
+
+	// maxEntrySize is the maximum permitted size of individual entries to be added.
+	// By default this will correspond with the limit set out in the C2SP tlog-tiles spec, however
+	// it will be overridden when Tessera is being used to implement static-ct.
+	//
+	// Note that storage implementations MAY enforce their own, lower, limits on entry size due to
+	// storage-level constraints. This should be handled internally by those storage implementations,
+	// e.g. in their Add() function implementations.
+	maxEntrySize uint
+
 	// bundleIDHasher knows how to create antispam leaf identities for entries in a serialised bundle.
 	bundleIDHasher func([]byte) ([][]byte, error)
 
