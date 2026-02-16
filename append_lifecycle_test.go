@@ -105,6 +105,42 @@ func TestAppendOptionsValid(t *testing.T) {
 	}
 }
 
+func TestMaxEntrySize(t *testing.T) {
+	d := func(_ context.Context, e *Entry) IndexFuture {
+		return func() (Index, error) {
+			return Index{}, nil
+		}
+	}
+
+	const limit = 128
+	add := entrySizeLimitDecorator(d, limit)
+
+	for _, test := range []struct {
+		name    string
+		size    uint
+		wantErr bool
+	}{
+		{
+			name: "< limit",
+			size: limit - 1,
+		}, {
+			name: "== limit",
+			size: limit,
+		}, {
+			name:    "> limit",
+			size:    limit + 1,
+			wantErr: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := add(t.Context(), NewEntry(make([]byte, test.size)))()
+			if gotErr := err != nil; gotErr != test.wantErr {
+				t.Fatalf("Got err %q, want err? %T", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func mustCreateSigner(t *testing.T, k string) note.Signer {
 	t.Helper()
 	s, err := note.NewSigner(k)

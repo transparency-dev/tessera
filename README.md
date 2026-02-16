@@ -369,6 +369,9 @@ configured using the [`tessera.NewAppendOptions`](https://pkg.go.dev/github.com/
 
 This is described above in [Constructing the Appender](#constructing-the-appender).
 
+Note that entries are limited to 64KB in size by the [tlog-tiles][] spec, with the exception that when Tessera is configured for use
+with Static CT via the `WithCTLayout` option, entries are then limited to 256KB.
+
 See more details in the [Lifecycle Design: Appender](https://github.com/transparency-dev/tessera/blob/main/docs/design/lifecycle.md#appender).
 
 ### Migration Target
