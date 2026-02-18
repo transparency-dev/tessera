@@ -39,6 +39,7 @@ import (
 	"github.com/transparency-dev/tessera/fsck"
 	storage "github.com/transparency-dev/tessera/storage/internal"
 	"golang.org/x/mod/sumdb/note"
+	"google.golang.org/api/iterator"
 )
 
 func newSpannerDB(t *testing.T) (*spanner.Client, func()) {
@@ -357,6 +358,87 @@ func TestBundleRoundtrip(t *testing.T) {
 				t.Fatal("roundtrip returned different data")
 			}
 		})
+	}
+}
+
+func TestSpannerSequencerAssignEntriesBatchSplitting(t *testing.T) {
+	ctx := t.Context()
+
+	db, closeDB := newSpannerDB(t)
+	defer closeDB()
+
+	// We want to create enough entries to exceed this limit.
+	// Each entry will be ~10KB, so 200 entries will be ~2MiB.
+	const (
+		numEntries = 200
+		entrySize  = 10 * 1024
+	)
+	data := bytes.Repeat([]byte("a"), entrySize)
+
+	seq, err := newSpannerCoordinator(ctx, db, uint64(numEntries+1))
+	if err != nil {
+		t.Fatalf("newSpannerCoordinator: %v", err)
+	}
+
+	seq.seqTableMaxBatchByteSize = 1 << 20 // 1 MiB, set low for testing due to grpc message size limits in the Spanner emulator.
+
+	var entries []*tessera.Entry
+	for i := range numEntries {
+		entries = append(entries, tessera.NewEntry(data))
+		_ = i
+	}
+
+	if err := seq.assignEntries(ctx, entries); err != nil {
+		t.Fatalf("assignEntries: %v", err)
+	}
+
+	t.Log("assignEntries done")
+
+	// Verify that multiple rows were created in the Seq table.
+	var rowCount int
+	iter := db.Single().Read(ctx, "Seq", spanner.AllKeys(), []string{"seq"})
+	defer iter.Stop()
+	for {
+		_, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Failed to count rows in Seq table: %v", err)
+		}
+		rowCount++
+	}
+
+	t.Logf("rowCount is %d", rowCount)
+
+	if rowCount <= 1 {
+		t.Errorf("expected more than 1 row in Seq table, got %d", rowCount)
+	}
+
+	// Verify that all entries are present and contiguous by consuming them.
+	seenEntries := 0
+	f := func(_ context.Context, fromSeq uint64, batch []storage.SequencedEntry) ([]byte, error) {
+		t.Logf("consuming from %d, saw %d entries", fromSeq, len(batch))
+		if fromSeq != uint64(seenEntries) {
+			return nil, fmt.Errorf("f called with fromSeq %d, want %d", fromSeq, seenEntries)
+		}
+		seenEntries += len(batch)
+		return fmt.Appendf(nil, "root<%d>", seenEntries), nil
+	}
+
+	for seenEntries < numEntries {
+		t.Logf("calling consumeEntries, seen: %d", seenEntries)
+		more, err := seq.consumeEntries(ctx, 100, f, false)
+		if err != nil {
+			t.Fatalf("consumeEntries: %v", err)
+		}
+		if !more && seenEntries < numEntries {
+			t.Fatalf("consumeEntries: more = false but only seen %d/%d entries", seenEntries, numEntries)
+		}
+	}
+
+	if seenEntries != numEntries {
+		t.Errorf("saw %d entries, want %d", seenEntries, numEntries)
 	}
 }
 
