@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771525451245,
+  "lastUpdate": 1771526203583,
   "repoUrl": "https://github.com/transparency-dev/tessera",
   "entries": {
     "Benchmark": [
@@ -57744,6 +57744,198 @@ window.BENCHMARK_DATA = {
             "value": 14373,
             "unit": "allocs/op",
             "extra": "1435 times\n4 procs"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "81001db297b9b58d9565d2d66c8e363cd5eca57e",
+          "message": "Bump the all-go-deps group across 1 directory with 7 updates (#864)\n\nBumps the all-go-deps group with 6 updates in the / directory:\n\n| Package | From | To |\n| --- | --- | --- |\n| [cloud.google.com/go/spanner](https://github.com/googleapis/google-cloud-go) | `1.87.0` | `1.88.0` |\n| [cloud.google.com/go/storage](https://github.com/googleapis/google-cloud-go) | `1.59.2` | `1.60.0` |\n| [github.com/aws/aws-sdk-go-v2/config](https://github.com/aws/aws-sdk-go-v2) | `1.32.7` | `1.32.9` |\n| [github.com/transparency-dev/formats](https://github.com/transparency-dev/formats) | `0.0.0-20251017110053-404c0d5b696c` | `0.1.0` |\n| [google.golang.org/api](https://github.com/googleapis/google-api-go-client) | `0.265.0` | `0.267.0` |\n| [google.golang.org/grpc](https://github.com/grpc/grpc-go) | `1.78.0` | `1.79.1` |\n\n\n\nUpdates `cloud.google.com/go/spanner` from 1.87.0 to 1.88.0\n- [Release notes](https://github.com/googleapis/google-cloud-go/releases)\n- [Changelog](https://github.com/googleapis/google-cloud-go/blob/main/CHANGES.md)\n- [Commits](https://github.com/googleapis/google-cloud-go/compare/spanner/v1.87.0...spanner/v1.88.0)\n\nUpdates `cloud.google.com/go/storage` from 1.59.2 to 1.60.0\n- [Release notes](https://github.com/googleapis/google-cloud-go/releases)\n- [Changelog](https://github.com/googleapis/google-cloud-go/blob/main/CHANGES.md)\n- [Commits](https://github.com/googleapis/google-cloud-go/compare/storage/v1.59.2...spanner/v1.60.0)\n\nUpdates `github.com/aws/aws-sdk-go-v2/config` from 1.32.7 to 1.32.9\n- [Release notes](https://github.com/aws/aws-sdk-go-v2/releases)\n- [Changelog](https://github.com/aws/aws-sdk-go-v2/blob/main/changelog-template.json)\n- [Commits](https://github.com/aws/aws-sdk-go-v2/compare/v1.32.7...config/v1.32.9)\n\nUpdates `github.com/aws/aws-sdk-go-v2/credentials` from 1.19.7 to 1.19.9\n- [Release notes](https://github.com/aws/aws-sdk-go-v2/releases)\n- [Changelog](https://github.com/aws/aws-sdk-go-v2/blob/main/changelog-template.json)\n- [Commits](https://github.com/aws/aws-sdk-go-v2/compare/service/m2/v1.19.7...service/m2/v1.19.9)\n\nUpdates `github.com/transparency-dev/formats` from 0.0.0-20251017110053-404c0d5b696c to 0.1.0\n- [Release notes](https://github.com/transparency-dev/formats/releases)\n- [Commits](https://github.com/transparency-dev/formats/commits/v0.1.0)\n\nUpdates `google.golang.org/api` from 0.265.0 to 0.267.0\n- [Release notes](https://github.com/googleapis/google-api-go-client/releases)\n- [Changelog](https://github.com/googleapis/google-api-go-client/blob/main/CHANGES.md)\n- [Commits](https://github.com/googleapis/google-api-go-client/compare/v0.265.0...v0.267.0)\n\nUpdates `google.golang.org/grpc` from 1.78.0 to 1.79.1\n- [Release notes](https://github.com/grpc/grpc-go/releases)\n- [Commits](https://github.com/grpc/grpc-go/compare/v1.78.0...v1.79.1)\n\n---\nupdated-dependencies:\n- dependency-name: cloud.google.com/go/spanner\n  dependency-version: 1.88.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: cloud.google.com/go/storage\n  dependency-version: 1.60.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: github.com/aws/aws-sdk-go-v2/config\n  dependency-version: 1.32.9\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: all-go-deps\n- dependency-name: github.com/aws/aws-sdk-go-v2/credentials\n  dependency-version: 1.19.9\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: all-go-deps\n- dependency-name: github.com/transparency-dev/formats\n  dependency-version: 0.1.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: google.golang.org/api\n  dependency-version: 0.267.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n- dependency-name: google.golang.org/grpc\n  dependency-version: 1.79.1\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: all-go-deps\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-02-19T18:35:04Z",
+          "tree_id": "25614ae0e4cb72aed321b1d23b9094d9316dd163",
+          "url": "https://github.com/transparency-dev/tessera/commit/81001db297b9b58d9565d2d66c8e363cd5eca57e"
+        },
+        "date": 1771526201494,
+        "tool": "go",
+        "benches": [
+          {
+            "name": "BenchmarkDedup",
+            "value": 4341366,
+            "unit": "ns/op\t  984331 B/op\t   23859 allocs/op",
+            "extra": "294 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedup - ns/op",
+            "value": 4341366,
+            "unit": "ns/op",
+            "extra": "294 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedup - B/op",
+            "value": 984331,
+            "unit": "B/op",
+            "extra": "294 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedup - allocs/op",
+            "value": 23859,
+            "unit": "allocs/op",
+            "extra": "294 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait",
+            "value": 1442028,
+            "unit": "ns/op\t     694 B/op\t      13 allocs/op",
+            "extra": "837 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait - ns/op",
+            "value": 1442028,
+            "unit": "ns/op",
+            "extra": "837 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait - B/op",
+            "value": 694,
+            "unit": "B/op",
+            "extra": "837 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "837 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction",
+            "value": 229822,
+            "unit": "ns/op\t    3697 B/op\t      46 allocs/op",
+            "extra": "4681 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - ns/op",
+            "value": 229822,
+            "unit": "ns/op",
+            "extra": "4681 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - B/op",
+            "value": 3697,
+            "unit": "B/op",
+            "extra": "4681 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction - allocs/op",
+            "value": 46,
+            "unit": "allocs/op",
+            "extra": "4681 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText",
+            "value": 7616,
+            "unit": "ns/op\t    6528 B/op\t       1 allocs/op",
+            "extra": "183786 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - ns/op",
+            "value": 7616,
+            "unit": "ns/op",
+            "extra": "183786 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - B/op",
+            "value": 6528,
+            "unit": "B/op",
+            "extra": "183786 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText - allocs/op",
+            "value": 1,
+            "unit": "allocs/op",
+            "extra": "183786 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe",
+            "value": 226.9,
+            "unit": "ns/op\t     224 B/op\t       5 allocs/op",
+            "extra": "5234000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - ns/op",
+            "value": 226.9,
+            "unit": "ns/op",
+            "extra": "5234000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - B/op",
+            "value": 224,
+            "unit": "B/op",
+            "extra": "5234000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe - allocs/op",
+            "value": 5,
+            "unit": "allocs/op",
+            "extra": "5234000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate",
+            "value": 342570,
+            "unit": "ns/op\t  279047 B/op\t    3081 allocs/op",
+            "extra": "3850 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - ns/op",
+            "value": 342570,
+            "unit": "ns/op",
+            "extra": "3850 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - B/op",
+            "value": 279047,
+            "unit": "B/op",
+            "extra": "3850 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate - allocs/op",
+            "value": 3081,
+            "unit": "allocs/op",
+            "extra": "3850 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue",
+            "value": 677936,
+            "unit": "ns/op\t  503011 B/op\t   14373 allocs/op",
+            "extra": "1753 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - ns/op",
+            "value": 677936,
+            "unit": "ns/op",
+            "extra": "1753 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - B/op",
+            "value": 503011,
+            "unit": "B/op",
+            "extra": "1753 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue - allocs/op",
+            "value": 14373,
+            "unit": "allocs/op",
+            "extra": "1753 times\n4 procs"
           }
         ]
       }
