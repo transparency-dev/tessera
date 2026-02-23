@@ -39,7 +39,6 @@ import (
 	"github.com/transparency-dev/tessera/fsck"
 	storage "github.com/transparency-dev/tessera/storage/internal"
 	"golang.org/x/mod/sumdb/note"
-	"google.golang.org/api/iterator"
 )
 
 func newSpannerDB(t *testing.T) (*spanner.Client, func()) {
@@ -395,17 +394,11 @@ func TestSpannerSequencerAssignEntriesBatchSplitting(t *testing.T) {
 
 	// Verify that multiple rows were created in the Seq table.
 	var rowCount int
-	iter := db.Single().Read(ctx, "Seq", spanner.AllKeys(), []string{"seq"})
-	defer iter.Stop()
-	for {
-		_, err := iter.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			t.Fatalf("Failed to count rows in Seq table: %v", err)
-		}
+	if err := db.Single().Read(ctx, "Seq", spanner.AllKeys(), []string{"seq"}).Do(func(row *spanner.Row) error {
 		rowCount++
+		return nil
+	}); err != nil {
+		t.Fatalf("Failed to read from Seq table: %v", err)
 	}
 
 	t.Logf("rowCount is %d", rowCount)
