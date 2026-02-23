@@ -383,9 +383,8 @@ func TestSpannerSequencerAssignEntriesBatchSplitting(t *testing.T) {
 	seq.seqTableMaxBatchByteSize = 1 << 20 // 1 MiB, set low for testing due to grpc message size limits in the Spanner emulator.
 
 	var entries []*tessera.Entry
-	for i := range numEntries {
+	for range numEntries {
 		entries = append(entries, tessera.NewEntry(data))
-		_ = i
 	}
 
 	if err := seq.assignEntries(ctx, entries); err != nil {
