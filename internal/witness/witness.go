@@ -153,7 +153,7 @@ func (wg *WitnessGateway) Witness(ctx context.Context, cp []byte) ([]byte, error
 		sig []byte
 		err error
 	}
-	results := make(chan sigOrErr)
+	results := make(chan sigOrErr, len(wg.witnesses))
 
 	// Kick off a goroutine for each witness and send result to results chan
 	for _, w := range wg.witnesses {
