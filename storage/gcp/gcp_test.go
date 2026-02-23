@@ -372,7 +372,6 @@ func TestSpannerSequencerAssignEntriesBatchSplitting(t *testing.T) {
 		numEntries = 200
 		entrySize  = 10 * 1024
 	)
-	data := bytes.Repeat([]byte("a"), entrySize)
 
 	seq, err := newSpannerCoordinator(ctx, db, uint64(numEntries+1))
 	if err != nil {
@@ -381,9 +380,13 @@ func TestSpannerSequencerAssignEntriesBatchSplitting(t *testing.T) {
 
 	seq.seqTableMaxBatchByteSize = 1 << 20 // 1 MiB, set low for testing due to grpc message size limits in the Spanner emulator.
 
+	wantEntries := make(map[string]bool)
 	var entries []*tessera.Entry
-	for range numEntries {
-		entries = append(entries, tessera.NewEntry(data))
+	baseData := make([]byte, entrySize)
+	for i := range numEntries {
+		e := tessera.NewEntry(fmt.Appendf(baseData, "entry-%d", i))
+		entries = append(entries, e)
+		wantEntries[string(e.LeafHash())] = true
 	}
 
 	if err := seq.assignEntries(ctx, entries); err != nil {
@@ -415,6 +418,15 @@ func TestSpannerSequencerAssignEntriesBatchSplitting(t *testing.T) {
 			return nil, fmt.Errorf("f called with fromSeq %d, want %d", fromSeq, seenEntries)
 		}
 		seenEntries += len(batch)
+
+		for _, e := range batch {
+			lh := string(e.LeafHash)
+			if !wantEntries[lh] {
+				return nil, fmt.Errorf("saw unexpected entry with hash %x", e.LeafHash)
+			}
+			delete(wantEntries, lh)
+		}
+
 		return fmt.Appendf(nil, "root<%d>", seenEntries), nil
 	}
 
@@ -431,6 +443,9 @@ func TestSpannerSequencerAssignEntriesBatchSplitting(t *testing.T) {
 
 	if seenEntries != numEntries {
 		t.Errorf("saw %d entries, want %d", seenEntries, numEntries)
+	}
+	if len(wantEntries) != 0 {
+		t.Errorf("failed to consume %d entries", len(wantEntries))
 	}
 }
 
