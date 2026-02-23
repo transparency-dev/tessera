@@ -876,13 +876,12 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 	didWork := false
 	_, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 		// Figure out which is the starting index of sequenced entries to start consuming from.
-		row, err := txn.ReadRowWithOptions(ctx, "IntCoord", spanner.Key{0}, []string{"seq", "rootHash"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+		row, err := txn.ReadRowWithOptions(ctx, "IntCoord", spanner.Key{0}, []string{"seq"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 		if err != nil {
 			return err
 		}
 		var fromSeq int64 // Spanner doesn't support uint64
-		var rootHash []byte
-		if err := row.Columns(&fromSeq, &rootHash); err != nil {
+		if err := row.Columns(&fromSeq); err != nil {
 			return fmt.Errorf("failed to read integration coordination info: %v", err)
 		}
 
