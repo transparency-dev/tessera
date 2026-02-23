@@ -844,6 +844,12 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 				LeafHash:   e.LeafHash(),
 			}
 
+			// Reject entries which are too large to fit in the Seq table even as a single-entry batch,
+			// as these would cause the sequencer to get stuck retrying to insert them without ever making progress.
+			if len(sequencedEntry.BundleData) > s.seqTableMaxBatchByteSize {
+				return fmt.Errorf("entry is too large to be sequenced (bundle data size %d exceeds max batch byte size %d)", len(sequencedEntry.BundleData), s.seqTableMaxBatchByteSize)
+			}
+
 			// If adding this entry would make the batch too big, we need to flush the original batch.
 			if len(sequencedEntries) > 0 && currentBatchByteSize+len(sequencedEntry.BundleData) > s.seqTableMaxBatchByteSize {
 				// Gob-encode the batch of entries and add it to the mutation.
