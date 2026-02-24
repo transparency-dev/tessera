@@ -360,6 +360,95 @@ func TestBundleRoundtrip(t *testing.T) {
 	}
 }
 
+func TestSpannerSequencerAssignEntriesBatchSplitting(t *testing.T) {
+	ctx := t.Context()
+
+	db, closeDB := newSpannerDB(t)
+	defer closeDB()
+
+	// We want to create enough entries to exceed this limit.
+	// Each entry will be ~10KB, so 200 entries will be ~2MiB.
+	const (
+		numEntries = 200
+		entrySize  = 10 * 1024
+	)
+
+	seq, err := newSpannerCoordinator(ctx, db, uint64(numEntries+1))
+	if err != nil {
+		t.Fatalf("newSpannerCoordinator: %v", err)
+	}
+
+	seq.seqTableMaxBatchByteSize = 1 << 20 // 1 MiB, set low for testing due to grpc message size limits in the Spanner emulator.
+
+	wantEntries := make(map[string]struct{})
+	var entries []*tessera.Entry
+	baseData := make([]byte, entrySize)
+	for i := range numEntries {
+		e := tessera.NewEntry(fmt.Appendf(baseData, "entry-%d", i))
+		entries = append(entries, e)
+		wantEntries[string(e.LeafHash())] = struct{}{}
+	}
+
+	if err := seq.assignEntries(ctx, entries); err != nil {
+		t.Fatalf("assignEntries: %v", err)
+	}
+
+	t.Log("assignEntries done")
+
+	// Verify that multiple rows were created in the Seq table.
+	var rowCount int
+	if err := db.Single().Read(ctx, "Seq", spanner.AllKeys(), []string{"seq"}).Do(func(row *spanner.Row) error {
+		rowCount++
+		return nil
+	}); err != nil {
+		t.Fatalf("Failed to read from Seq table: %v", err)
+	}
+
+	t.Logf("rowCount is %d", rowCount)
+
+	if rowCount <= 1 {
+		t.Errorf("expected more than 1 row in Seq table, got %d", rowCount)
+	}
+
+	// Verify that all entries are present and contiguous by consuming them.
+	seenEntries := 0
+	f := func(_ context.Context, fromSeq uint64, batch []storage.SequencedEntry) ([]byte, error) {
+		t.Logf("consuming from %d, saw %d entries", fromSeq, len(batch))
+		if fromSeq != uint64(seenEntries) {
+			return nil, fmt.Errorf("f called with fromSeq %d, want %d", fromSeq, seenEntries)
+		}
+		seenEntries += len(batch)
+
+		for _, e := range batch {
+			lh := string(e.LeafHash)
+			if _, ok := wantEntries[lh]; !ok {
+				return nil, fmt.Errorf("saw unexpected entry with hash %x", e.LeafHash)
+			}
+			delete(wantEntries, lh)
+		}
+
+		return fmt.Appendf(nil, "root<%d>", seenEntries), nil
+	}
+
+	for seenEntries < numEntries {
+		t.Logf("calling consumeEntries, seen: %d", seenEntries)
+		more, err := seq.consumeEntries(ctx, 100, f, false)
+		if err != nil {
+			t.Fatalf("consumeEntries: %v", err)
+		}
+		if !more && seenEntries < numEntries {
+			t.Fatalf("consumeEntries: more = false but only seen %d/%d entries", seenEntries, numEntries)
+		}
+	}
+
+	if seenEntries != numEntries {
+		t.Errorf("saw %d entries, want %d", seenEntries, numEntries)
+	}
+	if len(wantEntries) != 0 {
+		t.Errorf("failed to consume %d entries", len(wantEntries))
+	}
+}
+
 func TestPublishTree(t *testing.T) {
 	ctx := t.Context()
 	for _, test := range []struct {

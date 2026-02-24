@@ -81,6 +81,11 @@ const (
 
 	DefaultIntegrationSizeLimit = 5 * 4096
 
+	// defaultSeqTableMaxBatchByteSize is the default maximum byte size of a batch of entries to be written to the
+	// "V" field in the "Seq" table. This is set to just under 10 MiB, the maximum size of the Spanner
+	// BYTES column, with some headroom for the gob encoding.
+	defaultSeqTableMaxBatchByteSize = 9 << 20 // 9 MiB
+
 	// SchemaCompatibilityVersion represents the expected version (e.g. layout & serialisation) of stored data.
 	//
 	// A binary built with a given version of the Tessera library is compatible with stored data created by a different version
@@ -300,6 +305,13 @@ type Appender struct {
 func (a *Appender) Add(ctx context.Context, e *tessera.Entry) tessera.IndexFuture {
 	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.Add")
 	defer span.End()
+
+	// Reject entries which are too large to fit in the Seq table even as a single-entry batch.
+	if size := len(e.Data()); size > defaultSeqTableMaxBatchByteSize {
+		return func() (tessera.Index, error) {
+			return tessera.Index{}, fmt.Errorf("entry size %d exceeds maximum allowed %d", size, defaultSeqTableMaxBatchByteSize)
+		}
+	}
 
 	return a.queue.Add(ctx, e)
 }
@@ -707,14 +719,18 @@ func (a *Appender) updateEntryBundles(ctx context.Context, fromSeq uint64, entri
 type spannerCoordinator struct {
 	dbPool         *spanner.Client
 	maxOutstanding uint64
+
+	// seqTableMaxBatchByteSize is the maximum byte size of a batch of entries to be written to the "V" field in the "Seq" table.
+	seqTableMaxBatchByteSize int
 }
 
 // newSpannerCoordinator returns a new spannerSequencer struct which uses the provided
 // spanner resource name for its spanner connection.
 func newSpannerCoordinator(ctx context.Context, dbPool *spanner.Client, maxOutstanding uint64) (*spannerCoordinator, error) {
 	r := &spannerCoordinator{
-		dbPool:         dbPool,
-		maxOutstanding: maxOutstanding,
+		dbPool:                   dbPool,
+		maxOutstanding:           maxOutstanding,
+		seqTableMaxBatchByteSize: defaultSeqTableMaxBatchByteSize,
 	}
 	if err := r.checkDataCompatibility(ctx); err != nil {
 		return nil, fmt.Errorf("schema is not compatible with this version of the Tessera library: %v", err)
@@ -822,34 +838,53 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 			return tessera.ErrPushbackIntegration
 		}
 
+		var mutations []*spanner.Mutation
 		next := uint64(next) // Shadow next with a uint64 version of the same value to save on casts.
-		sequencedEntries := make([]storage.SequencedEntry, len(entries))
+		startFrom := next
+		var sequencedEntries []storage.SequencedEntry
+		currentBatchByteSize := 0
 		// Assign provisional sequence numbers to entries.
 		// We need to do this here in order to support serialisations which include the log position.
 		for i, e := range entries {
-			sequencedEntries[i] = storage.SequencedEntry{
-				BundleData: e.MarshalBundleData(next + uint64(i)),
+			sequencedEntry := storage.SequencedEntry{
+				BundleData: e.MarshalBundleData(startFrom + uint64(i)),
 				LeafHash:   e.LeafHash(),
 			}
+
+			// If adding this entry would make the batch too big, we need to flush the original batch.
+			if len(sequencedEntries) > 0 && currentBatchByteSize+len(sequencedEntry.BundleData) > s.seqTableMaxBatchByteSize {
+				// Gob-encode the batch of entries and add it to the mutation.
+				m, err := s.addSeqMutation(next, sequencedEntries)
+				if err != nil {
+					return fmt.Errorf("failed to addSeqMutation: %v", err)
+				}
+				mutations = append(mutations, m)
+				next += uint64(len(sequencedEntries))
+
+				// Reset our batch variables, and clear the batch slice now that it's been added to the
+				// mutation.
+				sequencedEntries = nil
+				currentBatchByteSize = 0
+			}
+
+			sequencedEntries = append(sequencedEntries, sequencedEntry)
+			currentBatchByteSize += len(sequencedEntry.BundleData)
 		}
 
-		// Flatten the entries into a single slice of bytes which we can store in the Seq.v column.
-		b := &bytes.Buffer{}
-		e := gob.NewEncoder(b)
-		if err := e.Encode(sequencedEntries); err != nil {
-			return fmt.Errorf("failed to serialise batch: %v", err)
+		// Insert the last batch of entries if there are any.
+		if len(sequencedEntries) > 0 {
+			m, err := s.addSeqMutation(next, sequencedEntries)
+			if err != nil {
+				return fmt.Errorf("failed to addSeqMutation: %v", err)
+			}
+			mutations = append(mutations, m)
+			next += uint64(len(sequencedEntries))
 		}
-		data := b.Bytes()
-		num := len(entries)
 
-		// TODO(al): think about whether aligning bundles to tile boundaries would be a good idea or not.
-		m := []*spanner.Mutation{
-			// Insert our newly sequenced batch of entries into Seq,
-			spanner.Insert("Seq", []string{"id", "seq", "v"}, []any{0, int64(next), data}),
-			// and update the next-available sequence number row in SeqCoord.
-			spanner.Update("SeqCoord", []string{"id", "next"}, []any{0, int64(next) + int64(num)}),
-		}
-		if err := txn.BufferWrite(m); err != nil {
+		// and update the next-available sequence number row in SeqCoord.
+		mutations = append(mutations, spanner.Update("SeqCoord", []string{"id", "next"}, []any{0, int64(next)}))
+
+		if err := txn.BufferWrite(mutations); err != nil {
 			return fmt.Errorf("failed to apply TX: %v", err)
 		}
 
@@ -861,6 +896,21 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 	}
 
 	return nil
+}
+
+// addSeqMutation returns a mutation to the Seq table for the given sequence number and entries.
+//
+// The entries are gob-encoded and stored in the V column.
+//
+// The mutation is not written to the database; it is intended to be passed to a spanner.Transaction
+// which will write it to the database.
+func (s *spannerCoordinator) addSeqMutation(seq uint64, entries []storage.SequencedEntry) (*spanner.Mutation, error) {
+	b := &bytes.Buffer{}
+	if err := gob.NewEncoder(b).Encode(entries); err != nil {
+		return nil, fmt.Errorf("failed to serialise batch: %v", err)
+	}
+	// Insert our newly sequenced batch of entries into Seq.
+	return spanner.Insert("Seq", []string{"id", "seq", "v"}, []any{0, int64(seq), b.Bytes()}), nil
 }
 
 // consumeEntries calls f with previously sequenced entries.
