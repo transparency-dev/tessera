@@ -306,6 +306,13 @@ func (a *Appender) Add(ctx context.Context, e *tessera.Entry) tessera.IndexFutur
 	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.Add")
 	defer span.End()
 
+	// Reject entries which are too large to fit in the Seq table even as a single-entry batch.
+	if size := len(e.Data()); size > defaultSeqTableMaxBatchByteSize {
+		return func() (tessera.Index, error) {
+			return tessera.Index{}, fmt.Errorf("entry size %d exceeds maximum allowed %d", size, defaultSeqTableMaxBatchByteSize)
+		}
+	}
+
 	return a.queue.Add(ctx, e)
 }
 
@@ -842,12 +849,6 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 			sequencedEntry := storage.SequencedEntry{
 				BundleData: e.MarshalBundleData(startFrom + uint64(i)),
 				LeafHash:   e.LeafHash(),
-			}
-
-			// Reject entries which are too large to fit in the Seq table even as a single-entry batch,
-			// as these would cause the sequencer to get stuck retrying to insert them without ever making progress.
-			if len(sequencedEntry.BundleData) > s.seqTableMaxBatchByteSize {
-				return fmt.Errorf("entry is too large to be sequenced (bundle data size %d exceeds max batch byte size %d)", len(sequencedEntry.BundleData), s.seqTableMaxBatchByteSize)
 			}
 
 			// If adding this entry would make the batch too big, we need to flush the original batch.
