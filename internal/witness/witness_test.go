@@ -488,7 +488,7 @@ func TestSlipperyWitness(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w1u := mustURL(t, wit1.URL)
 		if got, want := r.URL.String(), w1u.Path; got != want {
-			t.Fatalf("got request to URL %q but expected %q", got, want)
+			t.Fatalf("Got request to URL %q but expected %q", got, want)
 		}
 
 		w.Header().Add("Content-Type", "text/x.tlog.size")
