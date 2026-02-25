@@ -153,7 +153,7 @@ func TestWitnessGateway_Update(t *testing.T) {
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 
 			g := witness.NewWitnessGateway(tC.group, ts.Client(), 0, testLogTileFetcher)
 
@@ -177,11 +177,11 @@ func TestWitnessGateway_Update(t *testing.T) {
 
 func TestWitness_UpdateRequest(t *testing.T) {
 	logSignedCheckpoint, _ := loadCheckpoint(t, 9)
-	d, err := posix.New(context.Background(), posix.Config{Path: "../../testdata/log/"})
+	d, err := posix.New(t.Context(), posix.Config{Path: "../../testdata/log/"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, reader, err := tessera.NewAppender(context.Background(), d, tessera.NewAppendOptions().WithCheckpointSigner(mustCreateCoSigSigner(t, wit1Skey)))
+	_, _, reader, err := tessera.NewAppender(t.Context(), d, tessera.NewAppendOptions().WithCheckpointSigner(mustCreateCoSigSigner(t, wit1Skey)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestWitness_UpdateRequest(t *testing.T) {
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			var gotBody string
 			var initDone bool
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -302,7 +302,7 @@ func TestWitness_UpdateResponse(t *testing.T) {
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tC.statusCode)
 				_, _ = w.Write(tC.body)
@@ -461,7 +461,7 @@ func TestWitnessStateEvolution(t *testing.T) {
 	}
 	group := tessera.NewWitnessGroup(1, wit1)
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	g := witness.NewWitnessGateway(group, ts.Client(), 0, testLogTileFetcher)
 	// This call will trigger case 0 and then case 1 in the witness handler above.
@@ -506,7 +506,7 @@ func TestSlipperyWitness(t *testing.T) {
 	}
 	group := tessera.NewWitnessGroup(1, wit1)
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	g := witness.NewWitnessGateway(group, ts.Client(), 0, testLogTileFetcher)
 	_, err = g.Witness(ctx, logSignedCheckpoint)
@@ -553,7 +553,7 @@ func TestWitnessReusesProofs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	var tf1 atomic.Int32
 	var tf2 atomic.Int32
