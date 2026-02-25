@@ -477,6 +477,44 @@ func TestWitnessStateEvolution(t *testing.T) {
 	_, _ = g.Witness(ctx, logSignedCheckpoint)
 }
 
+func TestSlipperyWitness(t *testing.T) {
+	logSize := 9
+	logSignedCheckpoint, _ := loadCheckpoint(t, logSize)
+
+	// Set up a fake server hosting the witness.
+	// This witness will always reply that a different size is required.
+	var wit1 tessera.Witness
+	var count int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w1u := mustURL(t, wit1.URL)
+		if got, want := r.URL.String(), w1u.Path; got != want {
+			t.Fatalf("got request to URL %q but expected %q", got, want)
+		}
+
+		w.Header().Add("Content-Type", "text/x.tlog.size")
+		w.WriteHeader(409)
+
+		// Keep telling the log that we were at a different size
+		_, _ = w.Write(fmt.Appendf(nil, "%d", count%logSize))
+		count++
+	}))
+	baseURL := mustURL(t, ts.URL)
+	var err error
+	wit1, err = tessera.NewWitness(wit1Vkey, baseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := tessera.NewWitnessGroup(1, wit1)
+
+	ctx := context.Background()
+
+	g := witness.NewWitnessGateway(group, ts.Client(), 0, testLogTileFetcher)
+	_, err = g.Witness(ctx, logSignedCheckpoint)
+	if err == nil {
+		t.Fatal("Expected error from not getting witness checkpoint")
+	}
+}
+
 func TestWitnessReusesProofs(t *testing.T) {
 	var wit1, wit2 tessera.Witness
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

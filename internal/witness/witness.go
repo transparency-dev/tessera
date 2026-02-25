@@ -36,6 +36,14 @@ import (
 	"k8s.io/klog/v2"
 )
 
+type contextKey int
+
+const (
+	antiRecursionCtxKey contextKey = iota
+
+	maxUpdateRecursion = 10
+)
+
 var (
 	witnessReqsTotal    metric.Int64Counter
 	witnessReqHistogram metric.Int64Histogram
@@ -244,6 +252,14 @@ type witness struct {
 }
 
 func (w *witness) update(ctx context.Context, cp []byte, size uint64, fetchProof func(ctx context.Context, from, to uint64) ([][]byte, error)) ([]byte, error) {
+	var recursed uint
+	if v := ctx.Value(antiRecursionCtxKey); v != nil {
+		recursed = v.(uint)
+	}
+	if recursed >= maxUpdateRecursion {
+		return nil, fmt.Errorf("Too many consecutive requests to witness %s", w.verifier.Name())
+	}
+
 	var proof [][]byte
 	if w.size > 0 {
 		var err error
@@ -326,9 +342,9 @@ func (w *witness) update(ctx context.Context, cp []byte, size uint64, fetchProof
 
 			klog.Infof("Witness at %q replied with x.tlog.size %d != our hint %d, retrying", w.url, newWitSize, w.size)
 			w.size = newWitSize
-			// Witnesses could cause this recursion to go on for longer than expected if the value they kept returning
-			// this case with slightly larger values. Consider putting a max recursion cap if context timeout isn't enough.
-			return w.update(ctx, cp, size, fetchProof)
+			// Witnesses could cause this recursion to go on for longer than expected if they keep triggering this case.
+			// This is why we pass the context with an incrementing value to detect this unlikely case.
+			return w.update(context.WithValue(ctx, antiRecursionCtxKey, recursed+1), cp, size, fetchProof)
 		}
 
 		// If the old size matches the checkpoint size, the witness MUST check that the root hashes are also identical.
