@@ -257,7 +257,7 @@ func (w *witness) update(ctx context.Context, cp []byte, size uint64, fetchProof
 		recursed = v.(uint)
 	}
 	if recursed >= maxUpdateRecursion {
-		return nil, fmt.Errorf("Too many consecutive requests to witness %s", w.verifier.Name())
+		return nil, fmt.Errorf("too many consecutive requests to witness %s", w.verifier.Name())
 	}
 
 	var proof [][]byte
