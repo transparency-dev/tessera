@@ -337,15 +337,15 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 			// checkpoint!
 			cp, err := a.logStore.ReadCheckpoint(ctx)
 			if err != nil {
-				return fmt.Errorf("Failed to get published checkpoint: %v", err)
+				return fmt.Errorf("failed to get published checkpoint: %v", err)
 			}
 			_, pubSize, _, err := parse.CheckpointUnsafe(cp)
 			if err != nil {
-				return fmt.Errorf("Failed to parse published checkpoint: %v", err)
+				return fmt.Errorf("failed to parse published checkpoint: %v", err)
 			}
 
 			if err := a.sequencer.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStore.objStore.deleteObjectsWithPrefix, a.logStore.entriesPath); err != nil {
-				return fmt.Errorf("GarbageCollect failed: %v", err)
+				return fmt.Errorf("garbageCollect failed: %v", err)
 			}
 			return nil
 		}); err != nil {
