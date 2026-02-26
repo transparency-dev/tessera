@@ -57,9 +57,9 @@ import (
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/internal/fetcher"
 	"github.com/transparency-dev/tessera/internal/migrate"
+	"github.com/transparency-dev/tessera/internal/otel"
 	"github.com/transparency-dev/tessera/internal/parse"
 	storage "github.com/transparency-dev/tessera/storage/internal"
-	"github.com/transparency-dev/tessera/internal/otel"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
@@ -276,20 +276,22 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 		case <-t.C:
 		}
 
-		func() {
+		if err := otel.TraceErr(ctx, "tessera.storage.aws.integrateEntriesJob", tracer, func(ctx context.Context, span trace.Span) error {
 			// Don't quickloop for now, it causes issues updating checkpoint too frequently.
 			cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 
 			if _, err := a.sequencer.consumeEntries(cctx, DefaultIntegrationSizeLimit, a.integrateEntries, false); err != nil {
-				klog.Errorf("integrateEntries: %v", err)
-				return
+				return err
 			}
 			select {
 			case a.treeUpdated <- struct{}{}:
 			default:
 			}
-		}()
+			return nil
+		}); err != nil {
+			klog.Errorf("integrateEntries: %v", err)
+		}
 	}
 }
 
@@ -329,29 +331,26 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 			return
 		case <-t.C:
 		}
-		func() {
-			ctx, span := tracer.Start(ctx, "tessera.storage.aws.garbageCollectJob")
-			defer span.End()
-
+		if err := otel.TraceErr(ctx, "tessera.storage.aws.garbageCollectJob", tracer, func(ctx context.Context, span trace.Span) error {
 			// Figure out the size of the latest published checkpoint - we can't be removing partial tiles implied by
 			// that checkpoint just because we've done an integration and know about a larger (but as yet unpublished)
 			// checkpoint!
 			cp, err := a.logStore.ReadCheckpoint(ctx)
 			if err != nil {
-				klog.Warningf("Failed to get published checkpoint: %v", err)
-				return
+				return fmt.Errorf("Failed to get published checkpoint: %v", err)
 			}
 			_, pubSize, _, err := parse.CheckpointUnsafe(cp)
 			if err != nil {
-				klog.Warningf("Failed to parse published checkpoint: %v", err)
-				return
+				return fmt.Errorf("Failed to parse published checkpoint: %v", err)
 			}
 
 			if err := a.sequencer.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStore.objStore.deleteObjectsWithPrefix, a.logStore.entriesPath); err != nil {
-				klog.Warningf("GarbageCollect failed: %v", err)
-				return
+				return fmt.Errorf("GarbageCollect failed: %v", err)
 			}
-		}()
+			return nil
+		}); err != nil {
+			klog.Warning(err)
+		}
 	}
 
 }
