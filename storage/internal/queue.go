@@ -23,6 +23,8 @@ import (
 
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/internal/future"
+	"github.com/transparency-dev/tessera/internal/otel"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Queue knows how to queue up a number of entries in order.
@@ -133,15 +135,14 @@ func (q *Queue) flushLocked() []queueItem {
 
 // doFlush handles the queue flush, and sending notifications of assigned log indices.
 func (q *Queue) doFlush(ctx context.Context, f FlushFunc, entries []queueItem) {
-	ctx, span := tracer.Start(ctx, "tessera.storage.queue.doFlush")
-	defer span.End()
+	err := otel.TraceErr(ctx, "tessera.storage.queue.doFlush", tracer, func(ctx context.Context, span trace.Span) error {
+		entriesData := make([]*tessera.Entry, 0, len(entries))
+		for _, e := range entries {
+			entriesData = append(entriesData, e.entry)
+		}
 
-	entriesData := make([]*tessera.Entry, 0, len(entries))
-	for _, e := range entries {
-		entriesData = append(entriesData, e.entry)
-	}
-
-	err := f(ctx, entriesData)
+		return f(ctx, entriesData)
+	})
 
 	// Send assigned indices to all the waiting Add() requests
 	for _, e := range entries {
