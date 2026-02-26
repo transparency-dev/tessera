@@ -31,6 +31,7 @@ import (
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/internal/otel"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/klog/v2"
 )
 
@@ -129,27 +130,26 @@ type AntispamStorage struct {
 
 // index returns the index (if any) previously associated with the provided hash
 func (d *AntispamStorage) index(ctx context.Context, h []byte) (*uint64, error) {
-	_, span := tracer.Start(ctx, "tessera.antispam.badger.index")
-	defer span.End()
+	return otel.Trace(ctx, "tessera.antispam.badger.index", tracer, func(ctx context.Context, span trace.Span) (*uint64, error) {
+		d.numLookups.Add(1)
+		var idx *uint64
+		err := d.db.View(func(txn *badger.Txn) error {
+			item, err := txn.Get(h)
+			if err == badger.ErrKeyNotFound {
+				span.AddEvent("tessera.miss")
+				return nil
+			}
+			span.AddEvent("tessera.hit")
+			d.numHits.Add(1)
 
-	d.numLookups.Add(1)
-	var idx *uint64
-	err := d.db.View(func(txn *badger.Txn) error {
-		item, err := txn.Get(h)
-		if err == badger.ErrKeyNotFound {
-			span.AddEvent("tessera.miss")
-			return nil
-		}
-		span.AddEvent("tessera.hit")
-		d.numHits.Add(1)
-
-		return item.Value(func(v []byte) error {
-			i := binary.BigEndian.Uint64(v)
-			idx = &i
-			return nil
+			return item.Value(func(v []byte) error {
+				i := binary.BigEndian.Uint64(v)
+				idx = &i
+				return nil
+			})
 		})
+		return idx, err
 	})
-	return idx, err
 }
 
 // Decorator returns a function which will wrap an underlying Add delegate with
@@ -235,127 +235,126 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 		// Busy loop while there's work to be done
 		for moreWork := true; moreWork; {
 			err := f.as.db.Update(func(txn *badger.Txn) error {
-				ctx, span := tracer.Start(ctx, "tessera.antispam.badger.FollowTxn")
-				defer span.End()
+				return otel.TraceErr(ctx, "tessera.antispam.badger.FollowTxn", tracer, func(ctx context.Context, span trace.Span) error {
+					// Figure out the last entry we used to populate our antispam storage.
+					var followFrom uint64
 
-				// Figure out the last entry we used to populate our antispam storage.
-				var followFrom uint64
-
-				switch row, err := txn.Get(nextKey); {
-				case errors.Is(err, badger.ErrKeyNotFound):
-					// Ignore this as we're probably just running for the first time on a new DB.
-				case err != nil:
-					return fmt.Errorf("failed to get nextIdx: %v", err)
-				default:
-					if err := row.Value(func(val []byte) error {
-						followFrom = binary.BigEndian.Uint64(val)
-						return nil
-					}); err != nil {
-						return fmt.Errorf("failed to get nextIdx value: %v", err)
-					}
-				}
-
-				span.SetAttributes(followFromKey.Int64(otel.Clamp64(followFrom)))
-
-				var err error
-				if followFrom >= logSize {
-					// Our view of the log is out of date, update it
-					logSize, err = lr.IntegratedSize(ctx)
-					if err != nil {
-						if errors.Is(err, os.ErrNotExist) {
-							// The log probably just hasn't completed its first integration yet, so break out of here
-							// and go back to sleep for a bit to avoid spamming errors into the log and scaring operators.
-							moreWork = false
-							return nil
-						}
-						return fmt.Errorf("populate: IntegratedSize(): %v", err)
-					}
-					switch {
-					case followFrom > logSize:
-						// Since we've got a stale view, there could be more work to do - loop and check without sleeping.
-						moreWork = true
-						return fmt.Errorf("followFrom %d > size %d", followFrom, logSize)
-					case followFrom == logSize:
-						// We're caught up, so unblock pushback and go back to sleep
-						moreWork = false
-						f.as.pushBack.Store(false)
-						return nil
+					switch row, err := txn.Get(nextKey); {
+					case errors.Is(err, badger.ErrKeyNotFound):
+						// Ignore this as we're probably just running for the first time on a new DB.
+					case err != nil:
+						return fmt.Errorf("failed to get nextIdx: %v", err)
 					default:
-						// size > followFrom, so there's more work to be done!
-					}
-				}
-
-				pushback := logSize-followFrom > uint64(f.as.opts.PushbackThreshold)
-				span.SetAttributes(pushbackKey.Bool(pushback))
-				f.as.pushBack.Store(pushback)
-
-				// If this is the first time around the loop we need to start the stream of entries now that we know where we want to
-				// start reading from:
-				if next == nil {
-					span.AddEvent("Start streaming entries")
-					sizeFn := func(_ context.Context) (uint64, error) {
-						return logSize, nil
-					}
-					numFetchers := uint(10)
-					next, stop = iter.Pull2(client.Entries(client.EntryBundles(ctx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
-				}
-
-				if curIndex == followFrom && curEntries != nil {
-					// Note that it's possible for Spanner to automatically retry transactions in some circumstances, when it does
-					// it'll call this function again.
-					// If the above condition holds, then we're in a retry situation and we must use the same data again rather
-					// than continue reading entries which will take us out of sync.
-				} else {
-					bs := uint64(f.as.opts.MaxBatchSize)
-					if r := logSize - followFrom; r < bs {
-						bs = r
-					}
-					batch := make([][]byte, 0, bs)
-					for i := range int(bs) {
-						e, err, ok := next()
-						if !ok {
-							// The entry stream has ended so we'll need to start a new stream next time around the loop:
-							next = nil
-							break
+						if err := row.Value(func(val []byte) error {
+							followFrom = binary.BigEndian.Uint64(val)
+							return nil
+						}); err != nil {
+							return fmt.Errorf("failed to get nextIdx value: %v", err)
 						}
+					}
+
+					span.SetAttributes(followFromKey.Int64(otel.Clamp64(followFrom)))
+
+					var err error
+					if followFrom >= logSize {
+						// Our view of the log is out of date, update it
+						logSize, err = lr.IntegratedSize(ctx)
 						if err != nil {
-							return fmt.Errorf("entryReader.next: %v", err)
+							if errors.Is(err, os.ErrNotExist) {
+								// The log probably just hasn't completed its first integration yet, so break out of here
+								// and go back to sleep for a bit to avoid spamming errors into the log and scaring operators.
+								moreWork = false
+								return nil
+							}
+							return fmt.Errorf("populate: IntegratedSize(): %v", err)
 						}
-						if wantIdx := followFrom + uint64(i); e.Index != wantIdx {
-							klog.Infof("at %d, expected %d - out of sync", e.Index, wantIdx)
-							// We're out of sync
-							return errOutOfSync
+						switch {
+						case followFrom > logSize:
+							// Since we've got a stale view, there could be more work to do - loop and check without sleeping.
+							moreWork = true
+							return fmt.Errorf("followFrom %d > size %d", followFrom, logSize)
+						case followFrom == logSize:
+							// We're caught up, so unblock pushback and go back to sleep
+							moreWork = false
+							f.as.pushBack.Store(false)
+							return nil
+						default:
+							// size > followFrom, so there's more work to be done!
 						}
-						batch = append(batch, e.Entry)
 					}
-					curEntries = batch
-					curIndex = followFrom
-				}
 
-				// Now update the index.
-				{
-					for i, e := range curEntries {
-						if _, err := txn.Get(e); err == badger.ErrKeyNotFound {
-							b := make([]byte, 8)
-							binary.BigEndian.PutUint64(b, curIndex+uint64(i))
-							if err := txn.Set(e, b); err != nil {
-								return err
+					pushback := logSize-followFrom > uint64(f.as.opts.PushbackThreshold)
+					span.SetAttributes(pushbackKey.Bool(pushback))
+					f.as.pushBack.Store(pushback)
+
+					// If this is the first time around the loop we need to start the stream of entries now that we know where we want to
+					// start reading from:
+					if next == nil {
+						span.AddEvent("Start streaming entries")
+						sizeFn := func(_ context.Context) (uint64, error) {
+							return logSize, nil
+						}
+						numFetchers := uint(10)
+						next, stop = iter.Pull2(client.Entries(client.EntryBundles(ctx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
+					}
+
+					if curIndex == followFrom && curEntries != nil {
+						// Note that it's possible for Spanner to automatically retry transactions in some circumstances, when it does
+						// it'll call this function again.
+						// If the above condition holds, then we're in a retry situation and we must use the same data again rather
+						// than continue reading entries which will take us out of sync.
+					} else {
+						bs := uint64(f.as.opts.MaxBatchSize)
+						if r := logSize - followFrom; r < bs {
+							bs = r
+						}
+						batch := make([][]byte, 0, bs)
+						for i := range int(bs) {
+							e, err, ok := next()
+							if !ok {
+								// The entry stream has ended so we'll need to start a new stream next time around the loop:
+								next = nil
+								break
+							}
+							if err != nil {
+								return fmt.Errorf("entryReader.next: %v", err)
+							}
+							if wantIdx := followFrom + uint64(i); e.Index != wantIdx {
+								klog.Infof("at %d, expected %d - out of sync", e.Index, wantIdx)
+								// We're out of sync
+								return errOutOfSync
+							}
+							batch = append(batch, e.Entry)
+						}
+						curEntries = batch
+						curIndex = followFrom
+					}
+
+					// Now update the index.
+					{
+						for i, e := range curEntries {
+							if _, err := txn.Get(e); err == badger.ErrKeyNotFound {
+								b := make([]byte, 8)
+								binary.BigEndian.PutUint64(b, curIndex+uint64(i))
+								if err := txn.Set(e, b); err != nil {
+									return err
+								}
 							}
 						}
 					}
-				}
 
-				numAdded := uint64(len(curEntries))
-				f.as.numWrites.Add(numAdded)
+					numAdded := uint64(len(curEntries))
+					f.as.numWrites.Add(numAdded)
 
-				// and update the follower state
-				b := make([]byte, 8)
-				binary.BigEndian.PutUint64(b, curIndex+numAdded)
-				if err := txn.Set(nextKey, b); err != nil {
-					return fmt.Errorf("failed to update follower state: %v", err)
-				}
+					// and update the follower state
+					b := make([]byte, 8)
+					binary.BigEndian.PutUint64(b, curIndex+numAdded)
+					if err := txn.Set(nextKey, b); err != nil {
+						return fmt.Errorf("failed to update follower state: %v", err)
+					}
 
-				return nil
+					return nil
+				})
 			})
 			if err != nil {
 				if err != errOutOfSync {

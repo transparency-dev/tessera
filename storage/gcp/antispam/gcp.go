@@ -38,6 +38,8 @@ import (
 
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
+	"github.com/transparency-dev/tessera/internal/otel"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"k8s.io/klog/v2"
 )
@@ -126,26 +128,25 @@ type AntispamStorage struct {
 
 // index returns the index (if any) previously associated with the provided hash
 func (d *AntispamStorage) index(ctx context.Context, h []byte) (*uint64, error) {
-	ctx, span := tracer.Start(ctx, "tessera.antispam.gcp.index")
-	defer span.End()
-
-	d.numLookups.Add(1)
-	var idx int64
-	if row, err := d.dbPool.Single().ReadRow(ctx, "IDSeq", spanner.Key{h}, []string{"idx"}); err != nil {
-		if c := spanner.ErrCode(err); c == codes.NotFound {
-			span.AddEvent("tessera.miss")
-			return nil, nil
+	return otel.Trace(ctx, "tessera.antispam.gcp.index", tracer, func(ctx context.Context, span trace.Span) (*uint64, error) {
+		d.numLookups.Add(1)
+		var idx int64
+		if row, err := d.dbPool.Single().ReadRow(ctx, "IDSeq", spanner.Key{h}, []string{"idx"}); err != nil {
+			if c := spanner.ErrCode(err); c == codes.NotFound {
+				span.AddEvent("tessera.miss")
+				return nil, nil
+			}
+			return nil, err
+		} else {
+			if err := row.Column(0, &idx); err != nil {
+				return nil, fmt.Errorf("failed to read antispam index: %v", err)
+			}
+			idx := uint64(idx)
+			span.AddEvent("tessera.hit")
+			d.numHits.Add(1)
+			return &idx, nil
 		}
-		return nil, err
-	} else {
-		if err := row.Column(0, &idx); err != nil {
-			return nil, fmt.Errorf("failed to read antispam index: %v", err)
-		}
-		idx := uint64(idx)
-		span.AddEvent("tessera.hit")
-		d.numHits.Add(1)
-		return &idx, nil
-	}
+	})
 }
 
 // Decorator returns a function which will wrap an underlying Add delegate with
@@ -256,115 +257,114 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 		// Busy loop while there are entries to be consumed from the stream
 		for streamDone := false; !streamDone; {
 			_, err := f.as.dbPool.ReadWriteTransaction(ctx, func(txctx context.Context, txn *spanner.ReadWriteTransaction) error {
-				txctx, span := tracer.Start(txctx, "tessera.antispam.gcp.FollowTxn")
-				defer span.End()
-
-				// Figure out the last entry we used to populate our antispam storage.
-				row, err := txn.ReadRowWithOptions(txctx, "FollowCoord", spanner.Key{0}, []string{"nextIdx"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
-				if err != nil {
-					return err
-				}
-
-				var nextIdx int64 // Spanner doesn't support uint64
-				if err := row.Columns(&nextIdx); err != nil {
-					return fmt.Errorf("failed to read follow coordination info: %v", err)
-				}
-				span.SetAttributes(followFromKey.Int64(nextIdx))
-
-				followFrom := uint64(nextIdx)
-				if followFrom >= logSize {
-					// Our view of the log is out of date, update it.
-					// We use ctx here because Cloud Spanner doesn't support nested transactions.
-					// This is okay because we're only reading the log size, not modifying anything.
-					logSize, err = lr.IntegratedSize(ctx)
+				return otel.TraceErr(txctx, "tessera.antispam.gcp.FollowTxn", tracer, func(txctx context.Context, span trace.Span) error {
+					// Figure out the last entry we used to populate our antispam storage.
+					row, err := txn.ReadRowWithOptions(txctx, "FollowCoord", spanner.Key{0}, []string{"nextIdx"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 					if err != nil {
-						streamDone = true
-						return fmt.Errorf("populate: IntegratedSize(): %v", err)
-					}
-					switch {
-					case followFrom > logSize:
-						streamDone = true
-						return fmt.Errorf("followFrom %d > size %d", followFrom, logSize)
-					case followFrom == logSize:
-						// We're caught up, so unblock pushback and go back to sleep
-						streamDone = true
-						f.as.pushBack.Store(false)
-						return nil
-					default:
-						// size > followFrom, so there's more work to be done!
-					}
-				}
-
-				pushback := logSize-followFrom > uint64(f.as.opts.PushbackThreshold)
-				span.SetAttributes(pushbackKey.Bool(pushback))
-				f.as.pushBack.Store(pushback)
-
-				// If this is the first time around the loop we need to start the stream of entries now that we know where we want to
-				// start reading from:
-				if next == nil {
-					span.AddEvent("Start streaming entries")
-					sizeFn := func(_ context.Context) (uint64, error) {
-						return logSize, nil
-					}
-					numFetchers := uint(10)
-					next, stop = iter.Pull2(client.Entries(client.EntryBundles(txctx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
-				}
-
-				if curIndex == followFrom && curEntries != nil {
-					// Note that it's possible for Spanner to automatically retry transactions in some circumstances, when it does
-					// it'll call this function again.
-					// If the above condition holds, then we're in a retry situation and we must use the same data again rather
-					// than continue reading entries which will take us out of sync.
-				} else {
-					bs := uint64(f.as.opts.MaxBatchSize)
-					if r := logSize - followFrom; r < bs {
-						bs = r
-					}
-					batch := make([][]byte, 0, bs)
-					for i := range int(bs) {
-						e, err, ok := next()
-						if !ok {
-							// The entry stream has ended so we'll need to start a new stream next time around the loop:
-							stop()
-							next = nil
-							break
-						}
-						if err != nil {
-							return fmt.Errorf("entryReader.next: %v", err)
-						}
-						if wantIdx := followFrom + uint64(i); e.Index != wantIdx {
-							// We're out of sync
-							return errOutOfSync
-						}
-						batch = append(batch, e.Entry)
-					}
-					curEntries = batch
-					curIndex = followFrom
-				}
-
-				if len(curEntries) == 0 {
-					return nil
-				}
-
-				// Now update the index.
-				{
-					ms := make([]*spanner.Mutation, 0, len(curEntries))
-					for i, e := range curEntries {
-						ms = append(ms, spanner.Insert("IDSeq", []string{"h", "idx"}, []any{e, int64(curIndex + uint64(i))}))
-					}
-					if err := f.updateIndex(txctx, txn, ms); err != nil {
 						return err
 					}
-				}
 
-				numAdded := uint64(len(curEntries))
-				f.as.numWrites.Add(numAdded)
+					var nextIdx int64 // Spanner doesn't support uint64
+					if err := row.Columns(&nextIdx); err != nil {
+						return fmt.Errorf("failed to read follow coordination info: %v", err)
+					}
+					span.SetAttributes(followFromKey.Int64(nextIdx))
 
-				// Insertion of dupe entries was successful, so update our follow coordination row:
-				m := make([]*spanner.Mutation, 0)
-				m = append(m, spanner.Update("FollowCoord", []string{"id", "nextIdx"}, []any{0, int64(followFrom + numAdded)}))
+					followFrom := uint64(nextIdx)
+					if followFrom >= logSize {
+						// Our view of the log is out of date, update it.
+						// We use ctx here because Cloud Spanner doesn't support nested transactions.
+						// This is okay because we're only reading the log size, not modifying anything.
+						logSize, err = lr.IntegratedSize(ctx)
+						if err != nil {
+							streamDone = true
+							return fmt.Errorf("populate: IntegratedSize(): %v", err)
+						}
+						switch {
+						case followFrom > logSize:
+							streamDone = true
+							return fmt.Errorf("followFrom %d > size %d", followFrom, logSize)
+						case followFrom == logSize:
+							// We're caught up, so unblock pushback and go back to sleep
+							streamDone = true
+							f.as.pushBack.Store(false)
+							return nil
+						default:
+							// size > followFrom, so there's more work to be done!
+						}
+					}
 
-				return txn.BufferWrite(m)
+					pushback := logSize-followFrom > uint64(f.as.opts.PushbackThreshold)
+					span.SetAttributes(pushbackKey.Bool(pushback))
+					f.as.pushBack.Store(pushback)
+
+					// If this is the first time around the loop we need to start the stream of entries now that we know where we want to
+					// start reading from:
+					if next == nil {
+						span.AddEvent("Start streaming entries")
+						sizeFn := func(_ context.Context) (uint64, error) {
+							return logSize, nil
+						}
+						numFetchers := uint(10)
+						next, stop = iter.Pull2(client.Entries(client.EntryBundles(txctx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
+					}
+
+					if curIndex == followFrom && curEntries != nil {
+						// Note that it's possible for Spanner to automatically retry transactions in some circumstances, when it does
+						// it'll call this function again.
+						// If the above condition holds, then we're in a retry situation and we must use the same data again rather
+						// than continue reading entries which will take us out of sync.
+					} else {
+						bs := uint64(f.as.opts.MaxBatchSize)
+						if r := logSize - followFrom; r < bs {
+							bs = r
+						}
+						batch := make([][]byte, 0, bs)
+						for i := range int(bs) {
+							e, err, ok := next()
+							if !ok {
+								// The entry stream has ended so we'll need to start a new stream next time around the loop:
+								stop()
+								next = nil
+								break
+							}
+							if err != nil {
+								return fmt.Errorf("entryReader.next: %v", err)
+							}
+							if wantIdx := followFrom + uint64(i); e.Index != wantIdx {
+								// We're out of sync
+								return errOutOfSync
+							}
+							batch = append(batch, e.Entry)
+						}
+						curEntries = batch
+						curIndex = followFrom
+					}
+
+					if len(curEntries) == 0 {
+						return nil
+					}
+
+					// Now update the index.
+					{
+						ms := make([]*spanner.Mutation, 0, len(curEntries))
+						for i, e := range curEntries {
+							ms = append(ms, spanner.Insert("IDSeq", []string{"h", "idx"}, []any{e, int64(curIndex + uint64(i))}))
+						}
+						if err := f.updateIndex(txctx, txn, ms); err != nil {
+							return err
+						}
+					}
+
+					numAdded := uint64(len(curEntries))
+					f.as.numWrites.Add(numAdded)
+
+					// Insertion of dupe entries was successful, so update our follow coordination row:
+					m := make([]*spanner.Mutation, 0)
+					m = append(m, spanner.Update("FollowCoord", []string{"id", "nextIdx"}, []any{0, int64(followFrom + numAdded)}))
+
+					return txn.BufferWrite(m)
+				})
 			})
 			if err != nil {
 				if err != errOutOfSync {
@@ -400,23 +400,22 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 //     This would work, but would also incur an extra round-trip of data which isn't really necessary but would
 //     slow the process down considerably and add extra load to Spanner for no benefit.
 func (f *follower) batchUpdateIndex(ctx context.Context, _ *spanner.ReadWriteTransaction, ms []*spanner.Mutation) error {
-	ctx, span := tracer.Start(ctx, "tessera.antispam.gcp.batchUpdateIndex")
-	defer span.End()
-
-	mgs := make([]*spanner.MutationGroup, 0, len(ms))
-	for _, m := range ms {
-		mgs = append(mgs, &spanner.MutationGroup{
-			Mutations: []*spanner.Mutation{m},
-		})
-	}
-
-	i := f.as.dbPool.BatchWrite(ctx, mgs)
-	return i.Do(func(r *spannerpb.BatchWriteResponse) error {
-		s := r.GetStatus()
-		if c := codes.Code(s.Code); c != codes.OK && c != codes.AlreadyExists {
-			return fmt.Errorf("failed to write antispam record: %v (%v)", s.GetMessage(), c)
+	return otel.TraceErr(ctx, "tessera.antispam.gcp.batchUpdateIndex", tracer, func(ctx context.Context, span trace.Span) error {
+		mgs := make([]*spanner.MutationGroup, 0, len(ms))
+		for _, m := range ms {
+			mgs = append(mgs, &spanner.MutationGroup{
+				Mutations: []*spanner.Mutation{m},
+			})
 		}
-		return nil
+
+		i := f.as.dbPool.BatchWrite(ctx, mgs)
+		return i.Do(func(r *spannerpb.BatchWriteResponse) error {
+			s := r.GetStatus()
+			if c := codes.Code(s.Code); c != codes.OK && c != codes.AlreadyExists {
+				return fmt.Errorf("failed to write antispam record: %v (%v)", s.GetMessage(), c)
+			}
+			return nil
+		})
 	})
 }
 

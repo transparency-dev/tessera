@@ -59,6 +59,7 @@ import (
 	"github.com/transparency-dev/tessera/internal/otel"
 	"github.com/transparency-dev/tessera/internal/parse"
 	storage "github.com/transparency-dev/tessera/storage/internal"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
@@ -164,48 +165,43 @@ type LogReader struct {
 }
 
 func (lr *LogReader) ReadCheckpoint(ctx context.Context) ([]byte, error) {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.ReadCheckpoint")
-	defer span.End()
-
-	r, err := lr.lrs.getCheckpoint(ctx)
-	if err != nil {
-		if errors.Is(err, gcs.ErrObjectNotExist) {
-			return r, os.ErrNotExist
+	return otel.Trace(ctx, "tessera.storage.gcp.ReadCheckpoint", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		r, err := lr.lrs.getCheckpoint(ctx)
+		if err != nil {
+			if errors.Is(err, gcs.ErrObjectNotExist) {
+				return r, os.ErrNotExist
+			}
 		}
-	}
-	return r, err
+		return r, err
+	})
 }
 
 func (lr *LogReader) ReadTile(ctx context.Context, l, i uint64, p uint8) ([]byte, error) {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.ReadTile")
-	defer span.End()
-
-	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
-		return lr.lrs.getTile(ctx, l, i, p)
+	return otel.Trace(ctx, "tessera.storage.gcp.ReadTile", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
+			return lr.lrs.getTile(ctx, l, i, p)
+		})
 	})
 }
 
 func (lr *LogReader) ReadEntryBundle(ctx context.Context, i uint64, p uint8) ([]byte, error) {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.ReadEntryBundle")
-	defer span.End()
-
-	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
-		return lr.lrs.getEntryBundle(ctx, i, p)
+	return otel.Trace(ctx, "tessera.storage.gcp.ReadEntryBundle", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
+			return lr.lrs.getEntryBundle(ctx, i, p)
+		})
 	})
 }
 
 func (lr *LogReader) IntegratedSize(ctx context.Context) (uint64, error) {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.IntegratedSize")
-	defer span.End()
-
-	return lr.integratedSize(ctx)
+	return otel.Trace(ctx, "tessera.storage.gcp.IntegratedSize", tracer, func(ctx context.Context, span trace.Span) (uint64, error) {
+		return lr.integratedSize(ctx)
+	})
 }
 
 func (lr *LogReader) NextIndex(ctx context.Context) (uint64, error) {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.NextIndex")
-	defer span.End()
-
-	return lr.nextIndex(ctx)
+	return otel.Trace(ctx, "tessera.storage.gcp.NextIndex", tracer, func(ctx context.Context, span trace.Span) (uint64, error) {
+		return lr.nextIndex(ctx)
+	})
 }
 
 // Appender creates a new tessera.Appender lifecycle object.
@@ -437,23 +433,22 @@ func (a *Appender) init(ctx context.Context) error {
 }
 
 func (a *Appender) updateCheckpoint(ctx context.Context, size uint64, root []byte) error {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.updateCheckpoint")
-	defer span.End()
-	span.SetAttributes(treeSizeKey.Int64(otel.Clamp64(size)))
+	return otel.TraceErr(ctx, "tessera.storage.gcp.updateCheckpoint", tracer, func(ctx context.Context, span trace.Span) error {
+		span.SetAttributes(treeSizeKey.Int64(otel.Clamp64(size)))
 
-	cpRaw, err := a.newCP(ctx, size, root)
-	if err != nil {
-		return fmt.Errorf("newCP: %v", err)
-	}
+		cpRaw, err := a.newCP(ctx, size, root)
+		if err != nil {
+			return fmt.Errorf("newCP: %v", err)
+		}
 
-	if err := a.logStore.setCheckpoint(ctx, cpRaw); err != nil {
-		return fmt.Errorf("writeCheckpoint: %v", err)
-	}
+		if err := a.logStore.setCheckpoint(ctx, cpRaw); err != nil {
+			return fmt.Errorf("writeCheckpoint: %v", err)
+		}
 
-	klog.V(2).Infof("Created and stored latest checkpoint: %d, %x", size, root)
+		klog.V(2).Infof("Created and stored latest checkpoint: %d, %x", size, root)
 
-	return nil
-
+		return nil
+	})
 }
 
 // objStore describes a type which can store and retrieve objects.
@@ -506,37 +501,36 @@ func (s *logResourceStore) getTile(ctx context.Context, level, index uint64, par
 //
 // Tiles are returned in the same order as they're requested, nils represent tiles which were not found.
 func (s *logResourceStore) getTiles(ctx context.Context, tileIDs []storage.TileID, logSize uint64) ([]*api.HashTile, error) {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.getTiles")
-	defer span.End()
-
-	r := make([]*api.HashTile, len(tileIDs))
-	errG := errgroup.Group{}
-	for i, id := range tileIDs {
-		i := i
-		id := id
-		errG.Go(func() error {
-			objName := layout.TilePath(id.Level, id.Index, layout.PartialTileSize(id.Level, id.Index, logSize))
-			data, _, err := s.objStore.getObject(ctx, objName)
-			if err != nil {
-				if errors.Is(err, gcs.ErrObjectNotExist) {
-					// Depending on context, this may be ok.
-					// We'll signal to higher levels that it wasn't found by returning a nil for this tile.
-					return nil
+	return otel.Trace(ctx, "tessera.storage.gcp.getTiles", tracer, func(ctx context.Context, span trace.Span) ([]*api.HashTile, error) {
+		r := make([]*api.HashTile, len(tileIDs))
+		errG := errgroup.Group{}
+		for i, id := range tileIDs {
+			i := i
+			id := id
+			errG.Go(func() error {
+				objName := layout.TilePath(id.Level, id.Index, layout.PartialTileSize(id.Level, id.Index, logSize))
+				data, _, err := s.objStore.getObject(ctx, objName)
+				if err != nil {
+					if errors.Is(err, gcs.ErrObjectNotExist) {
+						// Depending on context, this may be ok.
+						// We'll signal to higher levels that it wasn't found by returning a nil for this tile.
+						return nil
+					}
+					return err
 				}
-				return err
-			}
-			t := &api.HashTile{}
-			if err := t.UnmarshalText(data); err != nil {
-				return fmt.Errorf("unmarshal(%q): %v", objName, err)
-			}
-			r[i] = t
-			return nil
-		})
-	}
-	if err := errG.Wait(); err != nil {
-		return nil, err
-	}
-	return r, nil
+				t := &api.HashTile{}
+				if err := t.UnmarshalText(data); err != nil {
+					return fmt.Errorf("unmarshal(%q): %v", objName, err)
+				}
+				r[i] = t
+				return nil
+			})
+		}
+		if err := errG.Wait(); err != nil {
+			return nil, err
+		}
+		return r, nil
+	})
 }
 
 // getEntryBundle returns the serialised entry bundle at the location described by the given index and partial size.
@@ -575,143 +569,140 @@ func (s *logResourceStore) setEntryBundle(ctx context.Context, bundleIndex uint6
 //
 // Returns the new root hash of the log with the entries added.
 func (a *Appender) integrateEntries(ctx context.Context, fromSeq uint64, entries []storage.SequencedEntry) ([]byte, error) {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.integrateEntries")
-	defer span.End()
+	return otel.Trace(ctx, "tessera.storage.gcp.integrateEntries", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		var newRoot []byte
 
-	var newRoot []byte
+		errG := errgroup.Group{}
 
-	errG := errgroup.Group{}
+		errG.Go(func() error {
+			if err := a.updateEntryBundles(ctx, fromSeq, entries); err != nil {
+				return fmt.Errorf("updateEntryBundles: %v", err)
+			}
+			return nil
+		})
 
-	errG.Go(func() error {
-		if err := a.updateEntryBundles(ctx, fromSeq, entries); err != nil {
-			return fmt.Errorf("updateEntryBundles: %v", err)
+		errG.Go(func() error {
+			lh := make([][]byte, len(entries))
+			for i, e := range entries {
+				lh[i] = e.LeafHash
+			}
+			r, err := integrate(ctx, fromSeq, lh, a.logStore)
+			if err != nil {
+				return fmt.Errorf("integrate: %v", err)
+			}
+			newRoot = r
+			return nil
+		})
+		if err := errG.Wait(); err != nil {
+			return nil, err
 		}
-		return nil
+		return newRoot, nil
 	})
-
-	errG.Go(func() error {
-		lh := make([][]byte, len(entries))
-		for i, e := range entries {
-			lh[i] = e.LeafHash
-		}
-		r, err := integrate(ctx, fromSeq, lh, a.logStore)
-		if err != nil {
-			return fmt.Errorf("integrate: %v", err)
-		}
-		newRoot = r
-		return nil
-	})
-	if err := errG.Wait(); err != nil {
-		return nil, err
-	}
-	return newRoot, nil
 }
 
 // integrate adds the provided leaf hashes to the merkle tree, starting at the provided location.
 func integrate(ctx context.Context, fromSeq uint64, lh [][]byte, logStore *logResourceStore) ([]byte, error) {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.integrate")
-	defer span.End()
+	return otel.Trace(ctx, "tessera.storage.gcp.integrate", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		span.SetAttributes(fromSizeKey.Int64(otel.Clamp64(fromSeq)), numEntriesKey.Int(len(lh)))
 
-	span.SetAttributes(fromSizeKey.Int64(otel.Clamp64(fromSeq)), numEntriesKey.Int(len(lh)))
-
-	errG := errgroup.Group{}
-	getTiles := func(ctx context.Context, tileIDs []storage.TileID, treeSize uint64) ([]*api.HashTile, error) {
-		n, err := logStore.getTiles(ctx, tileIDs, treeSize)
-		if err != nil {
-			return nil, fmt.Errorf("getTiles: %w", err)
+		errG := errgroup.Group{}
+		getTiles := func(ctx context.Context, tileIDs []storage.TileID, treeSize uint64) ([]*api.HashTile, error) {
+			n, err := logStore.getTiles(ctx, tileIDs, treeSize)
+			if err != nil {
+				return nil, fmt.Errorf("getTiles: %w", err)
+			}
+			return n, nil
 		}
-		return n, nil
-	}
 
-	newSize, newRoot, tiles, err := storage.Integrate(ctx, getTiles, fromSeq, lh)
-	if err != nil {
-		return nil, fmt.Errorf("storage.Integrate: %v", err)
-	}
-	for k, v := range tiles {
-		func(ctx context.Context, k storage.TileID, v *api.HashTile) {
-			errG.Go(func() error {
-				data, err := v.MarshalText()
-				if err != nil {
-					return err
-				}
-				return logStore.setTile(ctx, k.Level, k.Index, layout.PartialTileSize(k.Level, k.Index, newSize), data)
-			})
-		}(ctx, k, v)
-	}
-	if err := errG.Wait(); err != nil {
-		return nil, err
-	}
-	klog.V(1).Infof("New tree: %d, %x", newSize, newRoot)
+		newSize, newRoot, tiles, err := storage.Integrate(ctx, getTiles, fromSeq, lh)
+		if err != nil {
+			return nil, fmt.Errorf("storage.Integrate: %v", err)
+		}
+		for k, v := range tiles {
+			func(ctx context.Context, k storage.TileID, v *api.HashTile) {
+				errG.Go(func() error {
+					data, err := v.MarshalText()
+					if err != nil {
+						return err
+					}
+					return logStore.setTile(ctx, k.Level, k.Index, layout.PartialTileSize(k.Level, k.Index, newSize), data)
+				})
+			}(ctx, k, v)
+		}
+		if err := errG.Wait(); err != nil {
+			return nil, err
+		}
+		klog.V(1).Infof("New tree: %d, %x", newSize, newRoot)
 
-	return newRoot, nil
+		return newRoot, nil
+	})
 }
 
 // updateEntryBundles adds the entries being integrated into the entry bundles.
 //
 // The right-most bundle will be grown, if it's partial, and/or new bundles will be created as required.
 func (a *Appender) updateEntryBundles(ctx context.Context, fromSeq uint64, entries []storage.SequencedEntry) error {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.updateEntryBundles")
-	defer span.End()
-
-	if len(entries) == 0 {
-		return nil
-	}
-
-	numAdded := uint64(0)
-	bundleIndex, entriesInBundle := fromSeq/layout.EntryBundleWidth, fromSeq%layout.EntryBundleWidth
-	bundleWriter := &bytes.Buffer{}
-	if entriesInBundle > 0 {
-		// If the latest bundle is partial, we need to read the data it contains in for our newer, larger, bundle.
-		part, err := a.logStore.getEntryBundle(ctx, uint64(bundleIndex), uint8(entriesInBundle))
-		if err != nil {
-			return err
+	return otel.TraceErr(ctx, "tessera.storage.gcp.updateEntryBundles", tracer, func(ctx context.Context, span trace.Span) error {
+		if len(entries) == 0 {
+			return nil
 		}
 
-		if _, err := bundleWriter.Write(part); err != nil {
-			return fmt.Errorf("bundleWriter: %v", err)
-		}
-	}
-
-	seqErr := errgroup.Group{}
-
-	// goSetEntryBundle is a function which uses seqErr to spin off a go-routine to write out an entry bundle.
-	// It's used in the for loop below.
-	goSetEntryBundle := func(ctx context.Context, bundleIndex uint64, p uint8, bundleRaw []byte) {
-		seqErr.Go(func() error {
-			if err := a.logStore.setEntryBundle(ctx, bundleIndex, p, bundleRaw); err != nil {
+		numAdded := uint64(0)
+		bundleIndex, entriesInBundle := fromSeq/layout.EntryBundleWidth, fromSeq%layout.EntryBundleWidth
+		bundleWriter := &bytes.Buffer{}
+		if entriesInBundle > 0 {
+			// If the latest bundle is partial, we need to read the data it contains in for our newer, larger, bundle.
+			part, err := a.logStore.getEntryBundle(ctx, uint64(bundleIndex), uint8(entriesInBundle))
+			if err != nil {
 				return err
 			}
-			return nil
-		})
-	}
 
-	// Add new entries to the bundle
-	for _, e := range entries {
-		if _, err := bundleWriter.Write(e.BundleData); err != nil {
-			return fmt.Errorf("bundleWriter.Write: %v", err)
+			if _, err := bundleWriter.Write(part); err != nil {
+				return fmt.Errorf("bundleWriter: %v", err)
+			}
 		}
-		entriesInBundle++
-		fromSeq++
-		numAdded++
-		if entriesInBundle == layout.EntryBundleWidth {
-			//  This bundle is full, so we need to write it out...
-			klog.V(1).Infof("In-memory bundle idx %d is full, attempting write to GCS", bundleIndex)
-			goSetEntryBundle(ctx, bundleIndex, 0, bundleWriter.Bytes())
-			// ... and prepare the next entry bundle for any remaining entries in the batch
-			bundleIndex++
-			entriesInBundle = 0
-			// Don't use Reset/Truncate here - the backing []bytes is still being used by goSetEntryBundle above.
-			bundleWriter = &bytes.Buffer{}
-			klog.V(1).Infof("Starting to fill in-memory bundle idx %d", bundleIndex)
+
+		seqErr := errgroup.Group{}
+
+		// goSetEntryBundle is a function which uses seqErr to spin off a go-routine to write out an entry bundle.
+		// It's used in the for loop below.
+		goSetEntryBundle := func(ctx context.Context, bundleIndex uint64, p uint8, bundleRaw []byte) {
+			seqErr.Go(func() error {
+				if err := a.logStore.setEntryBundle(ctx, bundleIndex, p, bundleRaw); err != nil {
+					return err
+				}
+				return nil
+			})
 		}
-	}
-	// If we have a partial bundle remaining once we've added all the entries from the batch,
-	// this needs writing out too.
-	if entriesInBundle > 0 {
-		klog.V(1).Infof("Attempting to write in-memory partial bundle idx %d.%d to GCS", bundleIndex, entriesInBundle)
-		goSetEntryBundle(ctx, bundleIndex, uint8(entriesInBundle), bundleWriter.Bytes())
-	}
-	return seqErr.Wait()
+
+		// Add new entries to the bundle
+		for _, e := range entries {
+			if _, err := bundleWriter.Write(e.BundleData); err != nil {
+				return fmt.Errorf("bundleWriter.Write: %v", err)
+			}
+			entriesInBundle++
+			fromSeq++
+			numAdded++
+			if entriesInBundle == layout.EntryBundleWidth {
+				//  This bundle is full, so we need to write it out...
+				klog.V(1).Infof("In-memory bundle idx %d is full, attempting write to GCS", bundleIndex)
+				goSetEntryBundle(ctx, bundleIndex, 0, bundleWriter.Bytes())
+				// ... and prepare the next entry bundle for any remaining entries in the batch
+				bundleIndex++
+				entriesInBundle = 0
+				// Don't use Reset/Truncate here - the backing []bytes is still being used by goSetEntryBundle above.
+				bundleWriter = &bytes.Buffer{}
+				klog.V(1).Infof("Starting to fill in-memory bundle idx %d", bundleIndex)
+			}
+		}
+		// If we have a partial bundle remaining once we've added all the entries from the batch,
+		// this needs writing out too.
+		if entriesInBundle > 0 {
+			klog.V(1).Infof("Attempting to write in-memory partial bundle idx %d.%d to GCS", bundleIndex, entriesInBundle)
+			goSetEntryBundle(ctx, bundleIndex, uint8(entriesInBundle), bundleWriter.Bytes())
+		}
+		return seqErr.Wait()
+	})
 }
 
 // spannerCoordinator uses Cloud Spanner to provide
@@ -803,99 +794,98 @@ func (s *spannerCoordinator) checkDataCompatibility(ctx context.Context) error {
 // This is achieved by storing the passed-in entries in the Seq table in Spanner, keyed by the
 // index assigned to the first entry in the batch.
 func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tessera.Entry) error {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.assignEntries")
-	defer span.End()
+	return otel.TraceErr(ctx, "tessera.storage.gcp.assignEntries", tracer, func(ctx context.Context, span trace.Span) error {
+		span.SetAttributes(numEntriesKey.Int(len(entries)))
 
-	span.SetAttributes(numEntriesKey.Int(len(entries)))
-
-	// First grab the treeSize in a non-locking read-only fashion (we don't want to block/collide with integration).
-	// We'll use this value to determine whether we need to apply back-pressure.
-	var treeSize int64
-	if row, err := s.dbPool.Single().ReadRow(ctx, "IntCoord", spanner.Key{0}, []string{"seq"}); err != nil {
-		return err
-	} else {
-		if err := row.Column(0, &treeSize); err != nil {
-			return fmt.Errorf("failed to read integration coordination info: %v", err)
+		// First grab the treeSize in a non-locking read-only fashion (we don't want to block/collide with integration).
+		// We'll use this value to determine whether we need to apply back-pressure.
+		var treeSize int64
+		if row, err := s.dbPool.Single().ReadRow(ctx, "IntCoord", spanner.Key{0}, []string{"seq"}); err != nil {
+			return err
+		} else {
+			if err := row.Column(0, &treeSize); err != nil {
+				return fmt.Errorf("failed to read integration coordination info: %v", err)
+			}
 		}
-	}
-	span.SetAttributes(treeSizeKey.Int64(treeSize))
+		span.SetAttributes(treeSizeKey.Int64(treeSize))
 
-	var next int64 // Unfortunately, Spanner doesn't support uint64 so we'll have to cast around a bit.
+		var next int64 // Unfortunately, Spanner doesn't support uint64 so we'll have to cast around a bit.
 
-	_, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
-		// First we need to grab the next available sequence number from the SeqCoord table.
-		row, err := txn.ReadRowWithOptions(ctx, "SeqCoord", spanner.Key{0}, []string{"next"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
-		if err != nil {
-			return fmt.Errorf("failed to read SeqCoord: %w", err)
-		}
-		if err := row.Columns(&next); err != nil {
-			return fmt.Errorf("failed to parse next column: %v", err)
-		}
-
-		// Check whether there are too many outstanding entries and we should apply
-		// back-pressure.
-		if outstanding := next - treeSize; outstanding > int64(s.maxOutstanding) {
-			return tessera.ErrPushbackIntegration
-		}
-
-		var mutations []*spanner.Mutation
-		next := uint64(next) // Shadow next with a uint64 version of the same value to save on casts.
-		startFrom := next
-		var sequencedEntries []storage.SequencedEntry
-		currentBatchByteSize := 0
-		// Assign provisional sequence numbers to entries.
-		// We need to do this here in order to support serialisations which include the log position.
-		for i, e := range entries {
-			sequencedEntry := storage.SequencedEntry{
-				BundleData: e.MarshalBundleData(startFrom + uint64(i)),
-				LeafHash:   e.LeafHash(),
+		_, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+			// First we need to grab the next available sequence number from the SeqCoord table.
+			row, err := txn.ReadRowWithOptions(ctx, "SeqCoord", spanner.Key{0}, []string{"next"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+			if err != nil {
+				return fmt.Errorf("failed to read SeqCoord: %w", err)
+			}
+			if err := row.Columns(&next); err != nil {
+				return fmt.Errorf("failed to parse next column: %v", err)
 			}
 
-			// If adding this entry would make the batch too big, we need to flush the original batch.
-			if len(sequencedEntries) > 0 && currentBatchByteSize+len(sequencedEntry.BundleData) > s.seqTableMaxBatchByteSize {
-				// Gob-encode the batch of entries and add it to the mutation.
+			// Check whether there are too many outstanding entries and we should apply
+			// back-pressure.
+			if outstanding := next - treeSize; outstanding > int64(s.maxOutstanding) {
+				return tessera.ErrPushbackIntegration
+			}
+
+			var mutations []*spanner.Mutation
+			next := uint64(next) // Shadow next with a uint64 version of the same value to save on casts.
+			startFrom := next
+			var sequencedEntries []storage.SequencedEntry
+			currentBatchByteSize := 0
+			// Assign provisional sequence numbers to entries.
+			// We need to do this here in order to support serialisations which include the log position.
+			for i, e := range entries {
+				sequencedEntry := storage.SequencedEntry{
+					BundleData: e.MarshalBundleData(startFrom + uint64(i)),
+					LeafHash:   e.LeafHash(),
+				}
+
+				// If adding this entry would make the batch too big, we need to flush the original batch.
+				if len(sequencedEntries) > 0 && currentBatchByteSize+len(sequencedEntry.BundleData) > s.seqTableMaxBatchByteSize {
+					// Gob-encode the batch of entries and add it to the mutation.
+					m, err := s.addSeqMutation(next, sequencedEntries)
+					if err != nil {
+						return fmt.Errorf("failed to addSeqMutation: %v", err)
+					}
+					mutations = append(mutations, m)
+					next += uint64(len(sequencedEntries))
+
+					// Reset our batch variables, and clear the batch slice now that it's been added to the
+					// mutation.
+					sequencedEntries = nil
+					currentBatchByteSize = 0
+				}
+
+				sequencedEntries = append(sequencedEntries, sequencedEntry)
+				currentBatchByteSize += len(sequencedEntry.BundleData)
+			}
+
+			// Insert the last batch of entries if there are any.
+			if len(sequencedEntries) > 0 {
 				m, err := s.addSeqMutation(next, sequencedEntries)
 				if err != nil {
 					return fmt.Errorf("failed to addSeqMutation: %v", err)
 				}
 				mutations = append(mutations, m)
 				next += uint64(len(sequencedEntries))
-
-				// Reset our batch variables, and clear the batch slice now that it's been added to the
-				// mutation.
-				sequencedEntries = nil
-				currentBatchByteSize = 0
 			}
 
-			sequencedEntries = append(sequencedEntries, sequencedEntry)
-			currentBatchByteSize += len(sequencedEntry.BundleData)
-		}
+			// and update the next-available sequence number row in SeqCoord.
+			mutations = append(mutations, spanner.Update("SeqCoord", []string{"id", "next"}, []any{0, int64(next)}))
 
-		// Insert the last batch of entries if there are any.
-		if len(sequencedEntries) > 0 {
-			m, err := s.addSeqMutation(next, sequencedEntries)
-			if err != nil {
-				return fmt.Errorf("failed to addSeqMutation: %v", err)
+			if err := txn.BufferWrite(mutations); err != nil {
+				return fmt.Errorf("failed to apply TX: %v", err)
 			}
-			mutations = append(mutations, m)
-			next += uint64(len(sequencedEntries))
-		}
 
-		// and update the next-available sequence number row in SeqCoord.
-		mutations = append(mutations, spanner.Update("SeqCoord", []string{"id", "next"}, []any{0, int64(next)}))
+			return nil
+		})
 
-		if err := txn.BufferWrite(mutations); err != nil {
-			return fmt.Errorf("failed to apply TX: %v", err)
+		if err != nil {
+			return fmt.Errorf("failed to flush batch: %w", err)
 		}
 
 		return nil
 	})
-
-	if err != nil {
-		return fmt.Errorf("failed to flush batch: %w", err)
-	}
-
-	return nil
 }
 
 // addSeqMutation returns a mutation to the Seq table for the given sequence number and entries.
@@ -920,106 +910,105 @@ func (s *spannerCoordinator) addSeqMutation(seq uint64, entries []storage.Sequen
 //
 // Returns true if some entries were consumed as a weak signal that there may be further entries waiting to be consumed.
 func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f consumeFunc, forceUpdate bool) (bool, error) {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.consumeEntries")
-	defer span.End()
-
-	didWork := false
-	_, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
-		// Figure out which is the starting index of sequenced entries to start consuming from.
-		row, err := txn.ReadRowWithOptions(ctx, "IntCoord", spanner.Key{0}, []string{"seq"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
-		if err != nil {
-			return err
-		}
-		var fromSeq int64 // Spanner doesn't support uint64
-		if err := row.Columns(&fromSeq); err != nil {
-			return fmt.Errorf("failed to read integration coordination info: %v", err)
-		}
-
-		// See how much potential work there is to do and trim our limit accordingly.
-		row, err = txn.ReadRow(ctx, "SeqCoord", spanner.Key{0}, []string{"next"})
-		if err != nil {
-			return err
-		}
-		var endSeq int64 // Spanner doesn't support uint64
-		if err := row.Columns(&endSeq); err != nil {
-			return fmt.Errorf("failed to read sequence coordination info: %v", err)
-		}
-		if endSeq == fromSeq {
-			return nil
-		}
-		if l := fromSeq + int64(limit); l < endSeq {
-			endSeq = l
-		}
-
-		klog.V(1).Infof("Consuming bundles start from %d to at most %d", fromSeq, endSeq-1)
-
-		// Now read the sequenced starting at the index we got above.
-		rows := txn.ReadWithOptions(ctx, "Seq",
-			spanner.KeyRange{Start: spanner.Key{0, fromSeq}, End: spanner.Key{0, endSeq}},
-			[]string{"seq", "v"},
-			&spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
-		defer rows.Stop()
-
-		seqsConsumed := []int64{}
-		entries := make([]storage.SequencedEntry, 0, endSeq-fromSeq)
-		orderCheck := fromSeq
-		for {
-			row, err := rows.Next()
-			if row == nil || err == iterator.Done {
-				break
-			}
-
-			var vGob []byte
-			var seq int64 // spanner doesn't have uint64
-			if err := row.Columns(&seq, &vGob); err != nil {
-				return fmt.Errorf("failed to scan seq row: %v", err)
-			}
-
-			if orderCheck != seq {
-				return fmt.Errorf("integrity fail - expected seq %d, but found %d", orderCheck, seq)
-			}
-
-			g := gob.NewDecoder(bytes.NewReader(vGob))
-			b := []storage.SequencedEntry{}
-			if err := g.Decode(&b); err != nil {
-				return fmt.Errorf("failed to deserialise v: %v", err)
-			}
-			entries = append(entries, b...)
-			seqsConsumed = append(seqsConsumed, seq)
-			orderCheck += int64(len(b))
-		}
-		if len(seqsConsumed) == 0 && !forceUpdate {
-			klog.V(1).Info("Found no rows to sequence")
-			return nil
-		}
-
-		// Call consumeFunc with the entries we've found
-		newRoot, err := f(ctx, uint64(fromSeq), entries)
-		if err != nil {
-			return err
-		}
-
-		// consumeFunc was successful, so we can update our coordination row, and delete the row(s) for
-		// the then consumed entries.
-		m := make([]*spanner.Mutation, 0)
-		m = append(m, spanner.Update("IntCoord", []string{"id", "seq", "rootHash"}, []any{0, int64(orderCheck), newRoot}))
-		for _, c := range seqsConsumed {
-			m = append(m, spanner.Delete("Seq", spanner.Key{0, c}))
-		}
-		if len(m) > 0 {
-			if err := txn.BufferWrite(m); err != nil {
+	return otel.Trace(ctx, "tessera.storage.gcp.consumeEntries", tracer, func(ctx context.Context, span trace.Span) (bool, error) {
+		didWork := false
+		_, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+			// Figure out which is the starting index of sequenced entries to start consuming from.
+			row, err := txn.ReadRowWithOptions(ctx, "IntCoord", spanner.Key{0}, []string{"seq"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+			if err != nil {
 				return err
 			}
+			var fromSeq int64 // Spanner doesn't support uint64
+			if err := row.Columns(&fromSeq); err != nil {
+				return fmt.Errorf("failed to read integration coordination info: %v", err)
+			}
+
+			// See how much potential work there is to do and trim our limit accordingly.
+			row, err = txn.ReadRow(ctx, "SeqCoord", spanner.Key{0}, []string{"next"})
+			if err != nil {
+				return err
+			}
+			var endSeq int64 // Spanner doesn't support uint64
+			if err := row.Columns(&endSeq); err != nil {
+				return fmt.Errorf("failed to read sequence coordination info: %v", err)
+			}
+			if endSeq == fromSeq {
+				return nil
+			}
+			if l := fromSeq + int64(limit); l < endSeq {
+				endSeq = l
+			}
+
+			klog.V(1).Infof("Consuming bundles start from %d to at most %d", fromSeq, endSeq-1)
+
+			// Now read the sequenced starting at the index we got above.
+			rows := txn.ReadWithOptions(ctx, "Seq",
+				spanner.KeyRange{Start: spanner.Key{0, fromSeq}, End: spanner.Key{0, endSeq}},
+				[]string{"seq", "v"},
+				&spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+			defer rows.Stop()
+
+			seqsConsumed := []int64{}
+			entries := make([]storage.SequencedEntry, 0, endSeq-fromSeq)
+			orderCheck := fromSeq
+			for {
+				row, err := rows.Next()
+				if row == nil || err == iterator.Done {
+					break
+				}
+
+				var vGob []byte
+				var seq int64 // spanner doesn't have uint64
+				if err := row.Columns(&seq, &vGob); err != nil {
+					return fmt.Errorf("failed to scan seq row: %v", err)
+				}
+
+				if orderCheck != seq {
+					return fmt.Errorf("integrity fail - expected seq %d, but found %d", orderCheck, seq)
+				}
+
+				g := gob.NewDecoder(bytes.NewReader(vGob))
+				b := []storage.SequencedEntry{}
+				if err := g.Decode(&b); err != nil {
+					return fmt.Errorf("failed to deserialise v: %v", err)
+				}
+				entries = append(entries, b...)
+				seqsConsumed = append(seqsConsumed, seq)
+				orderCheck += int64(len(b))
+			}
+			if len(seqsConsumed) == 0 && !forceUpdate {
+				klog.V(1).Info("Found no rows to sequence")
+				return nil
+			}
+
+			// Call consumeFunc with the entries we've found
+			newRoot, err := f(ctx, uint64(fromSeq), entries)
+			if err != nil {
+				return err
+			}
+
+			// consumeFunc was successful, so we can update our coordination row, and delete the row(s) for
+			// the then consumed entries.
+			m := make([]*spanner.Mutation, 0)
+			m = append(m, spanner.Update("IntCoord", []string{"id", "seq", "rootHash"}, []any{0, int64(orderCheck), newRoot}))
+			for _, c := range seqsConsumed {
+				m = append(m, spanner.Delete("Seq", spanner.Key{0, c}))
+			}
+			if len(m) > 0 {
+				if err := txn.BufferWrite(m); err != nil {
+					return err
+				}
+			}
+
+			didWork = true
+			return nil
+		})
+		if err != nil {
+			return false, err
 		}
 
-		didWork = true
-		return nil
+		return didWork, nil
 	})
-	if err != nil {
-		return false, err
-	}
-
-	return didWork, nil
 }
 
 // currentTree returns the size and root hash of the currently integrated tree.
@@ -1065,79 +1054,78 @@ func (s *spannerCoordinator) nextIndex(ctx context.Context) (uint64, error) {
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
 func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) error {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.publishCheckpoint")
-	defer span.End()
+	return otel.TraceErr(ctx, "tessera.storage.gcp.publishCheckpoint", tracer, func(ctx context.Context, span trace.Span) error {
+		// outcomeAttrs is used to track any attributes which need to be attached to metrics based on the outcome of the attempt to publish.
+		var outcomeAttrs []attribute.KeyValue
+		start := time.Now()
 
-	// outcomeAttrs is used to track any attributes which need to be attached to metrics based on the outcome of the attempt to publish.
-	var outcomeAttrs []attribute.KeyValue
-	start := time.Now()
+		if _, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+			// Reset outcome attributes from any prior transaction attempts.
+			outcomeAttrs = []attribute.KeyValue{}
 
-	if _, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
-		// Reset outcome attributes from any prior transaction attempts.
-		outcomeAttrs = []attribute.KeyValue{}
-
-		pRow, err := txn.ReadRowWithOptions(ctx, "PubCoord", spanner.Key{0}, []string{"publishedAt", "size"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
-		if err != nil {
-			return fmt.Errorf("failed to read PubCoord: %w", err)
-		}
-		var pubAt time.Time
-		var lastSize spanner.NullInt64
-		if err := pRow.Columns(&pubAt, &lastSize); err != nil {
-			return fmt.Errorf("failed to parse PubCoord: %v", err)
-		}
-
-		cpAge := time.Since(pubAt)
-		if cpAge < minStaleActive {
-			klog.V(1).Infof("publishCheckpoint: last checkpoint published %s ago (< required %s), not publishing new checkpoint", cpAge, minStaleActive)
-			outcomeAttrs = append(outcomeAttrs, errorTypeKey.String("skipped"))
-			return nil
-		}
-
-		// Can't just use currentTree() here as the spanner emulator doesn't do nested transactions, so do it manually:
-		row, err := txn.ReadRow(ctx, "IntCoord", spanner.Key{0}, []string{"seq", "rootHash"})
-		if err != nil {
-			return fmt.Errorf("failed to read IntCoord: %w", err)
-		}
-		var fromSeq int64 // Spanner doesn't support uint64
-		var rootHash []byte
-		if err := row.Columns(&fromSeq, &rootHash); err != nil {
-			return fmt.Errorf("failed to parse integration coordination info: %v", err)
-		}
-
-		currentSize := uint64(fromSeq)
-		shouldPublish := minStaleRepub > 0 && cpAge >= minStaleRepub
-		if !shouldPublish {
-			if !lastSize.Valid {
-				// If we don't know the last published size, we should probably publish to be safe/self-heal.
-				shouldPublish = true
-			} else if currentSize > uint64(lastSize.Int64) {
-				shouldPublish = true
+			pRow, err := txn.ReadRowWithOptions(ctx, "PubCoord", spanner.Key{0}, []string{"publishedAt", "size"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+			if err != nil {
+				return fmt.Errorf("failed to read PubCoord: %w", err)
 			}
-		}
+			var pubAt time.Time
+			var lastSize spanner.NullInt64
+			if err := pRow.Columns(&pubAt, &lastSize); err != nil {
+				return fmt.Errorf("failed to parse PubCoord: %v", err)
+			}
 
-		if !shouldPublish {
-			klog.V(1).Infof("publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
-			outcomeAttrs = append(outcomeAttrs, errorTypeKey.String("skipped_no_growth"))
+			cpAge := time.Since(pubAt)
+			if cpAge < minStaleActive {
+				klog.V(1).Infof("publishCheckpoint: last checkpoint published %s ago (< required %s), not publishing new checkpoint", cpAge, minStaleActive)
+				outcomeAttrs = append(outcomeAttrs, errorTypeKey.String("skipped"))
+				return nil
+			}
+
+			// Can't just use currentTree() here as the spanner emulator doesn't do nested transactions, so do it manually:
+			row, err := txn.ReadRow(ctx, "IntCoord", spanner.Key{0}, []string{"seq", "rootHash"})
+			if err != nil {
+				return fmt.Errorf("failed to read IntCoord: %w", err)
+			}
+			var fromSeq int64 // Spanner doesn't support uint64
+			var rootHash []byte
+			if err := row.Columns(&fromSeq, &rootHash); err != nil {
+				return fmt.Errorf("failed to parse integration coordination info: %v", err)
+			}
+
+			currentSize := uint64(fromSeq)
+			shouldPublish := minStaleRepub > 0 && cpAge >= minStaleRepub
+			if !shouldPublish {
+				if !lastSize.Valid {
+					// If we don't know the last published size, we should probably publish to be safe/self-heal.
+					shouldPublish = true
+				} else if currentSize > uint64(lastSize.Int64) {
+					shouldPublish = true
+				}
+			}
+
+			if !shouldPublish {
+				klog.V(1).Infof("publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
+				outcomeAttrs = append(outcomeAttrs, errorTypeKey.String("skipped_no_growth"))
+				return nil
+			}
+
+			klog.V(1).Infof("publishCheckpoint: updating checkpoint (replacing %s old checkpoint)", cpAge)
+
+			if err := f(ctx, currentSize, rootHash); err != nil {
+				return err
+			}
+			if err := txn.BufferWrite([]*spanner.Mutation{spanner.Update("PubCoord", []string{"id", "publishedAt", "size"}, []any{0, time.Now(), int64(currentSize)})}); err != nil {
+				return err
+			}
+
 			return nil
-		}
-
-		klog.V(1).Infof("publishCheckpoint: updating checkpoint (replacing %s old checkpoint)", cpAge)
-
-		if err := f(ctx, currentSize, rootHash); err != nil {
+		}); err != nil {
+			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 			return err
 		}
-		if err := txn.BufferWrite([]*spanner.Mutation{spanner.Update("PubCoord", []string{"id", "publishedAt", "size"}, []any{0, time.Now(), int64(currentSize)})}); err != nil {
-			return err
-		}
-
+		opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
+		publishCount.Add(ctx, 1, metric.WithAttributes(outcomeAttrs...))
 		return nil
-	}); err != nil {
-		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
-		return err
-	}
-	opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
-	publishCount.Add(ctx, 1, metric.WithAttributes(outcomeAttrs...))
-	return nil
+	})
 }
 
 // garbageCollect will identify up to maxBundles unneeded partial entry bundles (and any unneeded partial tiles which sit above them in the tree) and
@@ -1218,25 +1206,24 @@ type gcsStorage struct {
 
 // getObject returns the data and generation of the specified object, or an error.
 func (s *gcsStorage) getObject(ctx context.Context, obj string) ([]byte, int64, error) {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.getObject")
-	defer span.End()
+	return otel.Trace2(ctx, "tessera.storage.gcp.getObject", tracer, func(ctx context.Context, span trace.Span) ([]byte, int64, error) {
+		if s.bucketPrefix != "" {
+			obj = filepath.Join(s.bucketPrefix, obj)
+		}
 
-	if s.bucketPrefix != "" {
-		obj = filepath.Join(s.bucketPrefix, obj)
-	}
+		span.SetAttributes(objectPathKey.String(obj))
 
-	span.SetAttributes(objectPathKey.String(obj))
+		r, err := s.gcsClient.Bucket(s.bucket).Object(obj).NewReader(ctx)
+		if err != nil {
+			return nil, -1, fmt.Errorf("getObject: failed to create reader for object %q in bucket %q: %w", obj, s.bucket, err)
+		}
 
-	r, err := s.gcsClient.Bucket(s.bucket).Object(obj).NewReader(ctx)
-	if err != nil {
-		return nil, -1, fmt.Errorf("getObject: failed to create reader for object %q in bucket %q: %w", obj, s.bucket, err)
-	}
-
-	d, err := io.ReadAll(r)
-	if err != nil {
-		return nil, -1, fmt.Errorf("failed to read %q: %v", obj, err)
-	}
-	return d, r.Attrs.Generation, r.Close()
+		d, err := io.ReadAll(r)
+		if err != nil {
+			return nil, -1, fmt.Errorf("failed to read %q: %v", obj, err)
+		}
+		return d, r.Attrs.Generation, r.Close()
+	})
 }
 
 // setObject stores the provided data in the specified object, optionally gated by a condition.
@@ -1248,96 +1235,94 @@ func (s *gcsStorage) getObject(ctx context.Context, obj string) ([]byte, int64, 
 // the currently stored data is bit-for-bit identical to the data to-be-written.
 // This is intended to provide idempotentency for writes.
 func (s *gcsStorage) setObject(ctx context.Context, objName string, data []byte, cond *gcs.Conditions, contType string, cacheCtl string) error {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.setObject")
-	defer span.End()
-
-	if s.bucketPrefix != "" {
-		objName = filepath.Join(s.bucketPrefix, objName)
-	}
-
-	span.SetAttributes(objectPathKey.String(objName))
-
-	bkt := s.gcsClient.Bucket(s.bucket)
-	obj := bkt.Object(objName)
-
-	var w *gcs.Writer
-	if cond == nil {
-		w = obj.NewWriter(ctx)
-
-	} else {
-		w = obj.If(*cond).NewWriter(ctx)
-	}
-	w.ContentType = contType
-	w.CacheControl = cacheCtl
-	// Limit the amount of memory used for buffers, see https://pkg.go.dev/cloud.google.com/go/storage#Writer
-	w.ChunkSize = len(data) + 1024
-	if _, err := w.Write(data); err != nil {
-		return fmt.Errorf("failed to write object %q to bucket %q: %w", objName, s.bucket, err)
-	}
-
-	if err := w.Close(); err != nil {
-		// If we run into a precondition failure error, check that the object
-		// which exists contains the same content that we want to write.
-		// If so, we can consider this write to be idempotently successful.
-		preconditionFailed := false
-
-		// Helpfully, the mechanism for detecting a failed precodition differs depending
-		// on whether you're using the HTTP or gRPC GCS client, so test both.
-		if ee, ok := err.(*googleapi.Error); ok && ee.Code == http.StatusPreconditionFailed {
-			preconditionFailed = true
-		} else if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition {
-			preconditionFailed = true
-		}
-		if preconditionFailed {
-			existing, existingGen, err := s.getObject(ctx, objName)
-			if err != nil {
-				return fmt.Errorf("failed to fetch existing content for %q (@%d): %v", objName, existingGen, err)
-			}
-			if !bytes.Equal(existing, data) {
-				span.AddEvent("Non-idempotent write")
-				klog.Errorf("Resource %q non-idempotent write:\n%s", objName, cmp.Diff(existing, data))
-				return fmt.Errorf("precondition failed: resource content for %q differs from data to-be-written", objName)
-			}
-
-			span.AddEvent("Idempotent write")
-			klog.V(2).Infof("setObject: identical resource already exists for %q, continuing", objName)
-			return nil
+	return otel.TraceErr(ctx, "tessera.storage.gcp.setObject", tracer, func(ctx context.Context, span trace.Span) error {
+		if s.bucketPrefix != "" {
+			objName = filepath.Join(s.bucketPrefix, objName)
 		}
 
-		return fmt.Errorf("failed to close write on %q: %v", objName, err)
-	}
-	return nil
+		span.SetAttributes(objectPathKey.String(objName))
+
+		bkt := s.gcsClient.Bucket(s.bucket)
+		obj := bkt.Object(objName)
+
+		var w *gcs.Writer
+		if cond == nil {
+			w = obj.NewWriter(ctx)
+
+		} else {
+			w = obj.If(*cond).NewWriter(ctx)
+		}
+		w.ContentType = contType
+		w.CacheControl = cacheCtl
+		// Limit the amount of memory used for buffers, see https://pkg.go.dev/cloud.google.com/go/storage#Writer
+		w.ChunkSize = len(data) + 1024
+		if _, err := w.Write(data); err != nil {
+			return fmt.Errorf("failed to write object %q to bucket %q: %w", objName, s.bucket, err)
+		}
+
+		if err := w.Close(); err != nil {
+			// If we run into a precondition failure error, check that the object
+			// which exists contains the same content that we want to write.
+			// If so, we can consider this write to be idempotently successful.
+			preconditionFailed := false
+
+			// Helpfully, the mechanism for detecting a failed precodition differs depending
+			// on whether you're using the HTTP or gRPC GCS client, so test both.
+			if ee, ok := err.(*googleapi.Error); ok && ee.Code == http.StatusPreconditionFailed {
+				preconditionFailed = true
+			} else if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition {
+				preconditionFailed = true
+			}
+			if preconditionFailed {
+				existing, existingGen, err := s.getObject(ctx, objName)
+				if err != nil {
+					return fmt.Errorf("failed to fetch existing content for %q (@%d): %v", objName, existingGen, err)
+				}
+				if !bytes.Equal(existing, data) {
+					span.AddEvent("Non-idempotent write")
+					klog.Errorf("Resource %q non-idempotent write:\n%s", objName, cmp.Diff(existing, data))
+					return fmt.Errorf("precondition failed: resource content for %q differs from data to-be-written", objName)
+				}
+
+				span.AddEvent("Idempotent write")
+				klog.V(2).Infof("setObject: identical resource already exists for %q, continuing", objName)
+				return nil
+			}
+
+			return fmt.Errorf("failed to close write on %q: %v", objName, err)
+		}
+		return nil
+	})
 }
 
 // deleteObjectsWithPrefix removes any objects with the provided prefix from GCS.
 func (s *gcsStorage) deleteObjectsWithPrefix(ctx context.Context, objPrefix string) error {
-	ctx, span := tracer.Start(ctx, "tessera.storage.gcp.deleteObject")
-	defer span.End()
+	return otel.TraceErr(ctx, "tessera.storage.gcp.deleteObject", tracer, func(ctx context.Context, span trace.Span) error {
+		if s.bucketPrefix != "" {
+			objPrefix = filepath.Join(s.bucketPrefix, objPrefix)
+		}
+		span.SetAttributes(objectPathKey.String(objPrefix))
 
-	if s.bucketPrefix != "" {
-		objPrefix = filepath.Join(s.bucketPrefix, objPrefix)
-	}
-	span.SetAttributes(objectPathKey.String(objPrefix))
+		bkt := s.gcsClient.Bucket(s.bucket)
 
-	bkt := s.gcsClient.Bucket(s.bucket)
-
-	errs := []error(nil)
-	it := bkt.Objects(ctx, &gcs.Query{Prefix: objPrefix})
-	for {
-		attr, err := it.Next()
-		if err != nil {
-			if err == iterator.Done {
-				break
+		errs := []error(nil)
+		it := bkt.Objects(ctx, &gcs.Query{Prefix: objPrefix})
+		for {
+			attr, err := it.Next()
+			if err != nil {
+				if err == iterator.Done {
+					break
+				}
+				return err
 			}
-			return err
+			klog.V(2).Infof("Deleting object %s", attr.Name)
+			if err := bkt.Object(attr.Name).Delete(ctx); err != nil {
+				errs = append(errs, err)
+			}
 		}
-		klog.V(2).Infof("Deleting object %s", attr.Name)
-		if err := bkt.Object(attr.Name).Delete(ctx); err != nil {
-			errs = append(errs, err)
-		}
-	}
 
-	return errors.Join(errs...)
+		return errors.Join(errs...)
+	})
 }
 
 // MigrationWriter creates a new GCP storage for the MigrationTarget lifecycle mode.
