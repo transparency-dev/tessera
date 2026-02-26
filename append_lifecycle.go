@@ -32,6 +32,7 @@ import (
 	"github.com/transparency-dev/tessera/internal/witness"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/mod/sumdb/note"
 	"k8s.io/klog/v2"
 )
@@ -641,56 +642,55 @@ func (o *AppendOptions) WithAntispam(inMemEntries uint, as Antispam) *AppendOpti
 // CheckpointPublisher returns a function which should be used to create, sign, and potentially witness a new checkpoint.
 func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client) func(context.Context, uint64, []byte) ([]byte, error) {
 	return func(ctx context.Context, size uint64, root []byte) ([]byte, error) {
-		ctx, span := tracer.Start(ctx, "tessera.CheckpointPublisher")
-		defer span.End()
-
-		cp, err := o.newCP(ctx, size, root)
-		if err != nil {
-			return nil, fmt.Errorf("newCP: %v", err)
-		}
-		appenderSignedSize.Record(ctx, otel.Clamp64(size))
-
-		// Handle witnessing
-		{
-			// Figure out the likely size the witnesses are aware of, but don't fail hard if we're unable
-			// to do so:
-			// a) it could be that this is the first checkpoint we're publishing
-			// b) the witnessing protocol has a fallback path in case we get it wrong, anyway.
-			var oldSize uint64
-			oldCP, err := lr.ReadCheckpoint(ctx)
+		return otel.Trace(ctx, "tessera.CheckpointPublisher", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+			cp, err := o.newCP(ctx, size, root)
 			if err != nil {
-				klog.Infof("Failed to fetch old checkpoint: %v", err)
-			} else {
-				_, oldSize, _, err = parse.CheckpointUnsafe(oldCP)
+				return nil, fmt.Errorf("newCP: %v", err)
+			}
+			appenderSignedSize.Record(ctx, otel.Clamp64(size))
+
+			// Handle witnessing
+			{
+				// Figure out the likely size the witnesses are aware of, but don't fail hard if we're unable
+				// to do so:
+				// a) it could be that this is the first checkpoint we're publishing
+				// b) the witnessing protocol has a fallback path in case we get it wrong, anyway.
+				var oldSize uint64
+				oldCP, err := lr.ReadCheckpoint(ctx)
 				if err != nil {
-					return nil, fmt.Errorf("failed to parse old checkpoint: %v", err)
+					klog.Infof("Failed to fetch old checkpoint: %v", err)
+				} else {
+					_, oldSize, _, err = parse.CheckpointUnsafe(oldCP)
+					if err != nil {
+						return nil, fmt.Errorf("failed to parse old checkpoint: %v", err)
+					}
 				}
-			}
-			wg := witness.NewWitnessGateway(o.witnesses, httpClient, oldSize, lr.ReadTile)
+				wg := witness.NewWitnessGateway(o.witnesses, httpClient, oldSize, lr.ReadTile)
 
-			start := time.Now()
+				start := time.Now()
 
-			ctx, cancel := context.WithTimeout(ctx, o.witnessOpts.Timeout)
-			defer cancel()
+				ctx, cancel := context.WithTimeout(ctx, o.witnessOpts.Timeout)
+				defer cancel()
 
-			witAttr := []attribute.KeyValue{}
-			cp, err = wg.Witness(ctx, cp)
-			if err != nil {
-				if !o.witnessOpts.FailOpen {
-					appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(attribute.String("error.type", "failed")))
-					return nil, err
+				witAttr := []attribute.KeyValue{}
+				cp, err = wg.Witness(ctx, cp)
+				if err != nil {
+					if !o.witnessOpts.FailOpen {
+						appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(attribute.String("error.type", "failed")))
+						return nil, err
+					}
+					klog.Warningf("WitnessGateway: failing-open despite error: %v", err)
+					witAttr = append(witAttr, attribute.String("error.type", "failed_open"))
 				}
-				klog.Warningf("WitnessGateway: failing-open despite error: %v", err)
-				witAttr = append(witAttr, attribute.String("error.type", "failed_open"))
+
+				appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(witAttr...))
+				appenderWitnessedSize.Record(ctx, otel.Clamp64(size))
+				d := time.Since(start)
+				appenderWitnessHistogram.Record(ctx, d.Milliseconds(), metric.WithAttributes(witAttr...))
 			}
 
-			appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(witAttr...))
-			appenderWitnessedSize.Record(ctx, otel.Clamp64(size))
-			d := time.Since(start)
-			appenderWitnessHistogram.Record(ctx, d.Milliseconds(), metric.WithAttributes(witAttr...))
-		}
-
-		return cp, nil
+			return cp, nil
+		})
 	}
 }
 
@@ -747,27 +747,26 @@ func (o *AppendOptions) WithCheckpointSigner(s note.Signer, additionalSigners ..
 		}
 	}
 	o.newCP = func(ctx context.Context, size uint64, hash []byte) ([]byte, error) {
-		_, span := tracer.Start(ctx, "tessera.SignCheckpoint")
-		defer span.End()
+		return otel.Trace(ctx, "tessera.SignCheckpoint", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+			// If we're signing a zero-sized tree, the tlog-checkpoint spec says (via RFC6962) that
+			// the root must be SHA256 of the empty string, so we'll enforce that here:
+			if size == 0 {
+				emptyRoot := rfc6962.DefaultHasher.EmptyRoot()
+				hash = emptyRoot[:]
+			}
+			cpRaw := f_log.Checkpoint{
+				Origin: origin,
+				Size:   size,
+				Hash:   hash,
+			}.Marshal()
 
-		// If we're signing a zero-sized tree, the tlog-checkpoint spec says (via RFC6962) that
-		// the root must be SHA256 of the empty string, so we'll enforce that here:
-		if size == 0 {
-			emptyRoot := rfc6962.DefaultHasher.EmptyRoot()
-			hash = emptyRoot[:]
-		}
-		cpRaw := f_log.Checkpoint{
-			Origin: origin,
-			Size:   size,
-			Hash:   hash,
-		}.Marshal()
+			n, err := note.Sign(&note.Note{Text: string(cpRaw)}, append([]note.Signer{s}, additionalSigners...)...)
+			if err != nil {
+				return nil, fmt.Errorf("note.Sign: %w", err)
+			}
 
-		n, err := note.Sign(&note.Note{Text: string(cpRaw)}, append([]note.Signer{s}, additionalSigners...)...)
-		if err != nil {
-			return nil, fmt.Errorf("note.Sign: %w", err)
-		}
-
-		return n, nil
+			return n, nil
+		})
 	}
 	return o
 }

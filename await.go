@@ -21,7 +21,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/transparency-dev/tessera/internal/otel"
 	"github.com/transparency-dev/tessera/internal/parse"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/klog/v2"
 )
 
@@ -69,24 +71,23 @@ type PublicationAwaiter struct {
 // or in the event that there is an error getting a valid checkpoint, an error
 // will be returned from this method.
 func (a *PublicationAwaiter) Await(ctx context.Context, future IndexFuture) (Index, []byte, error) {
-	_, span := tracer.Start(ctx, "tessera.Await")
-	defer span.End()
+	return otel.Trace2(ctx, "tessera.Await", tracer, func(ctx context.Context, span trace.Span) (Index, []byte, error) {
+		i, err := future()
+		if err != nil {
+			return i, nil, err
+		}
 
-	i, err := future()
-	if err != nil {
-		return i, nil, err
-	}
-
-	a.c.L.Lock()
-	defer a.c.L.Unlock()
-	for (a.size <= i.Index && a.err == nil) && ctx.Err() == nil {
-		a.c.Wait()
-	}
-	// Ensure we propogate context done error, if any.
-	if err := ctx.Err(); err != nil {
-		a.err = err
-	}
-	return i, a.checkpoint, a.err
+		a.c.L.Lock()
+		defer a.c.L.Unlock()
+		for (a.size <= i.Index && a.err == nil) && ctx.Err() == nil {
+			a.c.Wait()
+		}
+		// Ensure we propogate context done error, if any.
+		if err := ctx.Err(); err != nil {
+			a.err = err
+		}
+		return i, a.checkpoint, a.err
+	})
 }
 
 // pollLoop MUST be called in a goroutine when constructing an PublicationAwaiter

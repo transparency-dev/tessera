@@ -59,7 +59,9 @@ import (
 	"github.com/transparency-dev/tessera/internal/migrate"
 	"github.com/transparency-dev/tessera/internal/parse"
 	storage "github.com/transparency-dev/tessera/storage/internal"
+	"github.com/transparency-dev/tessera/internal/otel"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
 
@@ -1473,35 +1475,34 @@ func (s *s3Storage) setObjectIfNoneMatch(ctx context.Context, objName string, da
 
 // deleteObjectsWithPrefix removes any objects with the provided prefix from S3.
 func (s *s3Storage) deleteObjectsWithPrefix(ctx context.Context, objPrefix string) error {
-	ctx, span := tracer.Start(ctx, "tessera.storage.aws.deleteObject")
-	defer span.End()
+	return otel.TraceErr(ctx, "tessera.storage.aws.deleteObject", tracer, func(ctx context.Context, span trace.Span) error {
+		if s.bucketPrefix != "" {
+			objPrefix = filepath.Join(s.bucketPrefix, objPrefix)
+		}
+		span.SetAttributes(objectPathKey.String(objPrefix))
 
-	if s.bucketPrefix != "" {
-		objPrefix = filepath.Join(s.bucketPrefix, objPrefix)
-	}
-	span.SetAttributes(objectPathKey.String(objPrefix))
-
-	l, err := s.s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-		Bucket: aws.String(s.bucket),
-		Prefix: aws.String(objPrefix),
+		l, err := s.s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket: aws.String(s.bucket),
+			Prefix: aws.String(objPrefix),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to list objects with prefix %q: %v", objPrefix, err)
+		}
+		di := &s3.DeleteObjectsInput{
+			Bucket: aws.String(s.bucket),
+			Delete: &types.Delete{
+				Objects: make([]types.ObjectIdentifier, 0, len(l.Contents)),
+			},
+		}
+		for _, k := range l.Contents {
+			klog.V(2).Infof("Deleting object %s", *k.Key)
+			di.Delete.Objects = append(di.Delete.Objects, types.ObjectIdentifier{Key: k.Key})
+		}
+		if _, err := s.s3Client.DeleteObjects(ctx, di); err != nil {
+			return fmt.Errorf("failed to delete objects: %v", err)
+		}
+		return nil
 	})
-	if err != nil {
-		return fmt.Errorf("failed to list objects with prefix %q: %v", objPrefix, err)
-	}
-	di := &s3.DeleteObjectsInput{
-		Bucket: aws.String(s.bucket),
-		Delete: &types.Delete{
-			Objects: make([]types.ObjectIdentifier, 0, len(l.Contents)),
-		},
-	}
-	for _, k := range l.Contents {
-		klog.V(2).Infof("Deleting object %s", *k.Key)
-		di.Delete.Objects = append(di.Delete.Objects, types.ObjectIdentifier{Key: k.Key})
-	}
-	if _, err := s.s3Client.DeleteObjects(ctx, di); err != nil {
-		return fmt.Errorf("failed to delete objects: %v", err)
-	}
-	return nil
 }
 
 func printDragonsWarning() {
