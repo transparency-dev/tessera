@@ -86,6 +86,13 @@ const (
 	// NOTE: if changing this version, you need to consider whether end-users are going to update their schema instances to be
 	// compatible with the new format, and provide a means to do it if so.
 	SchemaCompatibilityVersion = 1
+
+	// defaultIntegrationTimeout is the default context timeout applied when undertaking an integration task.
+	defaultIntegrationTimeout = 10 * time.Second
+	// defaultPublicationTimeout is the default context timeout applied when undertaking a checkpoint publication task.
+	defaultPublicationTimeout = 5 * time.Second
+	// defaultGCTimeout is the default context timeout applied when undertaking a garbage collection task.
+	defaultGCTimeout = 30 * time.Second
 )
 
 // Storage is an AWS based storage implementation for Tessera.
@@ -277,11 +284,10 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 		}
 
 		if err := otel.TraceErr(ctx, "tessera.storage.aws.integrateEntriesJob", tracer, func(ctx context.Context, span trace.Span) error {
-			// Don't quickloop for now, it causes issues updating checkpoint too frequently.
-			cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
+			ctx, cancel := context.WithTimeout(ctx, defaultIntegrationTimeout)
+			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
-			if _, err := a.sequencer.consumeEntries(cctx, DefaultIntegrationSizeLimit, a.integrateEntries, false); err != nil {
+			if _, err := a.sequencer.consumeEntries(ctx, DefaultIntegrationSizeLimit, a.integrateEntries, false); err != nil {
 				return err
 			}
 			select {
@@ -309,8 +315,16 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 		case <-a.treeUpdated:
 		case <-t.C:
 		}
-		if err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.updateCheckpoint); err != nil {
-			klog.Warningf("publishCheckpoint: %v", err)
+		if err := otel.TraceErr(ctx, "tessera.storage.aws.publishCheckpointJob", tracer, func(ctx context.Context, span trace.Span) error {
+			ctx, cancel := context.WithTimeout(ctx, defaultPublicationTimeout)
+			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
+
+			if err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.updateCheckpoint); err != nil {
+				return fmt.Errorf("publishCheckpoint failed: %v", err)
+			}
+			return nil
+		}); err != nil {
+			klog.Error(err)
 		}
 	}
 }
@@ -332,6 +346,9 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 		case <-t.C:
 		}
 		if err := otel.TraceErr(ctx, "tessera.storage.aws.garbageCollectJob", tracer, func(ctx context.Context, span trace.Span) error {
+			ctx, cancel := context.WithTimeout(ctx, defaultGCTimeout)
+			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
+
 			// Figure out the size of the latest published checkpoint - we can't be removing partial tiles implied by
 			// that checkpoint just because we've done an integration and know about a larger (but as yet unpublished)
 			// checkpoint!
@@ -368,9 +385,9 @@ func (a *Appender) init(ctx context.Context) error {
 			// No checkpoint exists, do a forced (possibly empty) integration to create one in a safe
 			// way (calling updateCP directly here would not be safe as it's outside the transactional
 			// framework which prevents the tree from rolling backwards or otherwise forking).
-			cctx, c := context.WithTimeout(ctx, 10*time.Second)
+			ctx, c := context.WithTimeout(ctx, 10*time.Second)
 			defer c()
-			if _, err := a.sequencer.consumeEntries(cctx, DefaultIntegrationSizeLimit, a.integrateEntries, true); err != nil {
+			if _, err := a.sequencer.consumeEntries(ctx, DefaultIntegrationSizeLimit, a.integrateEntries, true); err != nil {
 				return fmt.Errorf("forced integrate: %v", err)
 			}
 			select {
