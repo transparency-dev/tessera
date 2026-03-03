@@ -38,6 +38,9 @@ import (
 const (
 	DefaultMaxBatchSize      = 1500
 	DefaultPushbackThreshold = 2048
+
+	// defaultBatchTimeout is the max permitted duration for a single "chunk" of antispam updates.
+	defaultBatchTimeout = 10 * time.Second
 )
 
 var (
@@ -234,8 +237,12 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 
 		// Busy loop while there's work to be done
 		for moreWork := true; moreWork; {
+
 			err := f.as.db.Update(func(txn *badger.Txn) error {
 				return otel.TraceErr(ctx, "tessera.antispam.badger.FollowTxn", tracer, func(ctx context.Context, span trace.Span) error {
+					ctx, cancel := context.WithTimeout(ctx, defaultBatchTimeout)
+					defer cancel()
+
 					// Figure out the last entry we used to populate our antispam storage.
 					var followFrom uint64
 
@@ -353,7 +360,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 						return fmt.Errorf("failed to update follower state: %v", err)
 					}
 
-					return nil
+					return ctx.Err()
 				})
 			})
 			if err != nil {

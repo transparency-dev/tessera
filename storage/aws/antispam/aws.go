@@ -30,6 +30,8 @@ import (
 
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
+	"github.com/transparency-dev/tessera/internal/otel"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/klog/v2"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -47,6 +49,9 @@ const (
 	// NOTE: if changing this version, you need to consider whether end-users are going to update their schema instances to be
 	// compatible with the new format, and provide a means to do it if so.
 	SchemaCompatibilityVersion = 1
+
+	// defaultBatchTimeout is the max permitted duration for a single "chunk" of antispam updates.
+	defaultBatchTimeout = 10 * time.Second
 )
 
 // AntispamOpts allows configuration of some tunable options.
@@ -276,7 +281,10 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 				return
 			default:
 			}
-			err := func() error {
+			err := otel.TraceErr(ctx, "tessera.antispam.aws.FollowTask", tracer, func(ctx context.Context, span trace.Span) error {
+				ctx, cancel := context.WithTimeout(ctx, defaultBatchTimeout)
+				defer cancel()
+
 				tx, err := f.as.dbPool.BeginTx(ctx, &sql.TxOptions{
 					ReadOnly: false,
 				})
@@ -312,7 +320,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 						// We're caught up, so unblock pushback and go back to sleep
 						streamDone = true
 						f.as.pushBack.Store(false)
-						return nil
+						return ctx.Err()
 					default:
 						// size > followFrom, so there's more work to be done!
 					}
@@ -354,7 +362,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 				}
 
 				if len(curEntries) == 0 {
-					return nil
+					return ctx.Err()
 				}
 
 				klog.V(1).Infof("Inserting %d entries into antispam database (follow from %d of size %d)", len(curEntries), followFrom, logSize)
@@ -384,8 +392,8 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 					return err
 				}
 				tx = nil
-				return nil
-			}()
+				return ctx.Err()
+			})
 			if err != nil {
 				if err != errOutOfSync {
 					klog.Errorf("Failed to commit antispam population tx: %v", err)
