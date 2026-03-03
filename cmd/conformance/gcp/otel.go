@@ -25,9 +25,11 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 
+	"log/slog"
+	"os"
+
 	mexporter "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric"
 	texporter "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace"
-	"k8s.io/klog/v2"
 )
 
 // initOTel initialises the open telemetry support for metrics and tracing.
@@ -45,7 +47,7 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 		}
 		shutdownFuncs = nil
 		if err != nil {
-			klog.Errorf("OTel shutdown: %v", err)
+			slog.Error("OTel shutdown", "error", err)
 		}
 	}
 
@@ -60,12 +62,14 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 		resource.WithDetectors(gcp.NewDetector()),
 	)
 	if err != nil {
-		klog.Exitf("Failed to detect resources: %v", err)
+		slog.Error("Failed to detect resources", "error", err)
+		os.Exit(1)
 	}
 
 	me, err := mexporter.New()
 	if err != nil {
-		klog.Exitf("Failed to create metric exporter: %v", err)
+		slog.Error("Failed to create metric exporter", "error", err)
+		os.Exit(1)
 		return nil
 	}
 	// initialize a MeterProvider that periodically exports to the GCP exporter.
@@ -78,7 +82,8 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 
 	te, err := texporter.New()
 	if err != nil {
-		klog.Exitf("Failed to create trace exporter: %v", err)
+		slog.Error("Failed to create trace exporter", "error", err)
+		os.Exit(1)
 		return nil
 	}
 	// initialize a TracerProvier that periodically exports to the GCP exporter.

@@ -36,12 +36,13 @@ import (
 	adminpb "cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
 	"cloud.google.com/go/spanner/apiv1/spannerpb"
 
+	"log/slog"
+
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/internal/otel"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -189,6 +190,7 @@ func (d *AntispamStorage) Decorator() func(f tessera.AddFn) tessera.AddFn {
 //
 // This implements tessera.Antispam.
 func (d *AntispamStorage) Follower(b func([]byte) ([][]byte, error)) tessera.Follower {
+	ctx := context.Background()
 	f := &follower{
 		as:           d,
 		bundleHasher: b,
@@ -203,7 +205,7 @@ func (d *AntispamStorage) Follower(b func([]byte) ([][]byte, error)) tessera.Fol
 		r, _ := base64.StdEncoding.DecodeString(warn)
 		gzr, _ := gzip.NewReader(bytes.NewReader([]byte(r)))
 		w, _ := io.ReadAll(gzr)
-		klog.Warningf("%s\nWarning: you're running under the Spanner emulator - this is not a supported environment!\n\n", string(w))
+		slog.WarnContext(ctx, string(w)+"\nWarning: you're running under the Spanner emulator - this is not a supported environment!\n\n")
 
 		// Hack in a workaround for spannertest not supporting BatchWrites
 		f.updateIndex = emulatorWorkaroundUpdateIndexTx
@@ -376,7 +378,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 			})
 			if err != nil {
 				if err != errOutOfSync {
-					klog.Errorf("Failed to commit antispam population tx: %v", err)
+					slog.ErrorContext(ctx, "Failed to commit antispam population tx", "error", err)
 				}
 				stop()
 				next = nil
@@ -453,7 +455,7 @@ func createAndPrepareTables(ctx context.Context, spannerDB string, ddl []string,
 	}
 	defer func() {
 		if err := adminClient.Close(); err != nil {
-			klog.Warningf("adminClient.Close(): %v", err)
+			slog.WarnContext(ctx, "adminClient.Close() failed", "error", err)
 		}
 	}()
 
