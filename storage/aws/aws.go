@@ -284,6 +284,8 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 		}
 
 		if err := otel.TraceErr(ctx, "tessera.storage.aws.integrateEntriesJob", tracer, func(ctx context.Context, span trace.Span) error {
+			span.SetAttributes(otel.PeriodicKey.Bool(true))
+
 			ctx, cancel := context.WithTimeout(ctx, defaultIntegrationTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
@@ -316,6 +318,8 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 		case <-t.C:
 		}
 		if err := otel.TraceErr(ctx, "tessera.storage.aws.publishCheckpointJob", tracer, func(ctx context.Context, span trace.Span) error {
+			span.SetAttributes(otel.PeriodicKey.Bool(true))
+
 			ctx, cancel := context.WithTimeout(ctx, defaultPublicationTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
@@ -346,6 +350,8 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 		case <-t.C:
 		}
 		if err := otel.TraceErr(ctx, "tessera.storage.aws.garbageCollectJob", tracer, func(ctx context.Context, span trace.Span) error {
+			span.SetAttributes(otel.PeriodicKey.Bool(true))
+
 			ctx, cancel := context.WithTimeout(ctx, defaultGCTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
