@@ -63,6 +63,13 @@ const (
 	treeStateLock = treeStateFile + ".lock"
 
 	minCheckpointInterval = 100 * time.Millisecond
+
+	// defaultIntegrationTimeout is the default context timeout applied when undertaking an integration task.
+	defaultIntegrationTimeout = 10 * time.Second
+	// defaultPublicationTimeout is the default context timeout applied when undertaking a checkpoint publication task.
+	defaultPublicationTimeout = 5 * time.Second
+	// defaultGCTimeout is the default context timeout applied when undertaking a garbage collection task.
+	defaultGCTimeout = 30 * time.Second
 )
 
 // Storage implements storage functions for a POSIX filesystem.
@@ -143,26 +150,37 @@ func (s *Storage) newAppender(ctx context.Context, o *logResourceStorage, opts *
 	if err := a.initialise(ctx); err != nil {
 		return nil, nil, err
 	}
-	a.queue = storage.NewQueue(ctx, opts.BatchMaxAge(), opts.BatchMaxSize(), a.sequenceBatch)
+	a.queue = storage.NewQueue(ctx, opts.BatchMaxAge(), opts.BatchMaxSize(), func(ctx context.Context, entries []*tessera.Entry) error {
+		ctx, cancel := context.WithTimeout(ctx, defaultIntegrationTimeout)
+		defer cancel()
+		return a.sequenceBatch(ctx, entries)
+	})
 
-	go func(ctx context.Context, i time.Duration) {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-a.cpUpdated:
-			case <-time.After(i):
-			}
-			if err := a.publishCheckpoint(ctx, i, opts.CheckpointRepublishInterval()); err != nil {
-				klog.Warningf("publishCheckpoint: %v", err)
-			}
-		}
-	}(ctx, opts.CheckpointInterval())
+	go a.publishCheckpointJob(ctx, opts.CheckpointInterval(), opts.CheckpointRepublishInterval())
 	if i := opts.GarbageCollectionInterval(); i > 0 {
 		go a.garbageCollectorJob(ctx, i)
 	}
 
 	return a, a.logStorage, nil
+}
+
+func (a *appender) publishCheckpointJob(ctx context.Context, pubInterval, republishInterval time.Duration) {
+	t := time.NewTicker(pubInterval)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.cpUpdated:
+		case <-t.C:
+		}
+		func() {
+			ctx, cancel := context.WithTimeout(ctx, defaultPublicationTimeout)
+			defer cancel()
+			if err := a.publishCheckpoint(ctx, pubInterval, republishInterval); err != nil {
+				klog.Warningf("publishCheckpoint failed: %v", err)
+			}
+		}()
+	}
 }
 
 // lockFile creates/opens a lock file at the specified path, and flocks it.
@@ -712,19 +730,24 @@ func (a *appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 		case <-t.C:
 		}
 
-		// Figure out the size of the latest published checkpoint - we can't be removing partial tiles implied by
-		// that checkpoint just because we've done an integration and know about a larger (but as yet unpublished)
-		// checkpoint!
-		pubSize, err := a.publishedSize(ctx)
-		if err != nil {
-			klog.Warningf("GarbageCollect: %v", err)
-			continue
-		}
+		func() {
+			ctx, cancel := context.WithTimeout(ctx, defaultGCTimeout)
+			defer cancel()
 
-		if err := a.s.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStorage.entriesPath); err != nil {
-			klog.Warningf("GarbageCollect failed: %v", err)
-			continue
-		}
+			// Figure out the size of the latest published checkpoint - we can't be removing partial tiles implied by
+			// that checkpoint just because we've done an integration and know about a larger (but as yet unpublished)
+			// checkpoint!
+			pubSize, err := a.publishedSize(ctx)
+			if err != nil {
+				klog.Warningf("GarbageCollect: %v", err)
+				return
+			}
+
+			if err := a.s.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStorage.entriesPath); err != nil {
+				klog.Warningf("GarbageCollect failed: %v", err)
+				return
+			}
+		}()
 	}
 }
 
