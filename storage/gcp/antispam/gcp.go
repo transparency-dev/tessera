@@ -378,7 +378,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 			})
 			if err != nil {
 				if err != errOutOfSync {
-					slog.ErrorContext(ctx, "Failed to commit antispam population tx", "error", err)
+					slog.ErrorContext(ctx, "Failed to commit antispam population tx", slog.Any("error", err))
 				}
 				stop()
 				next = nil
@@ -455,7 +455,7 @@ func createAndPrepareTables(ctx context.Context, spannerDB string, ddl []string,
 	}
 	defer func() {
 		if err := adminClient.Close(); err != nil {
-			slog.WarnContext(ctx, "adminClient.Close() failed", "error", err)
+			slog.WarnContext(ctx, "adminClient.Close() failed", slog.Any("error", err))
 		}
 	}()
 
