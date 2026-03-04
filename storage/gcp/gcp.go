@@ -830,7 +830,9 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 
 		var next int64 // Unfortunately, Spanner doesn't support uint64 so we'll have to cast around a bit.
 
+		span.AddEvent("Starting ReadWriteTransaction")
 		_, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+			span.AddEvent("Finding SeqCoord:next")
 			// First we need to grab the next available sequence number from the SeqCoord table.
 			row, err := txn.ReadRowWithOptions(ctx, "SeqCoord", spanner.Key{0}, []string{"next"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 			if err != nil {
@@ -846,6 +848,7 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 				return tessera.ErrPushbackIntegration
 			}
 
+			span.AddEvent("Compiling mutations")
 			var mutations []*spanner.Mutation
 			next := uint64(next) // Shadow next with a uint64 version of the same value to save on casts.
 			startFrom := next
@@ -892,12 +895,14 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 			// and update the next-available sequence number row in SeqCoord.
 			mutations = append(mutations, spanner.Update("SeqCoord", []string{"id", "next"}, []any{0, int64(next)}))
 
+			span.AddEvent("Writing mutations")
 			if err := txn.BufferWrite(mutations); err != nil {
 				return fmt.Errorf("failed to apply TX: %v", err)
 			}
 
 			return nil
 		}, spanner.TransactionOptions{TransactionTag: "tessera.op=assignEntries"})
+		span.AddEvent("Finished ReadWriteTransaction")
 
 		if err != nil {
 			return fmt.Errorf("failed to flush batch: %w", err)
