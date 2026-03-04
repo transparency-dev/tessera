@@ -1324,6 +1324,8 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 // Uses the `GCCoord` table to ensure that only one binary is actively garbage collecting at any given time, and to track progress so that we don't
 // needlessly attempt to GC over regions which have already been cleaned.
 func (s *mySQLSequencer) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint, deleteWithPrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) error {
+	// number of concurrent S3 deletes to perform while collecting garbage.
+	const numWorkers = 5
 	tx, err := s.dbPool.Begin()
 	if err != nil {
 		return err
@@ -1344,33 +1346,49 @@ func (s *mySQLSequencer) garbageCollect(ctx context.Context, treeSize uint64, ma
 	}
 
 	d := uint(0)
+	work := make(chan string, maxBundles*3)
+
 	eg := errgroup.Group{}
-	// GC the tree in "vertical" chunks defined by entry bundles.
-	for ri := range layout.Range(fromSize, treeSize-fromSize, treeSize) {
-		// Only known-full bundles are in-scope for for GC, so exit if the current bundle is partial or
-		// we've reached our limit of chunks.
-		if ri.Partial > 0 || d > maxBundles {
-			break
+	eg.Go(func() error {
+		// GC the tree in "vertical" chunks defined by entry bundles.
+		for ri := range layout.Range(fromSize, treeSize-fromSize, treeSize) {
+			// Only known-full bundles are in-scope for for GC, so exit if the current bundle is partial or
+			// we've reached our limit of chunks.
+			if ri.Partial > 0 || d > maxBundles {
+				break
+			}
+
+			// GC any partial versions of the entry bundle itself and the tile which sits immediately above it.
+			work <- entriesPath(ri.Index, 0) + ".p/"
+			work <- layout.TilePath(0, ri.Index, 0) + ".p/"
+			fromSize += uint64(ri.N)
+			d++
+
+			// Now consider (only) the part of the tree which sits above the bundle.
+			// We'll walk up the parent tiles for as a long as we're tracing the right-hand
+			// edge of a perfect subtree.
+			// This gives the property we'll only visit each parent tile once, rather than up to 256 times.
+			pL, pIdx := uint64(0), ri.Index
+			for isLastLeafInParent(pIdx) {
+				// Move our coordinates up to the parent
+				pL, pIdx = pL+1, pIdx>>layout.TileHeight
+				// GC any partial versions of the parent tile.
+				work <- layout.TilePath(pL, pIdx, 0) + ".p/"
+			}
 		}
-
-		// GC any partial versions of the entry bundle itself and the tile which sits immediately above it.
-		eg.Go(func() error { return deleteWithPrefix(ctx, entriesPath(ri.Index, 0)+".p/") })
-		eg.Go(func() error { return deleteWithPrefix(ctx, layout.TilePath(0, ri.Index, 0)+".p/") })
-		fromSize += uint64(ri.N)
-		d++
-
-		// Now consider (only) the part of the tree which sits above the bundle.
-		// We'll walk up the parent tiles for as a long as we're tracing the right-hand
-		// edge of a perfect subtree.
-		// This gives the property we'll only visit each parent tile once, rather than up to 256 times.
-		pL, pIdx := uint64(0), ri.Index
-		for isLastLeafInParent(pIdx) {
-			// Move our coordinates up to the parent
-			pL, pIdx = pL+1, pIdx>>layout.TileHeight
-			// GC any partial versions of the parent tile.
-			eg.Go(func() error { return deleteWithPrefix(ctx, layout.TilePath(pL, pIdx, 0)+".p/") })
-
-		}
+		close(work)
+		return nil
+	})
+	for range numWorkers {
+		eg.Go(func() error {
+			errs := []error{}
+			for prefix := range work {
+				if err := deleteWithPrefix(ctx, prefix); err != nil {
+					errs = append(errs, err)
+				}
+			}
+			return errors.Join(errs...)
+		})
 	}
 	if err := eg.Wait(); err != nil {
 		return fmt.Errorf("failed to delete one or more objects: %v", err)
