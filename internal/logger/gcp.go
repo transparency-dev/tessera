@@ -18,7 +18,6 @@ package logger
 import (
 	"context"
 	"log/slog"
-	"os"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -34,9 +33,6 @@ type GCPContextHandler struct {
 // NewGCPContextHandler wraps the provided slog.Handler. It injects GCP Cloud Logging
 // compatible trace fields extracted from the context if a valid span is present.
 func NewGCPContextHandler(h slog.Handler, projectID string) *GCPContextHandler {
-	if projectID == "" {
-		projectID = os.Getenv("GOOGLE_CLOUD_PROJECT")
-	}
 	return &GCPContextHandler{Handler: h, projectID: projectID}
 }
 

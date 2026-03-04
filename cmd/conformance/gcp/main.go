@@ -43,7 +43,7 @@ var (
 	signer             = flag.String("signer", "", "Note signer to use to sign checkpoints")
 	persistentAntispam = flag.Bool("antispam", false, "EXPERIMENTAL: Set to true to enable GCP-based persistent antispam storage")
 	traceFraction      = flag.Float64("trace_fraction", 0.01, "Fraction of open-telemetry span traces to sample")
-	projectID          = flag.String("project", os.Getenv("GOOGLE_CLOUD_PROJECT"), "GCP Project ID for Cloud Logging traces (optional)")
+	projectID          = flag.String("project", "", "GCP Project ID for Cloud Logging traces (optional)")
 	additionalSigners  = []string{}
 )
 
