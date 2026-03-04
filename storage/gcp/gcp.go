@@ -819,7 +819,7 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 		// First grab the treeSize in a non-locking read-only fashion (we don't want to block/collide with integration).
 		// We'll use this value to determine whether we need to apply back-pressure.
 		var treeSize int64
-		if row, err := s.dbPool.Single().ReadRow(ctx, "IntCoord", spanner.Key{0}, []string{"seq"}); err != nil {
+		if row, err := s.dbPool.Single().ReadRowWithOptions(ctx, "IntCoord", spanner.Key{0}, []string{"seq"}, &spanner.ReadOptions{RequestTag: "tessera.op=assignEntries.treeSize"}); err != nil {
 			return err
 		} else {
 			if err := row.Column(0, &treeSize); err != nil {
@@ -830,7 +830,7 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 
 		var next int64 // Unfortunately, Spanner doesn't support uint64 so we'll have to cast around a bit.
 
-		_, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+		_, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 			// First we need to grab the next available sequence number from the SeqCoord table.
 			row, err := txn.ReadRowWithOptions(ctx, "SeqCoord", spanner.Key{0}, []string{"next"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 			if err != nil {
@@ -897,7 +897,7 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 			}
 
 			return nil
-		})
+		}, spanner.TransactionOptions{TransactionTag: "tessera.op=assignEntries"})
 
 		if err != nil {
 			return fmt.Errorf("failed to flush batch: %w", err)
@@ -931,7 +931,7 @@ func (s *spannerCoordinator) addSeqMutation(seq uint64, entries []storage.Sequen
 func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f consumeFunc, forceUpdate bool) (bool, error) {
 	return otel.Trace(ctx, "tessera.storage.gcp.consumeEntries", tracer, func(ctx context.Context, span trace.Span) (bool, error) {
 		didWork := false
-		_, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+		_, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 			// Figure out which is the starting index of sequenced entries to start consuming from.
 			row, err := txn.ReadRowWithOptions(ctx, "IntCoord", spanner.Key{0}, []string{"seq"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 			if err != nil {
@@ -1021,7 +1021,7 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 
 			didWork = true
 			return nil
-		})
+		}, spanner.TransactionOptions{TransactionTag: "tessera.op=consumeEntries"})
 		if err != nil {
 			return false, err
 		}
@@ -1032,7 +1032,7 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 
 // currentTree returns the size and root hash of the currently integrated tree.
 func (s *spannerCoordinator) currentTree(ctx context.Context) (uint64, []byte, error) {
-	row, err := s.dbPool.Single().ReadRow(ctx, "IntCoord", spanner.Key{0}, []string{"seq", "rootHash"})
+	row, err := s.dbPool.Single().ReadRowWithOptions(ctx, "IntCoord", spanner.Key{0}, []string{"seq", "rootHash"}, &spanner.ReadOptions{RequestTag: "tessera.op=currentTree"})
 	if err != nil {
 		return 0, nil, fmt.Errorf("failed to read IntCoord: %v", err)
 	}
@@ -1047,14 +1047,11 @@ func (s *spannerCoordinator) currentTree(ctx context.Context) (uint64, []byte, e
 
 // nextIndex returns the next available index in the log.
 func (s *spannerCoordinator) nextIndex(ctx context.Context) (uint64, error) {
-	txn := s.dbPool.ReadOnlyTransaction()
-	defer txn.Close()
-
-	var nextSeq int64 // Spanner doesn't support uint64
-	row, err := txn.ReadRow(ctx, "SeqCoord", spanner.Key{0}, []string{"next"})
+	row, err := s.dbPool.Single().ReadRowWithOptions(ctx, "SeqCoord", spanner.Key{0}, []string{"next"}, &spanner.ReadOptions{RequestTag: "tessera.op=nextIndex"})
 	if err != nil {
-		return 0, fmt.Errorf("failed to read sequence coordination row: %v", err)
+		return 0, fmt.Errorf("failed to read SeqCoord: %v", err)
 	}
+	var nextSeq int64 // Spanner doesn't support uint64
 	if err := row.Columns(&nextSeq); err != nil {
 		return 0, fmt.Errorf("failed to read sequence coordination info: %v", err)
 	}
@@ -1078,7 +1075,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 		var outcomeAttrs []attribute.KeyValue
 		start := time.Now()
 
-		if _, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+		if _, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 			// Reset outcome attributes from any prior transaction attempts.
 			outcomeAttrs = []attribute.KeyValue{}
 
@@ -1137,7 +1134,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 			}
 
 			return nil
-		}); err != nil {
+		}, spanner.TransactionOptions{TransactionTag: "tessera.op=publishCheckpoint"}); err != nil {
 			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
 			return err
 		}
@@ -1153,7 +1150,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 // Uses the `GCCoord` table to ensure that only one binary is actively garbage collecting at any given time, and to track progress so that we don't
 // needlessly attempt to GC over regions which have already been cleaned.
 func (s *spannerCoordinator) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint, deleteWithPrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) error {
-	_, err := s.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+	_, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 		row, err := txn.ReadRowWithOptions(ctx, "GCCoord", spanner.Key{0}, []string{"fromSize"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 		if err != nil {
 			return fmt.Errorf("failed to read GCCoord: %w", err)
@@ -1206,7 +1203,7 @@ func (s *spannerCoordinator) garbageCollect(ctx context.Context, treeSize uint64
 		}
 
 		return nil
-	})
+	}, spanner.TransactionOptions{TransactionTag: "tessera.op=garbageCollect"})
 	return err
 }
 
