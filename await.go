@@ -17,6 +17,7 @@ package tessera
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"sync"
 	"time"
@@ -76,7 +77,10 @@ func (a *PublicationAwaiter) Await(ctx context.Context, future IndexFuture) (Ind
 		if err != nil {
 			return i, nil, err
 		}
+		span.AddEvent("Resolved future")
+		span.SetAttributes(indexKey.Int64(int64(i.Index)), dupeKey.Bool(i.IsDup))
 
+		span.AddEvent("Waiting for tree growth")
 		a.c.L.Lock()
 		defer a.c.L.Unlock()
 		for (a.size <= i.Index && a.err == nil) && ctx.Err() == nil {
@@ -85,7 +89,10 @@ func (a *PublicationAwaiter) Await(ctx context.Context, future IndexFuture) (Ind
 		// Ensure we propogate context done error, if any.
 		if err := ctx.Err(); err != nil {
 			a.err = err
+		} else {
+			span.AddEvent("Tree covers index")
 		}
+
 		return i, a.checkpoint, a.err
 	})
 }
@@ -102,30 +109,46 @@ func (a *PublicationAwaiter) pollLoop(ctx context.Context, readCheckpoint func(c
 		cpSize uint64
 	)
 	for done := false; !done; {
-		select {
-		case <-ctx.Done():
-			klog.V(2).Info("PublicationAwaiter exiting due to context completion")
-			cp, cpSize, cpErr = nil, 0, ctx.Err()
-			done = true
-		case <-time.After(pollPeriod):
-			cp, cpErr = readCheckpoint(ctx)
-			switch {
-			case errors.Is(cpErr, os.ErrNotExist):
-				continue
-			case cpErr != nil:
-				cpSize = 0
-			default:
-				_, cpSize, _, cpErr = parse.CheckpointUnsafe(cp)
-			}
-		}
+		done, _ = otel.Trace(ctx, "tessera.awaiter.pollLoopIteration", tracer, func(ctx context.Context, span trace.Span) (bool, error) {
+			span.SetAttributes(otel.PeriodicKey.Bool(true))
 
-		a.c.L.Lock()
-		// Note that for now, this releases all clients in the event of a single failure.
-		// If this causes problems, this could be changed to attempt retries.
-		a.checkpoint = cp
-		a.size = cpSize
-		a.err = cpErr
-		a.c.Broadcast()
-		a.c.L.Unlock()
+			ctxDone := false
+
+			select {
+			case <-ctx.Done():
+				span.AddEvent("context.done")
+				klog.V(2).Info("PublicationAwaiter exiting due to context completion")
+				cp, cpSize, cpErr = nil, 0, ctx.Err()
+				ctxDone = true
+			case <-time.After(pollPeriod):
+				span.AddEvent("tessera.wake")
+				cp, cpErr = readCheckpoint(ctx)
+				switch {
+				case errors.Is(cpErr, os.ErrNotExist):
+					return false, nil
+				case cpErr != nil:
+					cpSize = 0
+				default:
+					_, cpSize, _, cpErr = parse.CheckpointUnsafe(cp)
+					if cpSize <= math.MaxInt64 && cpErr != nil {
+						span.SetAttributes(checkpointSizeKey.Int64(int64(cpSize)))
+					}
+				}
+			}
+
+			span.AddEvent("Taking lock")
+			a.c.L.Lock()
+			span.AddEvent("Locked")
+			a.checkpoint = cp
+			a.size = cpSize
+			a.err = cpErr
+			// Note that for now, this releases all clients in the event of a single failure.
+			// If this causes problems, this could be changed to attempt retries.
+			a.c.Broadcast()
+			span.AddEvent("Broadcast Sent")
+			a.c.L.Unlock()
+			span.AddEvent("Unlocked")
+			return ctxDone, nil
+		})
 	}
 }
