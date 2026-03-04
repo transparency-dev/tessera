@@ -27,5 +27,8 @@ var (
 )
 
 var (
-	followerNameKey = attribute.Key("tessera.follower.name")
+	followerNameKey   = attribute.Key("tessera.follower.name")
+	checkpointSizeKey = attribute.Key("tessera.checkpoint.size")
+	indexKey          = attribute.Key("tessera.entry.index")
+	dupeKey           = attribute.Key("tessera.entry.dupe")
 )
