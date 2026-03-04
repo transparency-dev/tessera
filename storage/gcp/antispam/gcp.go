@@ -134,7 +134,7 @@ func (d *AntispamStorage) index(ctx context.Context, h []byte) (*uint64, error) 
 	return otel.Trace(ctx, "tessera.antispam.gcp.index", tracer, func(ctx context.Context, span trace.Span) (*uint64, error) {
 		d.numLookups.Add(1)
 		var idx int64
-		if row, err := d.dbPool.Single().ReadRow(ctx, "IDSeq", spanner.Key{h}, []string{"idx"}); err != nil {
+		if row, err := d.dbPool.Single().ReadRowWithOptions(ctx, "IDSeq", spanner.Key{h}, []string{"idx"}, &spanner.ReadOptions{RequestTag: "tessera.op=antispam.index"}); err != nil {
 			if c := spanner.ErrCode(err); c == codes.NotFound {
 				span.AddEvent("tessera.miss")
 				return nil, nil
@@ -262,7 +262,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 			err := otel.TraceErr(ctx, "tessera.antispam.gcp.FollowTask", tracer, func(ctx context.Context, span trace.Span) error {
 				ctx, cancel := context.WithTimeout(ctx, defaultBatchTimeout)
 				defer cancel()
-				_, err := f.as.dbPool.ReadWriteTransaction(ctx, func(txctx context.Context, txn *spanner.ReadWriteTransaction) error {
+				_, err := f.as.dbPool.ReadWriteTransactionWithOptions(ctx, func(txctx context.Context, txn *spanner.ReadWriteTransaction) error {
 					return otel.TraceErr(txctx, "tessera.antispam.gcp.FollowTxn", tracer, func(txctx context.Context, span trace.Span) error {
 						// Figure out the last entry we used to populate our antispam storage.
 						row, err := txn.ReadRowWithOptions(txctx, "FollowCoord", spanner.Key{0}, []string{"nextIdx"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
@@ -371,7 +371,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 
 						return txn.BufferWrite(m)
 					})
-				})
+				}, spanner.TransactionOptions{TransactionTag: "tessera.op=antispam.follow"})
 				return err
 			})
 			if err != nil {
@@ -429,7 +429,7 @@ func (f *follower) batchUpdateIndex(ctx context.Context, _ *spanner.ReadWriteTra
 
 // EntriesProcessed returns the total number of log entries processed.
 func (f *follower) EntriesProcessed(ctx context.Context) (uint64, error) {
-	row, err := f.as.dbPool.Single().ReadRow(ctx, "FollowCoord", spanner.Key{0}, []string{"nextIdx"})
+	row, err := f.as.dbPool.Single().ReadRowWithOptions(ctx, "FollowCoord", spanner.Key{0}, []string{"nextIdx"}, &spanner.ReadOptions{RequestTag: "tessera.op=antispam.EntriesProcessed"})
 	if err != nil {
 		return 0, err
 	}
