@@ -816,6 +816,7 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 	return otel.TraceErr(ctx, "tessera.storage.gcp.assignEntries", tracer, func(ctx context.Context, span trace.Span) error {
 		span.SetAttributes(numEntriesKey.Int(len(entries)))
 
+		span.AddEvent("Reading IntCoord:seq")
 		// First grab the treeSize in a non-locking read-only fashion (we don't want to block/collide with integration).
 		// We'll use this value to determine whether we need to apply back-pressure.
 		var treeSize int64
@@ -832,7 +833,7 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 
 		span.AddEvent("Starting ReadWriteTransaction")
 		_, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
-			span.AddEvent("Finding SeqCoord:next")
+			span.AddEvent("Reading SeqCoord:next")
 			// First we need to grab the next available sequence number from the SeqCoord table.
 			row, err := txn.ReadRowWithOptions(ctx, "SeqCoord", spanner.Key{0}, []string{"next"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 			if err != nil {
@@ -937,6 +938,7 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 	return otel.Trace(ctx, "tessera.storage.gcp.consumeEntries", tracer, func(ctx context.Context, span trace.Span) (bool, error) {
 		didWork := false
 		_, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+			span.AddEvent("Reading IntCoord:seq")
 			// Figure out which is the starting index of sequenced entries to start consuming from.
 			row, err := txn.ReadRowWithOptions(ctx, "IntCoord", spanner.Key{0}, []string{"seq"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 			if err != nil {
@@ -947,6 +949,7 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 				return fmt.Errorf("failed to read integration coordination info: %v", err)
 			}
 
+			span.AddEvent("Reading SeqCoord:next")
 			// See how much potential work there is to do and trim our limit accordingly.
 			row, err = txn.ReadRow(ctx, "SeqCoord", spanner.Key{0}, []string{"next"})
 			if err != nil {
@@ -965,6 +968,7 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 
 			klog.V(1).Infof("Consuming bundles start from %d to at most %d", fromSeq, endSeq-1)
 
+			span.AddEvent("Reading entries from sequence table")
 			// Now read the sequenced starting at the index we got above.
 			rows := txn.ReadWithOptions(ctx, "Seq",
 				spanner.KeyRange{Start: spanner.Key{0, fromSeq}, End: spanner.Key{0, endSeq}},
@@ -1005,12 +1009,14 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 				return nil
 			}
 
+			span.AddEvent(fmt.Sprintf("Integrating %d entries", len(entries)))
 			// Call consumeFunc with the entries we've found
 			newRoot, err := f(ctx, uint64(fromSeq), entries)
 			if err != nil {
 				return err
 			}
 
+			span.AddEvent("Creating mutations")
 			// consumeFunc was successful, so we can update our coordination row, and delete the row(s) for
 			// the then consumed entries.
 			m := make([]*spanner.Mutation, 0)
@@ -1018,6 +1024,8 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 			for _, c := range seqsConsumed {
 				m = append(m, spanner.Delete("Seq", spanner.Key{0, c}))
 			}
+
+			span.AddEvent("Writing mutations")
 			if len(m) > 0 {
 				if err := txn.BufferWrite(m); err != nil {
 					return err
@@ -1080,10 +1088,12 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 		var outcomeAttrs []attribute.KeyValue
 		start := time.Now()
 
+		span.AddEvent("Starting ReadWriteTransaction")
 		if _, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 			// Reset outcome attributes from any prior transaction attempts.
 			outcomeAttrs = []attribute.KeyValue{}
 
+			span.AddEvent("Reading PubCoord")
 			pRow, err := txn.ReadRowWithOptions(ctx, "PubCoord", spanner.Key{0}, []string{"publishedAt", "size"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 			if err != nil {
 				return fmt.Errorf("failed to read PubCoord: %w", err)
@@ -1101,6 +1111,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 				return nil
 			}
 
+			span.AddEvent("Reading IntCoord")
 			// Can't just use currentTree() here as the spanner emulator doesn't do nested transactions, so do it manually:
 			row, err := txn.ReadRow(ctx, "IntCoord", spanner.Key{0}, []string{"seq", "rootHash"})
 			if err != nil {
@@ -1131,9 +1142,11 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 
 			klog.V(1).Infof("publishCheckpoint: updating checkpoint (replacing %s old checkpoint)", cpAge)
 
+			span.AddEvent("Publishing checkpoint")
 			if err := f(ctx, currentSize, rootHash); err != nil {
 				return err
 			}
+			span.AddEvent("Updating PubCoord")
 			if err := txn.BufferWrite([]*spanner.Mutation{spanner.Update("PubCoord", []string{"id", "publishedAt", "size"}, []any{0, time.Now(), int64(currentSize)})}); err != nil {
 				return err
 			}
