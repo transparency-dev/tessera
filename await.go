@@ -104,7 +104,7 @@ func (a *PublicationAwaiter) pollLoop(ctx context.Context, readCheckpoint func(c
 	for done := false; !done; {
 		select {
 		case <-ctx.Done():
-			klog.Info("PublicationAwaiter exiting due to context completion")
+			klog.V(2).Info("PublicationAwaiter exiting due to context completion")
 			cp, cpSize, cpErr = nil, 0, ctx.Err()
 			done = true
 		case <-time.After(pollPeriod):
