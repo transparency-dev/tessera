@@ -647,8 +647,10 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 			if err != nil {
 				return nil, fmt.Errorf("newCP: %v", err)
 			}
+			span.AddEvent("Created CP")
 			appenderSignedSize.Record(ctx, otel.Clamp64(size))
 
+			span.AddEvent("Starting witnessing")
 			// Handle witnessing
 			{
 				// Figure out the likely size the witnesses are aware of, but don't fail hard if we're unable
@@ -672,6 +674,7 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 				ctx, cancel := context.WithTimeout(ctx, o.witnessOpts.Timeout)
 				defer cancel()
 
+				span.AddEvent("Sending witness requests")
 				witAttr := []attribute.KeyValue{}
 				cp, err = wg.Witness(ctx, cp)
 				if err != nil {
