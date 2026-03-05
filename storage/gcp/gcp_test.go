@@ -285,9 +285,8 @@ func TestTileRoundtrip(t *testing.T) {
 			}
 
 			expPath := layout.TilePath(test.level, test.index, layout.PartialTileSize(test.level, test.index, test.logSize))
-			_, ok := m.mem[expPath]
-			if !ok {
-				t.Fatalf("want tile at %v but found none", expPath)
+			if _, _, err = m.getObject(t.Context(), expPath); err != nil {
+				t.Fatalf("want tile at %v but got: %v", expPath, err)
 			}
 
 			got, err := s.getTiles(ctx, []storage.TileID{{Level: test.level, Index: test.index}}, test.logSize)
@@ -344,9 +343,8 @@ func TestBundleRoundtrip(t *testing.T) {
 			}
 
 			expPath := layout.EntriesPath(test.index, layout.PartialTileSize(0, test.index, test.logSize))
-			_, ok := m.mem[expPath]
-			if !ok {
-				t.Fatalf("want bundle at %v but found none", expPath)
+			if _, _, err := m.getObject(t.Context(), expPath); err != nil {
+				t.Fatalf("want tile at %v but got: %v", expPath, err)
 			}
 
 			got, err := s.getEntryBundle(ctx, test.index, layout.PartialTileSize(0, test.index, test.logSize))
@@ -735,7 +733,7 @@ func TestGarbageCollectOption(t *testing.T) {
 					wantPartialPrefixes[p] = struct{}{}
 				}
 				allPartialDirs := make(map[string]struct{})
-				for k := range m.mem {
+				for _, k := range m.keys() {
 					if strings.Contains(k, ".p/") {
 						allPartialDirs[strings.SplitAfter(k, ".p/")[0]] = struct{}{}
 					}
@@ -819,6 +817,16 @@ func (m *memObjStore) setObject(_ context.Context, obj string, data []byte, cond
 	}
 	m.mem[obj] = data
 	return nil
+}
+
+func (m *memObjStore) keys() []string {
+	m.RLock()
+	defer m.RUnlock()
+	r := make([]string, 0, len(m.mem))
+	for k := range m.mem {
+		r = append(r, k)
+	}
+	return r
 }
 
 func (m *memObjStore) deleteObjectsWithPrefix(_ context.Context, prefix string) error {
