@@ -36,8 +36,9 @@ var (
 	objectPathKey = attribute.Key("tessera.objectPath")
 	opNameKey     = attribute.Key("op_name")
 
-	publishCount metric.Int64Counter
-	opsHistogram metric.Int64Histogram
+	publishCount           metric.Int64Counter
+	opsHistogram           metric.Int64Histogram
+	checkpointAgeHistogram metric.Int64Histogram
 
 	// Custom histogram buckets as we're interested in low-millis upto low-seconds.
 	histogramBuckets = []float64{0, 1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200, 1400, 1600, 1800, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000}
@@ -53,6 +54,15 @@ func init() {
 		metric.WithExplicitBucketBoundaries(histogramBuckets...))
 	if err != nil {
 		klog.Exitf("Failed to create opsHistogram metric: %v", err)
+	}
+
+	checkpointAgeHistogram, err = meter.Int64Histogram(
+		"tessera.reader.checkpoint.age",
+		metric.WithDescription("Age of checkpoints at the point of reading from GCP"),
+		metric.WithUnit("ms"),
+		metric.WithExplicitBucketBoundaries(histogramBuckets...))
+	if err != nil {
+		klog.Exitf("Failed to create checkpointAgeHistogram metric: %v", err)
 	}
 
 	publishCount, err = meter.Int64Counter(

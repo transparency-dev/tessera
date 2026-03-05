@@ -472,7 +472,7 @@ func (a *Appender) updateCheckpoint(ctx context.Context, size uint64, root []byt
 
 // objStore describes a type which can store and retrieve objects.
 type objStore interface {
-	getObject(ctx context.Context, obj string) ([]byte, int64, error)
+	getObject(ctx context.Context, obj string) ([]byte, *gcs.ReaderObjectAttrs, error)
 	setObject(ctx context.Context, obj string, data []byte, cond *gcs.Conditions, contType string, cacheCtl string) error
 	deleteObjectsWithPrefix(ctx context.Context, prefix string) error
 }
@@ -488,7 +488,12 @@ func (lrs *logResourceStore) setCheckpoint(ctx context.Context, cpRaw []byte) er
 }
 
 func (lrs *logResourceStore) getCheckpoint(ctx context.Context) ([]byte, error) {
-	r, _, err := lrs.objStore.getObject(ctx, layout.CheckpointPath)
+	r, attr, err := lrs.objStore.getObject(ctx, layout.CheckpointPath)
+	if err != nil {
+		return nil, err
+	}
+
+	checkpointAgeHistogram.Record(ctx, time.Since(attr.LastModified).Milliseconds())
 	return r, err
 }
 
@@ -1260,8 +1265,8 @@ type gcsStorage struct {
 }
 
 // getObject returns the data and generation of the specified object, or an error.
-func (s *gcsStorage) getObject(ctx context.Context, obj string) ([]byte, int64, error) {
-	return otel.Trace2(ctx, "tessera.storage.gcp.getObject", tracer, func(ctx context.Context, span trace.Span) ([]byte, int64, error) {
+func (s *gcsStorage) getObject(ctx context.Context, obj string) ([]byte, *gcs.ReaderObjectAttrs, error) {
+	return otel.Trace2(ctx, "tessera.storage.gcp.getObject", tracer, func(ctx context.Context, span trace.Span) ([]byte, *gcs.ReaderObjectAttrs, error) {
 		if s.bucketPrefix != "" {
 			obj = filepath.Join(s.bucketPrefix, obj)
 		}
@@ -1270,14 +1275,14 @@ func (s *gcsStorage) getObject(ctx context.Context, obj string) ([]byte, int64, 
 
 		r, err := s.gcsClient.Bucket(s.bucket).Object(obj).NewReader(ctx)
 		if err != nil {
-			return nil, -1, fmt.Errorf("getObject: failed to create reader for object %q in bucket %q: %w", obj, s.bucket, err)
+			return nil, nil, fmt.Errorf("getObject: failed to create reader for object %q in bucket %q: %w", obj, s.bucket, err)
 		}
 
 		d, err := io.ReadAll(r)
 		if err != nil {
-			return nil, -1, fmt.Errorf("failed to read %q: %v", obj, err)
+			return nil, nil, fmt.Errorf("failed to read %q: %v", obj, err)
 		}
-		return d, r.Attrs.Generation, r.Close()
+		return d, &r.Attrs, r.Close()
 	})
 }
 
@@ -1329,9 +1334,9 @@ func (s *gcsStorage) setObject(ctx context.Context, objName string, data []byte,
 				preconditionFailed = true
 			}
 			if preconditionFailed {
-				existing, existingGen, err := s.getObject(ctx, objName)
+				existing, existingAttr, err := s.getObject(ctx, objName)
 				if err != nil {
-					return fmt.Errorf("failed to fetch existing content for %q (@%d): %v", objName, existingGen, err)
+					return fmt.Errorf("failed to fetch existing content for %q (@%d): %v", objName, existingAttr.Generation, err)
 				}
 				if !bytes.Equal(existing, data) {
 					span.AddEvent("Non-idempotent write")
