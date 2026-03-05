@@ -42,16 +42,16 @@ func init() {
 	var err error
 
 	integrateCount, err = meter.Int64Counter(
-		"tessera.storage.integrate.sessions",
-		metric.WithDescription("Number of integration sessions"),
+		"tessera.storage.tree_builder.integrate.sessions",
+		metric.WithDescription("Number of times the tree builder calculated a new root hash"),
 		metric.WithUnit("{call}"))
 	if err != nil {
 		klog.Exitf("Failed to create integrateCount metric: %v", err)
 	}
 
 	integrateBatchSizeHistogram, err = meter.Int64Histogram(
-		"tessera.storage.integrate.batch_size",
-		metric.WithDescription("Number of new entries included in a tree integration"),
+		"tessera.storage.tree_builder.integrate.batch_size",
+		metric.WithDescription("Number of new entries included in each integration calculation"),
 		metric.WithUnit("{leaves}"),
 		metric.WithExplicitBucketBoundaries(batchSizeHistogramBuckets...))
 	if err != nil {
@@ -59,8 +59,8 @@ func init() {
 	}
 
 	integrateLatencyHistogram, err = meter.Int64Histogram(
-		"tessera.storage.integrate.duration",
-		metric.WithDescription("Duration of integration sessions"),
+		"tessera.storage.tree_builder.integrate.duration",
+		metric.WithDescription("Duration of integration calculation."),
 		metric.WithUnit("ms"),
 		metric.WithExplicitBucketBoundaries(latencyHistogramBuckets...))
 	if err != nil {
@@ -139,7 +139,7 @@ func (t *treeBuilder) newRange(ctx context.Context, treeSize uint64) (*compact.R
 }
 
 func (t *treeBuilder) integrate(ctx context.Context, fromSize uint64, leafHashes [][]byte) (newSize uint64, rootHash []byte, tiles map[TileID]*api.HashTile, err error) {
-	return otel.Trace3(ctx, "tessera.storage.integrate", tracer, func(ctx context.Context, span trace.Span) (uint64, []byte, map[TileID]*api.HashTile, error) {
+	return otel.Trace3(ctx, "tessera.storage.tree_builder.integrate", tracer, func(ctx context.Context, span trace.Span) (uint64, []byte, map[TileID]*api.HashTile, error) {
 		start := time.Now()
 		span.SetAttributes(fromSizeKey.Int64(otel.Clamp64(fromSize)), numEntriesKey.Int(len(leafHashes)))
 
@@ -228,7 +228,7 @@ func newTileReadCache(getTiles func(ctx context.Context, tileIDs []TileID, treeS
 
 // Get returns a previously set tile and true, or, if no such tile is in the cache, attempt to fetch it.
 func (r *tileReadCache) Get(ctx context.Context, tileID TileID, treeSize uint64) (*populatedTile, error) {
-	return otel.Trace(ctx, "tessera.storage.readCache.Get", tracer, func(ctx context.Context, span trace.Span) (*populatedTile, error) {
+	return otel.Trace(ctx, "tessera.storage.tile_read_cache.get", tracer, func(ctx context.Context, span trace.Span) (*populatedTile, error) {
 		span.SetAttributes(indexKey.Int64(otel.Clamp64(tileID.Index)), levelKey.Int64(otel.Clamp64(tileID.Level)), treeSizeKey.Int64(otel.Clamp64(treeSize)))
 
 		k := layout.TilePath(uint64(tileID.Level), tileID.Index, layout.PartialTileSize(tileID.Level, tileID.Index, treeSize))
@@ -254,7 +254,7 @@ func (r *tileReadCache) Get(ctx context.Context, tileID TileID, treeSize uint64)
 //
 // Returns an error if any of the tiles couldn't be fetched.
 func (r *tileReadCache) Prewarm(ctx context.Context, tileIDs []TileID, treeSize uint64) error {
-	return otel.TraceErr(ctx, "tessera.storage.readCache.Prewarm", tracer, func(ctx context.Context, span trace.Span) error {
+	return otel.TraceErr(ctx, "tessera.storage.tile_read_cache.prewarm", tracer, func(ctx context.Context, span trace.Span) error {
 		t, err := r.getTiles(ctx, tileIDs, treeSize)
 		if err != nil {
 			return err
