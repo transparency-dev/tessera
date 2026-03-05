@@ -86,14 +86,15 @@ func (a *PublicationAwaiter) Await(ctx context.Context, future IndexFuture) (Ind
 		for (a.size <= i.Index && a.err == nil) && ctx.Err() == nil {
 			a.c.Wait()
 		}
-		// Ensure we propogate context done error, if any.
-		if err := ctx.Err(); err != nil {
-			a.err = err
-		} else {
-			span.AddEvent("Tree covers index")
+
+		// Make sure we report any errors that caused us to stop early
+		err = a.err
+		if err == nil {
+			err = ctx.Err()
 		}
 
-		return i, a.checkpoint, a.err
+		span.AddEvent("Tree covers index")
+		return i, a.checkpoint, err
 	})
 }
 
