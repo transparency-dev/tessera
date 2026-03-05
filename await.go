@@ -99,7 +99,6 @@ func (a *PublicationAwaiter) Await(ctx context.Context, future IndexFuture) (Ind
 			err = ctx.Err()
 		}
 
-		span.AddEvent("Tree covers index")
 		return i, a.checkpoint, err
 	})
 }
