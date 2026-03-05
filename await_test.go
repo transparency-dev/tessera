@@ -19,8 +19,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
