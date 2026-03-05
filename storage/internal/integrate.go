@@ -19,16 +19,54 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/transparency-dev/merkle/compact"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/internal/otel"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/exp/maps"
 	"k8s.io/klog/v2"
 )
+
+var (
+	integrateCount              metric.Int64Counter
+	integrateBatchSizeHistogram metric.Int64Histogram
+	integrateLatencyHistogram   metric.Int64Histogram
+)
+
+func init() {
+	var err error
+
+	integrateCount, err = meter.Int64Counter(
+		"tessera.storage.integrate.sessions",
+		metric.WithDescription("Number of integration sessions"),
+		metric.WithUnit("{call}"))
+	if err != nil {
+		klog.Exitf("Failed to create integrateCount metric: %v", err)
+	}
+
+	integrateBatchSizeHistogram, err = meter.Int64Histogram(
+		"tessera.storage.integrate.batch_size",
+		metric.WithDescription("Number of new entries included in a tree integration"),
+		metric.WithUnit("{leaves}"),
+		metric.WithExplicitBucketBoundaries(batchSizeHistogramBuckets...))
+	if err != nil {
+		klog.Exitf("Failed to create integrateBatchSizeHistogram metric: %v", err)
+	}
+
+	integrateLatencyHistogram, err = meter.Int64Histogram(
+		"tessera.storage.integrate.duration",
+		metric.WithDescription("Duration of integration sessions"),
+		metric.WithUnit("ms"),
+		metric.WithExplicitBucketBoundaries(latencyHistogramBuckets...))
+	if err != nil {
+		klog.Exitf("Failed to create integrateLatencyHistogram metric: %v", err)
+	}
+}
 
 // SequencedEntry represents a log entry which has already been sequenced.
 type SequencedEntry struct {
@@ -102,6 +140,7 @@ func (t *treeBuilder) newRange(ctx context.Context, treeSize uint64) (*compact.R
 
 func (t *treeBuilder) integrate(ctx context.Context, fromSize uint64, leafHashes [][]byte) (newSize uint64, rootHash []byte, tiles map[TileID]*api.HashTile, err error) {
 	return otel.Trace3(ctx, "tessera.storage.integrate", tracer, func(ctx context.Context, span trace.Span) (uint64, []byte, map[TileID]*api.HashTile, error) {
+		start := time.Now()
 		span.SetAttributes(fromSizeKey.Int64(otel.Clamp64(fromSize)), numEntriesKey.Int(len(leafHashes)))
 
 		baseRange, err := t.newRange(ctx, fromSize)
@@ -167,6 +206,9 @@ func (t *treeBuilder) integrate(ctx context.Context, fromSize uint64, leafHashes
 		// tiles and updated log state.
 		klog.V(1).Infof("New log state: size 0x%x hash: %x", baseRange.End(), newRoot)
 
+		integrateCount.Add(ctx, 1)
+		integrateBatchSizeHistogram.Record(ctx, int64(len(leafHashes)))
+		integrateLatencyHistogram.Record(ctx, time.Since(start).Milliseconds())
 		return baseRange.End(), newRoot, tc.Tiles(), nil
 	})
 }
