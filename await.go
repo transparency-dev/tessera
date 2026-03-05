@@ -56,6 +56,9 @@ func NewPublicationAwaiter(ctx context.Context, readCheckpoint func(ctx context.
 type PublicationAwaiter struct {
 	c *sync.Cond
 
+	// Only used for testing coordination
+	preWaitSignaller chan struct{}
+
 	// size, checkpoint, and err keep track of the latest size and checkpoint
 	// (or error) seen by the poller.
 	size       uint64
@@ -83,6 +86,9 @@ func (a *PublicationAwaiter) Await(ctx context.Context, future IndexFuture) (Ind
 		span.AddEvent("Waiting for tree growth")
 		a.c.L.Lock()
 		defer a.c.L.Unlock()
+		if a.preWaitSignaller != nil {
+			a.preWaitSignaller <- struct{}{}
+		}
 		for (a.size <= i.Index && a.err == nil) && ctx.Err() == nil {
 			a.c.Wait()
 		}
