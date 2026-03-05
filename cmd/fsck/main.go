@@ -80,11 +80,17 @@ func main() {
 	}
 	f := fsck.New(*origin, v, src, defaultMerkleLeafHasher, fsck.Opts{N: *N})
 
+	checkErr := make(chan error, 1)
 	go func() {
-		if err := f.Check(ctx); err != nil {
+		err := f.Check(ctx)
+
+		// Only log the error if we're using the TUI, otherwise it will be double logged in headless mode.
+		if err != nil && *ui {
 			klog.Errorf("fsck failed: %v", err)
 		}
 		klog.V(1).Infof("Completed ranges:\n%s", f.Status())
+
+		checkErr <- err
 		cancel()
 	}()
 
@@ -97,7 +103,10 @@ func main() {
 	} else {
 		for {
 			select {
-			case <-ctx.Done():
+			case err := <-checkErr:
+				if err != nil {
+					klog.Exitf("fsck failed: %v", err)
+				}
 				return
 			case <-time.After(time.Second):
 				klog.V(1).Infof("Ranges:\n%s", f.Status())
