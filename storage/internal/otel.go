@@ -23,6 +23,13 @@ const name = "github.com/transparency-dev/tessera/storage"
 
 var (
 	tracer = otel.Tracer(name)
+	meter  = otel.Meter(name)
+
+	// Custom histogram buckets for batch sizes
+	batchSizeHistogramBuckets = []float64{0, 64, 256, 1024, 4096, 8192, 16384, 32768}
+
+	// Custom histogram buckets as we're interested in low-millis upto low-seconds.
+	latencyHistogramBuckets = []float64{0, 1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200, 1400, 1600, 1800, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000}
 )
 
 var (
