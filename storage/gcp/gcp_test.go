@@ -792,15 +792,15 @@ func newMemObjStore() *memObjStore {
 	}
 }
 
-func (m *memObjStore) getObject(_ context.Context, obj string) ([]byte, int64, error) {
+func (m *memObjStore) getObject(_ context.Context, obj string) ([]byte, *gcs.ReaderObjectAttrs, error) {
 	m.RLock()
 	defer m.RUnlock()
 
 	d, ok := m.mem[obj]
 	if !ok {
-		return nil, -1, fmt.Errorf("obj %q not found: %w", obj, gcs.ErrObjectNotExist)
+		return nil, nil, fmt.Errorf("obj %q not found: %w", obj, gcs.ErrObjectNotExist)
 	}
-	return d, 1, nil
+	return d, &gcs.ReaderObjectAttrs{Generation: 1}, nil
 }
 
 // TODO(phboneff): add content type tests
