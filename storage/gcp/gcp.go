@@ -339,12 +339,15 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 			ctx, cancel := context.WithTimeout(ctx, defaultIntegrationTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
-			if _, err := a.sequencer.consumeEntries(ctx, DefaultIntegrationSizeLimit, a.integrateEntries, false); err != nil {
+			workDone, err := a.sequencer.consumeEntries(ctx, DefaultIntegrationSizeLimit, a.integrateEntries, false)
+			if err != nil {
 				return fmt.Errorf("integrateEntriesJob: %v", err)
 			}
-			select {
-			case a.cpUpdated <- struct{}{}:
-			default:
+			if workDone {
+				select {
+				case a.cpUpdated <- struct{}{}:
+				default:
+				}
 			}
 			return nil
 		}); err != nil {
@@ -1077,6 +1080,11 @@ func (s *spannerCoordinator) nextIndex(ctx context.Context) (uint64, error) {
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
 func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) error {
+	currentSize, rootHash, err := s.currentTree(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get current tree: %v", err)
+	}
+
 	return otel.TraceErr(ctx, "tessera.storage.gcp.publishCheckpoint", tracer, func(ctx context.Context, span trace.Span) error {
 		// outcomeAttrs is used to track any attributes which need to be attached to metrics based on the outcome of the attempt to publish.
 		var outcomeAttrs []attribute.KeyValue
@@ -1098,6 +1106,11 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 				return fmt.Errorf("failed to parse PubCoord: %v", err)
 			}
 
+			if lastSize.Valid && int64(currentSize) < lastSize.Int64 {
+				// Our view is stale, abort.
+				return nil
+			}
+
 			cpAge := time.Since(pubAt)
 			if cpAge < minStaleActive {
 				klog.V(1).Infof("publishCheckpoint: last checkpoint published %s ago (< required %s), not publishing new checkpoint", cpAge, minStaleActive)
@@ -1105,19 +1118,6 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 				return nil
 			}
 
-			span.AddEvent("Reading IntCoord")
-			// Can't just use currentTree() here as the spanner emulator doesn't do nested transactions, so do it manually:
-			row, err := txn.ReadRow(ctx, "IntCoord", spanner.Key{0}, []string{"seq", "rootHash"})
-			if err != nil {
-				return fmt.Errorf("failed to read IntCoord: %w", err)
-			}
-			var fromSeq int64 // Spanner doesn't support uint64
-			var rootHash []byte
-			if err := row.Columns(&fromSeq, &rootHash); err != nil {
-				return fmt.Errorf("failed to parse integration coordination info: %v", err)
-			}
-
-			currentSize := uint64(fromSeq)
 			shouldPublish := minStaleRepub > 0 && cpAge >= minStaleRepub
 			if !shouldPublish {
 				if !lastSize.Valid {
