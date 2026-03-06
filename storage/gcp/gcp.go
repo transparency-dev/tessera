@@ -941,7 +941,9 @@ func (s *spannerCoordinator) addSeqMutation(seq uint64, entries []storage.Sequen
 //
 // Returns true if some entries were consumed as a weak signal that there may be further entries waiting to be consumed.
 func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f consumeFunc, forceUpdate bool) (bool, error) {
-
+	if limit > math.MaxInt {
+		limit = math.MaxInt
+	}
 	return otel.Trace(ctx, "tessera.storage.gcp.consumeEntries", tracer, func(ctx context.Context, span trace.Span) (bool, error) {
 		didWork := false
 		_, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
@@ -956,24 +958,7 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 				return fmt.Errorf("failed to read integration coordination info: %v", err)
 			}
 
-			span.AddEvent("Reading SeqCoord:next")
-			// See how much potential work there is to do and trim our limit accordingly.
-			row, err = txn.ReadRow(ctx, "SeqCoord", spanner.Key{0}, []string{"next"})
-			if err != nil {
-				return err
-			}
-			var endSeq int64 // Spanner doesn't support uint64
-			if err := row.Columns(&endSeq); err != nil {
-				return fmt.Errorf("failed to read sequence coordination info: %v", err)
-			}
-			if endSeq == fromSeq {
-				return nil
-			}
-			if l := fromSeq + int64(limit); l < endSeq {
-				endSeq = l
-			}
-
-			klog.V(1).Infof("Consuming bundles start from %d to at most %d", fromSeq, endSeq-1)
+			klog.V(1).Infof("Consuming bundles start from %d", fromSeq)
 
 			span.AddEvent("Reading entries from sequence table")
 			// Now read the sequenced starting at the index we got above.
@@ -983,7 +968,7 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 			defer rows.Stop()
 
 			seqsConsumed := []int64{}
-			entries := make([]storage.SequencedEntry, 0, endSeq-fromSeq)
+			entries := make([]storage.SequencedEntry, 0, limit)
 			orderCheck := fromSeq
 			for {
 				row, err := rows.Next()
@@ -1009,6 +994,9 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 				entries = append(entries, b...)
 				seqsConsumed = append(seqsConsumed, seq)
 				orderCheck += int64(len(b))
+				if len(entries) >= int(limit) {
+					break
+				}
 			}
 			if len(seqsConsumed) == 0 && !forceUpdate {
 				klog.V(1).Info("Found no rows to sequence")
