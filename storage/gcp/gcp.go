@@ -35,6 +35,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -940,6 +941,7 @@ func (s *spannerCoordinator) addSeqMutation(seq uint64, entries []storage.Sequen
 //
 // Returns true if some entries were consumed as a weak signal that there may be further entries waiting to be consumed.
 func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f consumeFunc, forceUpdate bool) (bool, error) {
+
 	return otel.Trace(ctx, "tessera.storage.gcp.consumeEntries", tracer, func(ctx context.Context, span trace.Span) (bool, error) {
 		didWork := false
 		_, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
@@ -975,10 +977,9 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 
 			span.AddEvent("Reading entries from sequence table")
 			// Now read the sequenced starting at the index we got above.
-			rows := txn.ReadWithOptions(ctx, "Seq",
-				spanner.KeyRange{Start: spanner.Key{0, fromSeq}, End: spanner.Key{0, endSeq}},
-				[]string{"seq", "v"},
-				&spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+			rows := txn.Read(ctx, "Seq",
+				spanner.KeyRange{Start: spanner.Key{0, fromSeq}, End: spanner.Key{0, math.MaxInt64}, Kind: spanner.ClosedOpen},
+				[]string{"seq", "v"})
 			defer rows.Stop()
 
 			seqsConsumed := []int64{}
