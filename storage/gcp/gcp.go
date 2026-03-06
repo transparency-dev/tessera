@@ -1174,7 +1174,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 // needlessly attempt to GC over regions which have already been cleaned.
 func (s *spannerCoordinator) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint, deleteWithPrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) error {
 	// number of concurrent GCS deletes to perform while collecting garbage.
-	const numWorkers = 5
+	const numWorkers = 1
 
 	_, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 		row, err := txn.ReadRowWithOptions(ctx, "GCCoord", spanner.Key{0}, []string{"fromSize"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
@@ -1366,7 +1366,14 @@ func (s *gcsStorage) deleteObjectsWithPrefix(ctx context.Context, objPrefix stri
 		bkt := s.gcsClient.Bucket(s.bucket)
 
 		errs := []error(nil)
-		it := bkt.Objects(ctx, &gcs.Query{Prefix: objPrefix})
+		q := &gcs.Query{
+			Prefix:     objPrefix,
+			Projection: gcs.ProjectionNoACL,
+		}
+		if err := q.SetAttrSelection([]string{"Name"}); err != nil {
+			return fmt.Errorf("failed to set attr selection: %v", err)
+		}
+		it := bkt.Objects(ctx, q)
 		for {
 			attr, err := it.Next()
 			if err != nil {
@@ -1485,7 +1492,7 @@ func (m *MigrationStorage) IntegratedSize(ctx context.Context) (uint64, error) {
 
 func (m *MigrationStorage) fetchLeafHashes(ctx context.Context, from, to, sourceSize uint64) ([][]byte, error) {
 	// TODO(al): Make this configurable.
-	const maxBundles = 300
+	const maxBundles = 100
 
 	toBeAdded := sync.Map{}
 	eg := errgroup.Group{}
