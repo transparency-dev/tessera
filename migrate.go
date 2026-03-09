@@ -19,11 +19,12 @@ import (
 	"fmt"
 	"sync/atomic"
 
+	"log/slog"
+
 	"github.com/cenkalti/backoff/v5"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/client"
 	"golang.org/x/sync/errgroup"
-	"k8s.io/klog/v2"
 )
 
 type setEntryBundleFunc func(ctx context.Context, index uint64, partial uint8, bundle []byte) error
@@ -61,7 +62,7 @@ type bundle struct {
 //
 // A call to this function will block until either the copying is done, or an error has occurred.
 func (c *copier) Copy(ctx context.Context, fromSize uint64, sourceSize uint64) error {
-	klog.Infof("Starting copy from %d to source size %d", fromSize, sourceSize)
+	slog.Info("Starting copy", slog.Uint64("from", fromSize), slog.Uint64("to", sourceSize))
 
 	if fromSize > sourceSize {
 		return fmt.Errorf("from size %d > source size %d", fromSize, sourceSize)
@@ -91,7 +92,7 @@ func (c *copier) BundlesCopied() uint64 {
 // populateWork sends entries to the `todo` work channel.
 // Each entry corresponds to an individual entryBundle which needs to be copied.
 func (m *copier) populateWork(from, treeSize uint64) {
-	klog.Infof("Spans for entry range [%d, %d)", from, treeSize)
+	slog.Info("Spans for entry range", slog.Uint64("from", from), slog.Uint64("to", treeSize))
 	defer close(m.todo)
 
 	for ri := range layout.Range(from, treeSize-from, treeSize) {
@@ -109,12 +110,12 @@ func (m *copier) worker(ctx context.Context) error {
 			d, err := m.getEntryBundle(ctx, b.Index, uint8(b.Partial))
 			if err != nil {
 				wErr := fmt.Errorf("failed to fetch entrybundle %d (p=%d): %v", b.Index, b.Partial, err)
-				klog.Infof("%v", wErr)
+				slog.Info("Fetch error", slog.Any("error", wErr))
 				return 0, wErr
 			}
 			if err := m.setEntryBundle(ctx, b.Index, b.Partial, d); err != nil {
 				wErr := fmt.Errorf("failed to store entrybundle %d (p=%d): %v", b.Index, b.Partial, err)
-				klog.Infof("%v", wErr)
+				slog.Info("Store error", slog.Any("error", wErr))
 				return 0, wErr
 			}
 			return 1, nil
@@ -122,7 +123,7 @@ func (m *copier) worker(ctx context.Context) error {
 			backoff.WithMaxTries(10),
 			backoff.WithBackOff(backoff.NewExponentialBackOff()))
 		if err != nil {
-			klog.Infof("retry: %v", err)
+			slog.Info("Retry error", slog.Any("error", err))
 			return err
 		}
 		m.bundlesCopied.Add(n)

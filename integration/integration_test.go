@@ -32,13 +32,14 @@ import (
 	"testing"
 	"time"
 
+	"log/slog"
+
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/client"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/sync/errgroup"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -65,30 +66,32 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	klog.InitFlags(nil)
 	flag.Parse()
 
 	if !*runIntegrationTest {
-		klog.Warning("example binary integration tests are skipped")
+		slog.Warn("example binary integration tests are skipped")
 		return
 	}
 
 	var err error
 	noteVerifier, err = note.NewVerifier(*logPublicKey)
 	if err != nil {
-		klog.Fatalf("Failed to create new verifier: %v", err)
+		slog.Error("Failed to create new verifier", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	logReadBaseURL, err = url.Parse(*logURL)
 	if err != nil {
-		klog.Fatalf("failed to parse logURL: %v", err)
+		slog.Error("failed to parse logURL", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	switch logReadBaseURL.Scheme {
 	case "http", "https":
 		hf, err := client.NewHTTPFetcher(logReadBaseURL, nil)
 		if err != nil {
-			klog.Fatalf("NewHTTPFetcher: %v", err)
+			slog.Error("NewHTTPFetcher", slog.Any("error", err))
+			os.Exit(255)
 		}
 		logReadCP = hf.ReadCheckpoint
 		logReadTile = hf.ReadTile
@@ -99,7 +102,8 @@ func TestMain(m *testing.M) {
 		logReadTile = ff.ReadTile
 		logReadEntryBundle = ff.ReadEntryBundle
 	default:
-		klog.Fatalf("unsupported url scheme: %s", logReadBaseURL.Scheme)
+		slog.Error("unsupported url scheme", slog.String("scheme", logReadBaseURL.Scheme))
+		os.Exit(255)
 	}
 
 	os.Exit(m.Run())
@@ -210,7 +214,7 @@ func (w *entryWriter) add(ctx context.Context, entry []byte) (uint64, error) {
 	body, err := io.ReadAll(resp.Body)
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			klog.Warningf("resp.Body.Close(): %v", err)
+			slog.Warn("resp.Body.Close", slog.Any("error", err))
 		}
 	}()
 	if err != nil {

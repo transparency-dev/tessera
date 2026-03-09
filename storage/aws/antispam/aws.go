@@ -28,11 +28,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"log/slog"
+
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/internal/otel"
 	"go.opentelemetry.io/otel/trace"
-	"k8s.io/klog/v2"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -365,7 +366,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 					return ctx.Err()
 				}
 
-				klog.V(1).Infof("Inserting %d entries into antispam database (follow from %d of size %d)", len(curEntries), followFrom, logSize)
+				slog.Debug("Inserting entries into antispam database", slog.Int("count", len(curEntries)), slog.Uint64("followfrom", followFrom), slog.Uint64("logsize", logSize))
 
 				args := make([]string, 0, len(curEntries))
 				vals := make([]any, 0, 2*len(curEntries))
@@ -396,7 +397,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 			})
 			if err != nil {
 				if err != errOutOfSync {
-					klog.Errorf("Failed to commit antispam population tx: %v", err)
+					slog.Error("Failed to commit antispam population tx", slog.Any("error", err))
 				}
 				if next != nil {
 					stop()

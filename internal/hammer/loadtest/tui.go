@@ -16,15 +16,15 @@ package loadtest
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"strings"
 	"time"
 
+	"log/slog"
+
 	movingaverage "github.com/RobinUS2/golang-moving-average"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-	"k8s.io/klog/v2"
 )
 
 type tuiController struct {
@@ -68,38 +68,29 @@ func NewController(h *Hammer, a *HammerAnalyser) *tuiController {
 }
 
 func (c *tuiController) Run(ctx context.Context) {
-	// Redirect logs to the view
-	if err := flag.Set("logtostderr", "false"); err != nil {
-		klog.Exitf("Failed to set flag: %v", err)
-	}
-	if err := flag.Set("alsologtostderr", "false"); err != nil {
-		klog.Exitf("Failed to set flag: %v", err)
-	}
-	klog.SetOutput(c.logView)
-
 	go c.updateStatsLoop(ctx, 500*time.Millisecond)
 
 	c.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Rune() {
 		case '+':
-			klog.Info("Increasing the read operations per second")
+			slog.Info("Increasing the read operations per second")
 			c.hammer.readThrottle.Increase()
 		case '-':
-			klog.Info("Decreasing the read operations per second")
+			slog.Info("Decreasing the read operations per second")
 			c.hammer.readThrottle.Decrease()
 		case '>':
-			klog.Info("Increasing the write operations per second")
+			slog.Info("Increasing the write operations per second")
 			c.hammer.writeThrottle.Increase()
 		case '<':
-			klog.Info("Decreasing the write operations per second")
+			slog.Info("Decreasing the write operations per second")
 			c.hammer.writeThrottle.Decrease()
 		case 'w':
-			klog.Info("Increasing the number of workers")
+			slog.Info("Increasing the number of workers")
 			c.hammer.randomReaders.Grow(ctx)
 			c.hammer.fullReaders.Grow(ctx)
 			c.hammer.writers.Grow(ctx)
 		case 'W':
-			klog.Info("Decreasing the number of workers")
+			slog.Info("Decreasing the number of workers")
 			c.hammer.randomReaders.Shrink(ctx)
 			c.hammer.fullReaders.Shrink(ctx)
 			c.hammer.writers.Shrink(ctx)

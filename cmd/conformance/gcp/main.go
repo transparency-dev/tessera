@@ -34,7 +34,6 @@ import (
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -46,6 +45,7 @@ var (
 	traceFraction      = flag.Float64("trace_fraction", 0.01, "Fraction of open-telemetry span traces to sample")
 	projectID          = flag.String("project", "", "GCP Project ID for Cloud Logging traces (optional)")
 	additionalSigners  = []string{}
+	slogLevel          = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is INFO. See https://pkg.go.dev/log/slog#Level.")
 )
 
 func init() {
@@ -56,12 +56,10 @@ func init() {
 }
 
 func main() {
-	// We use slogging, but not exclusively. Keep klog until everything is replaced.
-	klog.InitFlags(nil)
 	flag.Parse()
 	ctx := context.Background()
 
-	handler := slog.NewJSONHandler(os.Stderr, nil)
+	handler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})
 	slog.SetDefault(slog.New(logger.NewGCPContextHandler(handler, *projectID)))
 
 	shutdownOTel := initOTel(ctx, *traceFraction)

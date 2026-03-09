@@ -36,6 +36,8 @@ import (
 	"testing"
 	"time"
 
+	"log/slog"
+
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"github.com/google/go-cmp/cmp"
@@ -46,7 +48,6 @@ import (
 	"github.com/transparency-dev/tessera/fsck"
 	storage "github.com/transparency-dev/tessera/storage/internal"
 	"golang.org/x/mod/sumdb/note"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -56,7 +57,6 @@ var (
 
 // TestMain inits flags and runs tests.
 func TestMain(m *testing.M) {
-	klog.InitFlags(nil)
 	// m.Run() will parse flags
 	os.Exit(m.Run())
 }
@@ -115,7 +115,7 @@ func mustDropTables(t *testing.T, ctx context.Context) {
 func TestMySQLSequencerAssignEntries(t *testing.T) {
 	ctx := context.Background()
 	if canSkipMySQLTest(t, ctx) {
-		klog.Warningf("MySQL not available, skipping %s", t.Name())
+		slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
 		t.Skip("MySQL not available, skipping test")
 	}
 	// Clean tables in case there's already something in there.
@@ -147,7 +147,7 @@ func TestMySQLSequencerAssignEntries(t *testing.T) {
 func TestMySQLSequencerPushback(t *testing.T) {
 	ctx := context.Background()
 	if canSkipMySQLTest(t, ctx) {
-		klog.Warningf("MySQL not available, skipping %s", t.Name())
+		slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
 		t.Skip("MySQL not available, skipping test")
 	}
 	// Clean tables in case there's already something in there.
@@ -207,7 +207,7 @@ func TestMySQLSequencerPushback(t *testing.T) {
 func TestMySQLSequencerRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	if canSkipMySQLTest(t, ctx) {
-		klog.Warningf("MySQL not available, skipping %s", t.Name())
+		slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
 		t.Skip("MySQL not available, skipping test")
 	}
 	// Clean tables in case there's already something in there.
@@ -375,7 +375,7 @@ func TestBundleRoundtrip(t *testing.T) {
 func TestPublishTree(t *testing.T) {
 	ctx := context.Background()
 	if canSkipMySQLTest(t, ctx) {
-		klog.Warningf("MySQL not available, skipping %s", t.Name())
+		slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
 		t.Skip("MySQL not available, skipping test")
 	}
 
@@ -473,7 +473,7 @@ func TestPublishTree(t *testing.T) {
 func TestGarbageCollect(t *testing.T) {
 	ctx := t.Context()
 	if canSkipMySQLTest(t, ctx) {
-		klog.Warningf("MySQL not available, skipping %s", t.Name())
+		slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
 		t.Skip("MySQL not available, skipping test")
 	}
 	// Clean tables in case there's already something in there.
@@ -595,7 +595,7 @@ func TestGarbageCollectOption(t *testing.T) {
 
 			ctx := t.Context()
 			if canSkipMySQLTest(t, ctx) {
-				klog.Warningf("MySQL not available, skipping %s", t.Name())
+				slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
 				t.Skip("MySQL not available, skipping test")
 			}
 			// Clean tables in case there's already something in there.

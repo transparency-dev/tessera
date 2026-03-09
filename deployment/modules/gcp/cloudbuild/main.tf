@@ -116,7 +116,7 @@ resource "google_cloudbuild_trigger" "docker" {
     ## them in files under /workspace. These are needed for later steps.
     step {
       id       = "terraform_outputs"
-      name   = "alpine/terragrunt:1.9.8"
+      name     = "alpine/terragrunt:1.9.8"
       script   = <<EOT
         cd deployment/live/gcp/conformance/ci
         export GOOGLE_PROJECT=${var.project_id}
@@ -150,11 +150,10 @@ resource "google_cloudbuild_trigger" "docker" {
             --log_public_key=$(cat /workspace/key.pub) \
             --log_url=https://storage.googleapis.com/$(cat /workspace/conformance_bucket_name)/ \
             --write_log_url="$(cat /workspace/conformance_url)" \
-            -v=1 \
+            --slog_level=-4 \
             --show_ui=false \
             --bearer_token="$(cat /workspace/cb_access)" \
             --bearer_token_write="$(cat /workspace/cb_identity)" \
-            --logtostderr \
             --num_writers=1100 \
             --max_write_ops=1500 \
             --leaf_min_size=1024 \
