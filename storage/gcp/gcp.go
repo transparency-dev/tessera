@@ -824,6 +824,7 @@ func (s *spannerCoordinator) checkDataCompatibility(ctx context.Context) error {
 // index assigned to the first entry in the batch.
 func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tessera.Entry) error {
 	return otel.TraceErr(ctx, "tessera.storage.gcp.assignEntries", tracer, func(ctx context.Context, span trace.Span) error {
+		span.SetAttributes(otel.PeriodicKey.Bool(true))
 		span.SetAttributes(numEntriesKey.Int(len(entries)))
 
 		span.AddEvent("Reading IntCoord:seq")
