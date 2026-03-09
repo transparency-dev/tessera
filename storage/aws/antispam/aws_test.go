@@ -23,10 +23,11 @@ import (
 	"testing"
 	"time"
 
+	"log/slog"
+
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/testonly"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -36,7 +37,6 @@ var (
 
 // TestMain inits flags and runs tests.
 func TestMain(m *testing.M) {
-	klog.InitFlags(nil)
 	// m.Run() will parse flags
 	os.Exit(m.Run())
 }
@@ -44,7 +44,7 @@ func TestMain(m *testing.M) {
 func TestAntispam(t *testing.T) {
 	ctx := t.Context()
 	if canSkipMySQLTest(t, ctx) {
-		klog.Warningf("MySQL not available, skipping %s", t.Name())
+		slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
 		t.Skip("MySQL not available, skipping test")
 	}
 	mustDropTables(t, ctx)
@@ -110,7 +110,7 @@ func TestAntispam(t *testing.T) {
 func TestAntispamPushbackRecovers(t *testing.T) {
 	ctx := t.Context()
 	if canSkipMySQLTest(t, ctx) {
-		klog.Warningf("MySQL not available, skipping %s", t.Name())
+		slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
 		t.Skip("MySQL not available, skipping test")
 	}
 	mustDropTables(t, ctx)

@@ -24,7 +24,7 @@ import (
 	"strings"
 	"syscall"
 
-	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 const (
@@ -120,7 +120,7 @@ func createEx(name string, d []byte) error {
 		}
 		defer func() {
 			if err := os.Remove(tmpName); err != nil {
-				klog.Warningf("Failed to remove temporary file %q: %v", tmpName, err)
+				slog.Warn("Failed to remove temporary file", slog.String("tmpname", tmpName), slog.Any("error", err))
 			}
 		}()
 

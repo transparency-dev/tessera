@@ -15,10 +15,12 @@
 package gcp
 
 import (
+	"log/slog"
+	"os"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	"k8s.io/klog/v2"
 )
 
 const name = "github.com/transparency-dev/tessera/storage/gcp"
@@ -53,7 +55,8 @@ func init() {
 		metric.WithUnit("ms"),
 		metric.WithExplicitBucketBoundaries(histogramBuckets...))
 	if err != nil {
-		klog.Exitf("Failed to create opsHistogram metric: %v", err)
+		slog.Error("Failed to create opsHistogram metric", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	checkpointAgeHistogram, err = meter.Int64Histogram(
@@ -62,7 +65,8 @@ func init() {
 		metric.WithUnit("ms"),
 		metric.WithExplicitBucketBoundaries(histogramBuckets...))
 	if err != nil {
-		klog.Exitf("Failed to create checkpointAgeHistogram metric: %v", err)
+		slog.Error("Failed to create checkpointAgeHistogram metric", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	publishCount, err = meter.Int64Counter(
@@ -70,6 +74,7 @@ func init() {
 		metric.WithDescription("Number of checkpoint publication attempts by result"),
 		metric.WithUnit("{call}"))
 	if err != nil {
-		klog.Exitf("Failed to create checkpoint publication counter metric: %v", err)
+		slog.Error("Failed to create checkpoint publication counter metric", slog.Any("error", err))
+		os.Exit(255)
 	}
 }

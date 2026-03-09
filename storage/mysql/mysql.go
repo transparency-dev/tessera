@@ -28,6 +28,8 @@ import (
 	"strings"
 	"time"
 
+	"log/slog"
+
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera"
@@ -35,7 +37,6 @@ import (
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/internal/migrate"
 	storage "github.com/transparency-dev/tessera/storage/internal"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -71,7 +72,7 @@ func New(ctx context.Context, db *sql.DB) (*Storage, error) {
 		db: db,
 	}
 	if err := s.db.Ping(); err != nil {
-		klog.Errorf("Failed to ping database: %v", err)
+		slog.Error("Failed to ping database", slog.Any("error", err))
 		return nil, err
 	}
 	if err := s.ensureVersion(ctx, schemaCompatibilityVersion); err != nil {
@@ -109,7 +110,7 @@ func (s *Storage) Appender(ctx context.Context, opts *tessera.AppendOptions) (*t
 			case <-t.C:
 			}
 			if err := a.publishCheckpoint(ctx, i); err != nil {
-				klog.Warningf("publishCheckpoint: %v", err)
+				slog.Warn("publishCheckpoint", slog.Any("error", err))
 			}
 		}
 	}(ctx, opts.CheckpointInterval())
@@ -149,19 +150,19 @@ func (s *Storage) maybeInitTree(ctx context.Context) error {
 	}
 	defer func() {
 		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
-			klog.Errorf("Failed to rollback in write initial tree state: %v", err)
+			slog.Error("Failed to rollback in write initial tree state", slog.Any("error", err))
 		}
 	}()
 
 	treeState, err := s.readTreeStateForUpdate(ctx, tx)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		klog.Errorf("Failed to read tree state: %v", err)
+		slog.Error("Failed to read tree state", slog.Any("error", err))
 		return err
 	}
 	if treeState == nil {
-		klog.Infof("Initializing tree state")
+		slog.Info("Initializing tree state")
 		if err := s.writeTreeState(ctx, tx, 0, rfc6962.DefaultHasher.EmptyRoot()); err != nil {
-			klog.Errorf("Failed to write initial tree state: %v", err)
+			slog.Error("Failed to write initial tree state", slog.Any("error", err))
 			return err
 		}
 		// Only need to commit if we've actually initialised the tree state, otherwise we'll
@@ -236,7 +237,7 @@ func (s *Storage) readTreeStateForUpdate(ctx context.Context, tx *sql.Tx) (*tree
 // writeTreeState updates the TreeState table with the new tree state information.
 func (s *Storage) writeTreeState(ctx context.Context, tx *sql.Tx, size uint64, rootHash []byte) error {
 	if _, err := tx.ExecContext(ctx, replaceTreeStateSQL, treeStateID, size, rootHash); err != nil {
-		klog.Errorf("Failed to execute replaceTreeStateSQL: %v", err)
+		slog.Error("Failed to execute replaceTreeStateSQL", slog.Any("error", err))
 		return err
 	}
 
@@ -280,7 +281,7 @@ func (s *Storage) ReadTile(ctx context.Context, level, index uint64, p uint8) ([
 // writeTile replaces the tile nodes at the given level and index.
 func (s *Storage) writeTile(ctx context.Context, tx *sql.Tx, level, index uint64, nodes []byte) error {
 	if _, err := tx.ExecContext(ctx, replaceSubtreeSQL, level, index, nodes); err != nil {
-		klog.Errorf("Failed to execute replaceSubtreeSQL: %v", err)
+		slog.Error("Failed to execute replaceSubtreeSQL", slog.Any("error", err))
 		return err
 	}
 
@@ -347,7 +348,7 @@ type dbExecContext interface {
 
 func (s *Storage) writeEntryBundle(ctx context.Context, tx dbExecContext, index uint64, size uint32, entryBundle []byte) error {
 	if _, err := tx.ExecContext(ctx, replaceTiledLeavesSQL, index, size, entryBundle); err != nil {
-		klog.Errorf("Failed to execute replaceTiledLeavesSQL: %v", err)
+		slog.Error("Failed to execute replaceTiledLeavesSQL", slog.Any("error", err))
 		return err
 	}
 
@@ -371,7 +372,7 @@ func (a *appender) publishCheckpoint(ctx context.Context, interval time.Duration
 	}
 	defer func() {
 		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
-			klog.Warningf("publishCheckpoint rollback failed: %v", err)
+			slog.Warn("publishCheckpoint rollback failed", slog.Any("error", err))
 		}
 	}()
 
@@ -382,7 +383,7 @@ func (a *appender) publishCheckpoint(ctx context.Context, interval time.Duration
 	}
 	if time.Since(time.UnixMilli(at)) < interval {
 		// Too soon, try again later.
-		klog.V(1).Info("skipping publish - too soon")
+		slog.Debug("skipping publish - too soon")
 		return nil
 	}
 
@@ -400,7 +401,7 @@ func (a *appender) publishCheckpoint(ctx context.Context, interval time.Duration
 		return err
 	}
 
-	klog.V(2).Infof("Published latest checkpoint: %d, %x", treeState.size, treeState.root)
+	slog.Debug("Published latest checkpoint", slog.Uint64("size", treeState.size), slog.String("root", fmt.Sprintf("%x", treeState.root)))
 
 	return tx.Commit()
 }
@@ -432,7 +433,7 @@ func (a *appender) sequenceBatch(ctx context.Context, entries []*tessera.Entry) 
 	// Defer a rollback in case anything fails.
 	defer func() {
 		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
-			klog.Errorf("Failed to rollback in sequenceBatch: %v", err)
+			slog.Error("Failed to rollback in sequenceBatch", slog.Any("error", err))
 		}
 	}()
 
@@ -542,7 +543,7 @@ func (a *appender) appendEntries(ctx context.Context, tx *sql.Tx, fromSeq uint64
 		return fmt.Errorf("writeCheckpoint: %w", err)
 	}
 
-	klog.V(1).Infof("New tree: %d, %x", newSize, newRoot)
+	slog.Debug("New tree", slog.Uint64("newsize", newSize), slog.String("newroot", fmt.Sprintf("%x", newRoot)))
 	return nil
 }
 
@@ -572,7 +573,7 @@ func getTiles(ctx context.Context, tx *sql.Tx, tileIDs []storage.TileID, _ uint6
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			klog.Warningf("Failed to close the rows: %v", err)
+			slog.Warn("Failed to close the rows", slog.Any("error", err))
 		}
 	}()
 
@@ -669,17 +670,17 @@ tryAgain:
 		// Figure out where we should be integration from.
 		from, err := m.IntegratedSize(ctx)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			klog.Warningf("AwaitIntegration: readTreeState: %v", err)
+			slog.Warn("AwaitIntegration: readTreeState", slog.Any("error", err))
 			continue
 		}
 		fromSeq = from
-		klog.Infof("AwaitIntegration: Integrate from %d (Target %d)", fromSeq, sourceSize)
+		slog.Info("AwaitIntegration: Integrating", slog.Uint64("from", fromSeq), slog.Uint64("to", sourceSize))
 
 		// Set up the streaming read of entry bundles from the DB.
 		nextBundle := fromSeq / layout.EntryBundleWidth
 		rows, err = m.s.db.QueryContext(ctx, streamTiledLeavesSQL, nextBundle)
 		if err != nil {
-			klog.Warningf("Failed to start streaming entry bundles @%d: %v", nextBundle, err)
+			slog.Warn("Failed to start streaming entry bundles", slog.Uint64("nextbundle", nextBundle), slog.Any("error", err))
 			continue
 		}
 
@@ -689,7 +690,7 @@ tryAgain:
 			var idx, size uint64
 			var data []byte
 			if err := rows.Scan(&idx, &size, &data); err != nil {
-				klog.Warningf("AwaitIntegration: Scan: %v", err)
+				slog.Warn("Failed AwaitIntegration: Scan", slog.Any("error", err))
 				continue tryAgain
 			}
 			// Check that we're seeing contiguous bundles, and go around if we've encountered a gap.
@@ -698,14 +699,14 @@ tryAgain:
 			// We'll continue looping around in the outer loop (where we back off to avoid hammering the DB) until
 			// this entry bundle turns up.
 			if want := fromSeq / uint64(layout.EntryBundleWidth); idx != want {
-				klog.V(1).Infof("AwaitIntegration: encountered gap, want idx %d (fromSeq %d) but found %d", want, fromSeq, idx)
+				slog.Debug("AwaitIntegration: encountered gap", slog.Uint64("want", want), slog.Uint64("fromseq", fromSeq), slog.Uint64("found", idx))
 				continue tryAgain
 			}
 
 			// Turn the entry bundle into leaf hashes.
 			lh, err := m.bundleHasher(data)
 			if err != nil {
-				klog.Warningf("AwaitIntegration: bundleHasher: %v", err)
+				slog.Warn("Failed AwaitIntegration: bundleHasher", slog.Any("error", err))
 				continue tryAgain
 			}
 
@@ -717,13 +718,13 @@ tryAgain:
 			// And finally integrate the bundle into the tree.
 			newSize, newRoot, err := m.integrateBatch(ctx, fromSeq, lh)
 			if err != nil {
-				klog.Warningf("AwaitIntegration: integrateBatch: %v", err)
+				slog.Warn("AwaitIntegration: integrateBatch", slog.Any("error", err))
 				continue tryAgain
 			}
 			fromSeq = newSize
 
 			if newSize == sourceSize {
-				klog.Infof("AwaitIntegration: Integrated to %d with root hash %x", newSize, newRoot)
+				slog.Info("AwaitIntegration: Integrated to with root hash", slog.Uint64("newsize", newSize), slog.String("newroot", fmt.Sprintf("%x", newRoot)))
 				return newRoot, nil
 			}
 		}
@@ -741,7 +742,7 @@ func (m *MigrationStorage) integrateBatch(ctx context.Context, fromSeq uint64, l
 	defer func() {
 		if tx != nil {
 			if err := tx.Rollback(); err != nil {
-				klog.Warningf("integrateBatch: Rollback: %v", err)
+				slog.Warn("integrateBatch: Rollback", slog.Any("error", err))
 			}
 		}
 	}()

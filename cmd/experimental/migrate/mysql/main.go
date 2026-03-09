@@ -27,10 +27,11 @@ import (
 	"strings"
 	"time"
 
+	"log/slog"
+
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/storage/mysql"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -45,30 +46,35 @@ var (
 )
 
 func main() {
-	klog.InitFlags(nil)
 	flag.Parse()
 	ctx := context.Background()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
 	srcURL, err := url.Parse(*sourceURL)
 	if err != nil {
-		klog.Exitf("Invalid --source_url %q: %v", *sourceURL, err)
+		slog.Error("Invalid --source_url", slog.String("sourceurl", *sourceURL), slog.Any("error", err))
+		os.Exit(255)
 	}
 	src, err := client.NewHTTPFetcher(srcURL, nil)
 	if err != nil {
-		klog.Exitf("Failed to create HTTP fetcher: %v", err)
+		slog.Error("Failed to create HTTP fetcher", slog.Any("error", err))
+		os.Exit(255)
 	}
 	sourceCP, err := src.ReadCheckpoint(ctx)
 	if err != nil {
-		klog.Exitf("Failed to read source checkpoint: %v", err)
+		slog.Error("Failed to read source checkpoint", slog.Any("error", err))
+		os.Exit(255)
 	}
 	bits := strings.Split(string(sourceCP), "\n")
 	sourceSize, err := strconv.ParseUint(bits[1], 10, 64)
 	if err != nil {
-		klog.Exitf("Invalid CP size %q: %v", bits[1], err)
+		slog.Error("Invalid CP size", slog.String("size", bits[1]), slog.Any("error", err))
+		os.Exit(255)
 	}
 	sourceRoot, err := base64.StdEncoding.DecodeString(bits[2])
 	if err != nil {
-		klog.Exitf("Invalid checkpoint roothash %q: %v", bits[2], err)
+		slog.Error("Invalid checkpoint roothash", slog.String("hash", bits[2]), slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	db := createDatabaseOrDie(ctx)
@@ -76,51 +82,58 @@ func main() {
 	// Initialise the Tessera MySQL storage
 	driver, err := mysql.New(ctx, db)
 	if err != nil {
-		klog.Exitf("Failed to create new MySQL storage: %v", err)
+		slog.Error("Failed to create new MySQL storage", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	opts := tessera.NewMigrationOptions()
 
 	m, err := tessera.NewMigrationTarget(ctx, driver, opts)
 	if err != nil {
-		klog.Exitf("Failed to create MigrationTarget: %v", err)
+		slog.Error("Failed to create MigrationTarget", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	if err := m.Migrate(context.Background(), *numWorkers, sourceSize, sourceRoot, src.ReadEntryBundle); err != nil {
-		klog.Exitf("Migrate failed: %v", err)
+		slog.Error("Migrate failed", slog.Any("error", err))
+		os.Exit(255)
 	}
 }
 
 func initDatabaseSchema(ctx context.Context) {
 	if *initSchemaPath != "" {
-		klog.Infof("Initializing database schema")
+		slog.Info("Initializing database schema")
 
 		db, err := sql.Open("mysql", *mysqlURI+"?multiStatements=true")
 		if err != nil {
-			klog.Exitf("Failed to connect to DB: %v", err)
+			slog.Error("Failed to connect to DB", slog.Any("error", err))
+			os.Exit(255)
 		}
 		defer func() {
 			if err := db.Close(); err != nil {
-				klog.Warningf("Failed to close db: %v", err)
+				slog.Warn("Failed to close db", slog.Any("error", err))
 			}
 		}()
 
 		rawSchema, err := os.ReadFile(*initSchemaPath)
 		if err != nil {
-			klog.Exitf("Failed to read init schema file %q: %v", *initSchemaPath, err)
+			slog.Error("Failed to read init schema file", slog.String("initschemapath", *initSchemaPath), slog.Any("error", err))
+			os.Exit(255)
 		}
 		if _, err := db.ExecContext(ctx, string(rawSchema)); err != nil {
-			klog.Exitf("Failed to execute init database schema: %v", err)
+			slog.Error("Failed to execute init database schema", slog.Any("error", err))
+			os.Exit(255)
 		}
 
-		klog.Infof("Database schema initialized")
+		slog.Info("Database schema initialized")
 	}
 }
 
 func createDatabaseOrDie(ctx context.Context) *sql.DB {
 	db, err := sql.Open("mysql", *mysqlURI)
 	if err != nil {
-		klog.Exitf("Failed to connect to DB: %v", err)
+		slog.Error("Failed to connect to DB", slog.Any("error", err))
+		os.Exit(255)
 	}
 	db.SetConnMaxLifetime(*dbConnMaxLifetime)
 	db.SetMaxOpenConns(*dbMaxOpenConns)

@@ -27,12 +27,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"log/slog"
+
 	"github.com/dgraph-io/badger/v4"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/internal/otel"
 	"go.opentelemetry.io/otel/trace"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -327,7 +328,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 								return fmt.Errorf("entryReader.next: %v", err)
 							}
 							if wantIdx := followFrom + uint64(i); e.Index != wantIdx {
-								klog.Infof("at %d, expected %d - out of sync", e.Index, wantIdx)
+								slog.Info("Out of sync", slog.Uint64("index", e.Index), slog.Uint64("wantidx", wantIdx))
 								// We're out of sync
 								return errOutOfSync
 							}
@@ -365,7 +366,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 			})
 			if err != nil {
 				if err != errOutOfSync {
-					klog.Errorf("Failed to commit antispam population tx: %v", err)
+					slog.Error("Failed to commit antispam population tx", slog.Any("error", err))
 				}
 				stop()
 				next = nil

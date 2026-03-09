@@ -27,13 +27,14 @@ import (
 	"os"
 	"time"
 
+	"log/slog"
+
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/storage/mysql"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -56,9 +57,9 @@ func init() {
 }
 
 func main() {
-	klog.InitFlags(nil)
 	flag.Parse()
 	ctx := context.Background()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
 	db := createDatabaseOrDie(ctx)
 	noteSigner, additionalSigners := createSignersOrDie()
@@ -66,7 +67,8 @@ func main() {
 	// Initialise the Tessera MySQL storage
 	driver, err := mysql.New(ctx, db)
 	if err != nil {
-		klog.Exitf("Failed to create new MySQL storage: %v", err)
+		slog.Error("Failed to create new MySQL storage", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	appender, shutdown, reader, err := tessera.NewAppender(ctx, driver, tessera.NewAppendOptions().
@@ -74,7 +76,8 @@ func main() {
 		WithCheckpointInterval(*publishInterval).
 		WithAntispam(tessera.DefaultAntispamInMemorySize, nil))
 	if err != nil {
-		klog.Exit(err)
+		slog.Error("Failed to create new appender", slog.Any("error", err))
+		os.Exit(255)
 	}
 	// Set up the handlers for the tlog-tiles GET methods, and a custom handler for HTTP POSTs to /add
 	configureTilesReadAPI(http.DefaultServeMux, reader)
@@ -91,15 +94,15 @@ func main() {
 			return
 		}
 		if _, err := fmt.Fprintf(w, "%d", idx.Index); err != nil {
-			klog.Errorf("/add: %v", err)
+			slog.Error("/add", slog.Any("error", err))
 			return
 		}
 	})
 
 	// TODO(mhutchinson): Change the listen flag to just a port, or fix up this address formatting
-	klog.Infof("Environment variables useful for accessing this log:\n"+
-		"export WRITE_URL=http://localhost%s/ \n"+
-		"export READ_URL=http://localhost%s/ \n", *listen, *listen)
+	slog.Info("Environment variables useful for accessing this log:\n" +
+		fmt.Sprintf("export WRITE_URL=http://localhost%s/ \n", *listen) +
+		fmt.Sprintf("export READ_URL=http://localhost%s/ \n", *listen))
 	// Run the HTTP server with the single handler and block until this is terminated
 	h2s := &http2.Server{}
 	h1s := &http.Server{
@@ -108,21 +111,25 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if err := http2.ConfigureServer(h1s, h2s); err != nil {
-		klog.Exitf("http2.ConfigureServer: %v", err)
+		slog.Error("http2.ConfigureServer", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	if err := h1s.ListenAndServe(); err != nil {
 		if err := shutdown(ctx); err != nil {
-			klog.Exit(err)
+			slog.Error("Failed to cleanly shutdown after ListenAndServe", slog.Any("error", err))
+			os.Exit(255)
 		}
-		klog.Exitf("ListenAndServe: %v", err)
+		slog.Error("ListenAndServe", slog.Any("error", err))
+		os.Exit(255)
 	}
 }
 
 func createDatabaseOrDie(ctx context.Context) *sql.DB {
 	db, err := sql.Open("mysql", *mysqlURI)
 	if err != nil {
-		klog.Exitf("Failed to connect to DB: %v", err)
+		slog.Error("Failed to connect to DB", slog.Any("error", err))
+		os.Exit(255)
 	}
 	db.SetConnMaxLifetime(*dbConnMaxLifetime)
 	db.SetMaxOpenConns(*dbMaxOpenConns)
@@ -144,11 +151,13 @@ func createSignersOrDie() (note.Signer, []note.Signer) {
 func createSignerOrDie(s string) note.Signer {
 	rawPrivateKey, err := os.ReadFile(s)
 	if err != nil {
-		klog.Exitf("Failed to read private key file %q: %v", s, err)
+		slog.Error("Failed to read private key file", slog.String("file", s), slog.Any("error", err))
+		os.Exit(255)
 	}
 	noteSigner, err := note.NewSigner(string(rawPrivateKey))
 	if err != nil {
-		klog.Exitf("Failed to create new signer: %v", err)
+		slog.Error("Failed to create new signer", slog.Any("error", err))
+		os.Exit(255)
 	}
 	return noteSigner
 }
@@ -165,7 +174,7 @@ func configureTilesReadAPI(mux *http.ServeMux, reader tessera.LogReader) {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
-			klog.Errorf("/checkpoint: %v", err)
+			slog.Error("/checkpoint", slog.Any("error", err))
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -175,7 +184,7 @@ func configureTilesReadAPI(mux *http.ServeMux, reader tessera.LogReader) {
 		// than the checkpoint publish interval.
 		w.Header().Set("Cache-Control", "no-cache")
 		if _, err := w.Write(checkpoint); err != nil {
-			klog.Errorf("/checkpoint: %v", err)
+			slog.Error("/checkpoint", slog.Any("error", err))
 			return
 		}
 	})
@@ -185,7 +194,7 @@ func configureTilesReadAPI(mux *http.ServeMux, reader tessera.LogReader) {
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			if _, werr := fmt.Fprintf(w, "Malformed URL: %s", err.Error()); werr != nil {
-				klog.Errorf("/tile/{level}/{index...}: %v", werr)
+				slog.Error("/tile/{level}/{index...}", slog.Any("error", werr))
 			}
 			return
 		}
@@ -195,7 +204,7 @@ func configureTilesReadAPI(mux *http.ServeMux, reader tessera.LogReader) {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
-			klog.Errorf("/tile/{level}/{index...}: %v", err)
+			slog.Error("/tile/{level}/{index...}", slog.Any("error", err))
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -203,7 +212,7 @@ func configureTilesReadAPI(mux *http.ServeMux, reader tessera.LogReader) {
 		w.Header().Set("Cache-Control", "max-age=31536000, immutable")
 
 		if _, err := w.Write(tile); err != nil {
-			klog.Errorf("/tile/{level}/{index...}: %v", err)
+			slog.Error("/tile/{level}/{index...}", slog.Any("error", err))
 			return
 		}
 	})
@@ -213,14 +222,14 @@ func configureTilesReadAPI(mux *http.ServeMux, reader tessera.LogReader) {
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			if _, werr := fmt.Fprintf(w, "Malformed URL: %s", err.Error()); werr != nil {
-				klog.Errorf("/tile/entries/{index...}: %v", werr)
+				slog.Error("/tile/entries/{index...}", slog.Any("error", werr))
 			}
 			return
 		}
 
 		entryBundle, err := reader.ReadEntryBundle(r.Context(), index, p)
 		if err != nil {
-			klog.Errorf("/tile/entries/{index...}: %v", err)
+			slog.Error("/tile/entries/{index...}", slog.Any("error", err))
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -232,7 +241,7 @@ func configureTilesReadAPI(mux *http.ServeMux, reader tessera.LogReader) {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 
 		if _, err := w.Write(entryBundle); err != nil {
-			klog.Errorf("/tile/entries/{index...}: %v", err)
+			slog.Error("/tile/entries/{index...}", slog.Any("error", err))
 			return
 		}
 	})
@@ -240,26 +249,29 @@ func configureTilesReadAPI(mux *http.ServeMux, reader tessera.LogReader) {
 
 func initDatabaseSchema(ctx context.Context) {
 	if *initSchemaPath != "" {
-		klog.Infof("Initializing database schema")
+		slog.Info("Initializing database schema")
 
 		db, err := sql.Open("mysql", *mysqlURI+"?multiStatements=true")
 		if err != nil {
-			klog.Exitf("Failed to connect to DB: %v", err)
+			slog.Error("Failed to connect to DB", slog.Any("error", err))
+			os.Exit(255)
 		}
 		defer func() {
 			if err := db.Close(); err != nil {
-				klog.Warningf("Failed to close db: %v", err)
+				slog.Warn("Failed to close db", slog.Any("error", err))
 			}
 		}()
 
 		rawSchema, err := os.ReadFile(*initSchemaPath)
 		if err != nil {
-			klog.Exitf("Failed to read init schema file %q: %v", *initSchemaPath, err)
+			slog.Error("Failed to read init schema file", slog.String("initschemapath", *initSchemaPath), slog.Any("error", err))
+			os.Exit(255)
 		}
 		if _, err := db.ExecContext(ctx, string(rawSchema)); err != nil {
-			klog.Exitf("Failed to execute init database schema: %v", err)
+			slog.Error("Failed to execute init database schema", slog.Any("error", err))
+			os.Exit(255)
 		}
 
-		klog.Infof("Database schema initialized")
+		slog.Info("Database schema initialized")
 	}
 }

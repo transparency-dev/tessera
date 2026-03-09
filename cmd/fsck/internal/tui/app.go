@@ -20,11 +20,11 @@ import (
 	"context"
 	"flag"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/transparency-dev/tessera/cmd/fsck/tui"
 	"github.com/transparency-dev/tessera/fsck"
-	"k8s.io/klog/v2"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -38,7 +38,7 @@ func RunApp(ctx context.Context, f *fsck.Fsck) error {
 	_ = flag.Set("logtostderr", "false")
 	_ = flag.Set("alsologtostderr", "false")
 	r, w := io.Pipe()
-	klog.SetOutput(w)
+	slog.SetDefault(slog.New(slog.NewTextHandler(w, nil)))
 	go func() {
 		s := bufio.NewScanner(r)
 		for s.Scan() {

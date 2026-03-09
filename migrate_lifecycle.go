@@ -21,11 +21,12 @@ import (
 	"strings"
 	"time"
 
+	"log/slog"
+
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/internal/migrate"
 	"golang.org/x/sync/errgroup"
-	"k8s.io/klog/v2"
 )
 
 // NewMigrationTarget returns a MigrationTarget, which allows a personality to "import" a C2SP
@@ -132,7 +133,7 @@ func (mt *MigrationTarget) Migrate(ctx context.Context, numWorkers uint, sourceS
 			}
 			s, err := mt.writer.IntegratedSize(ctx)
 			if err != nil {
-				klog.Warningf("Size: %v", err)
+				slog.Warn("Size", slog.Any("error", err))
 			}
 
 			info := []string{}
@@ -142,12 +143,12 @@ func (mt *MigrationTarget) Migrate(ctx context.Context, numWorkers uint, sourceS
 			for _, f := range mt.followers {
 				p, err := f.EntriesProcessed(ctx)
 				if err != nil {
-					klog.Infof("%s EntriesProcessed(): %v", f.Name(), err)
+					slog.Info("EntriesProcessed", slog.String("name", f.Name()), slog.Any("error", err))
 					continue
 				}
 				info = append(info, progress(f.Name(), p, sourceSize))
 			}
-			klog.Infof("Progress: %s", strings.Join(info, ", "))
+			slog.Info("Progress", slog.String("status", strings.Join(info, ", ")))
 
 		}
 	}()
@@ -169,7 +170,7 @@ func (mt *MigrationTarget) Migrate(ctx context.Context, numWorkers uint, sourceS
 	})
 
 	for _, f := range mt.followers {
-		klog.Infof("Starting %s follower", f.Name())
+		slog.Info("Starting follower", slog.String("name", f.Name()))
 		go f.Follow(cctx, mt.reader)
 		errG.Go(awaitFollower(cctx, f, sourceSize))
 	}
@@ -182,7 +183,7 @@ func (mt *MigrationTarget) Migrate(ctx context.Context, numWorkers uint, sourceS
 		return fmt.Errorf("migration completed, but local root hash %x != source root hash %x", calculatedRoot, sourceRoot)
 	}
 
-	klog.Infof("Migration successful.")
+	slog.Info("Migration successful.")
 	return nil
 }
 
@@ -199,11 +200,11 @@ func awaitFollower(ctx context.Context, f Follower, i uint64) func() error {
 
 			pos, err := f.EntriesProcessed(ctx)
 			if err != nil {
-				klog.Infof("%s EntriesProcessed(): %v", f.Name(), err)
+				slog.Info("EntriesProcessed", slog.String("name", f.Name()), slog.Any("error", err))
 				continue
 			}
 			if pos >= i {
-				klog.Infof("%s follower complete", f.Name())
+				slog.Info("follower complete", slog.String("name", f.Name()))
 				return nil
 			}
 		}

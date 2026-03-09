@@ -22,9 +22,10 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"log/slog"
+
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/client"
-	"k8s.io/klog/v2"
 )
 
 // LeafWriter is the signature of a function which can write arbitrary data to a log.
@@ -85,7 +86,7 @@ func (r *LeafReader) Run(ctx context.Context) {
 		if i >= size {
 			continue
 		}
-		klog.V(2).Infof("LeafReader getting %d", i)
+		slog.Debug("LeafReader: getting index", slog.Uint64("i", i))
 		_, err := r.getLeaf(ctx, i, size)
 		if err != nil {
 			r.errChan <- fmt.Errorf("failed to get leaf %d: %v", i, err)
@@ -99,7 +100,7 @@ func (r *LeafReader) getLeaf(ctx context.Context, i uint64, logSize uint64) ([]b
 		return nil, fmt.Errorf("requested leaf %d >= log size %d", i, logSize)
 	}
 	if cached, _ := r.c.get(i); cached != nil {
-		klog.V(2).Infof("Using cached result for index %d", i)
+		slog.Debug("Using cached result for index", slog.Uint64("i", i))
 		return cached, nil
 	}
 
@@ -220,7 +221,7 @@ func (w *LogWriter) Run(ctx context.Context) {
 		case w.leafChan <- lt:
 		default:
 		}
-		klog.V(2).Infof("Wrote leaf at index %d", index)
+		slog.Debug("Wrote leaf at index", slog.Uint64("i", index))
 		newLeaf = w.gen()
 	}
 }

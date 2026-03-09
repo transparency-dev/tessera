@@ -21,13 +21,15 @@ import (
 	"encoding/base64"
 	"flag"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
+
+	"log/slog"
 
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/storage/posix"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -37,43 +39,51 @@ var (
 )
 
 func main() {
-	klog.InitFlags(nil)
 	flag.Parse()
 	ctx := context.Background()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
 	srcURL, err := url.Parse(*sourceURL)
 	if err != nil {
-		klog.Exitf("Invalid --source_url %q: %v", *sourceURL, err)
+		slog.Error("Invalid --source_url", slog.String("param", *sourceURL), slog.Any("error", err))
+		os.Exit(255)
 	}
 	src, err := client.NewHTTPFetcher(srcURL, nil)
 	if err != nil {
-		klog.Exitf("Failed to create HTTP fetcher: %v", err)
+		slog.Error("Failed to create HTTP fetcher", slog.Any("error", err))
+		os.Exit(255)
 	}
 	sourceCP, err := src.ReadCheckpoint(ctx)
 	if err != nil {
-		klog.Exitf("fetch initial source checkpoint: %v", err)
+		slog.Error("fetch initial source checkpoint", slog.Any("error", err))
+		os.Exit(255)
 	}
 	bits := strings.Split(string(sourceCP), "\n")
 	sourceSize, err := strconv.ParseUint(bits[1], 10, 64)
 	if err != nil {
-		klog.Exitf("invalid CP size %q: %v", bits[1], err)
+		slog.Error("invalid CP size", slog.String("size", bits[1]), slog.Any("error", err))
+		os.Exit(255)
 	}
 	sourceRoot, err := base64.StdEncoding.DecodeString(bits[2])
 	if err != nil {
-		klog.Exitf("invalid checkpoint roothash %q: %v", bits[2], err)
+		slog.Error("invalid checkpoint roothash", slog.String("hash", bits[2]), slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	driver, err := posix.New(ctx, posix.Config{Path: *storageDir})
 	if err != nil {
-		klog.Exitf("Failed to create new POSIX storage driver: %v", err)
+		slog.Error("Failed to create new POSIX storage driver", slog.Any("error", err))
+		os.Exit(255)
 	}
 	// Create our Tessera migration target instance
 	m, err := tessera.NewMigrationTarget(ctx, driver, tessera.NewMigrationOptions())
 	if err != nil {
-		klog.Exitf("Failed to create new POSIX storage: %v", err)
+		slog.Error("Failed to create new POSIX storage", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	if err := m.Migrate(context.Background(), *numWorkers, sourceSize, sourceRoot, src.ReadEntryBundle); err != nil {
-		klog.Exitf("Migrate failed: %v", err)
+		slog.Error("Migrate failed", slog.Any("error", err))
+		os.Exit(255)
 	}
 }

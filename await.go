@@ -22,10 +22,11 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	"github.com/transparency-dev/tessera/internal/otel"
 	"github.com/transparency-dev/tessera/internal/parse"
 	"go.opentelemetry.io/otel/trace"
-	"k8s.io/klog/v2"
 )
 
 // NewPublicationAwaiter provides an PublicationAwaiter that can be cancelled
@@ -123,7 +124,7 @@ func (a *PublicationAwaiter) pollLoop(ctx context.Context, readCheckpoint func(c
 			select {
 			case <-ctx.Done():
 				span.AddEvent("context.done")
-				klog.V(2).Info("PublicationAwaiter exiting due to context completion")
+				slog.Debug("PublicationAwaiter exiting due to context completion")
 				cp, cpSize, cpErr = nil, 0, ctx.Err()
 				ctxDone = true
 			case <-time.After(pollPeriod):

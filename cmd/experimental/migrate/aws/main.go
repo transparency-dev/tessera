@@ -21,6 +21,9 @@ import (
 	"flag"
 	"fmt"
 	"net/url"
+	"os"
+
+	"log/slog"
 
 	aaws "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -30,7 +33,6 @@ import (
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/internal/parse"
 	"github.com/transparency-dev/tessera/storage/aws"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -51,47 +53,55 @@ var (
 )
 
 func main() {
-	klog.InitFlags(nil)
 	flag.Parse()
 	ctx := context.Background()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
 	if *sourceURL == "" {
-		klog.Exit("Missing parameter: --source_url")
+		slog.Error("Missing parameter: --source_url")
+		os.Exit(255)
 	}
 	srcURL, err := url.Parse(*sourceURL)
 	if err != nil {
-		klog.Exitf("Invalid --source_url %q: %v", *sourceURL, err)
+		slog.Error("Invalid --source_url", slog.String("param", *sourceURL), slog.Any("error", err))
+		os.Exit(255)
 	}
 	src, err := client.NewHTTPFetcher(srcURL, nil)
 	if err != nil {
-		klog.Exitf("Failed to create HTTP fetcher: %v", err)
+		slog.Error("Failed to create HTTP fetcher", slog.Any("error", err))
+		os.Exit(255)
 	}
 	sourceCP, err := src.ReadCheckpoint(ctx)
 	if err != nil {
-		klog.Exitf("fetch initial source checkpoint: %v", err)
+		slog.Error("fetch initial source checkpoint", slog.Any("error", err))
+		os.Exit(255)
 	}
 	// TODO(mhutchinson): parse this safely.
 	_, sourceSize, sourceRoot, err := parse.CheckpointUnsafe(sourceCP)
 	if err != nil {
-		klog.Exitf("Failed to parse checkpoint: %v", err)
+		slog.Error("Failed to parse checkpoint", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	// Create our Tessera storage backend:
 	awsCfg := storageConfigFromFlags()
 	driver, err := aws.New(ctx, awsCfg)
 	if err != nil {
-		klog.Exitf("Failed to create new AWS storage: %v", err)
+		slog.Error("Failed to create new AWS storage", slog.Any("error", err))
+		os.Exit(255)
 	}
 	opts := tessera.NewMigrationOptions()
 
 	m, err := tessera.NewMigrationTarget(ctx, driver, opts)
 	if err != nil {
-		klog.Exitf("Failed to create MigrationTarget: %v", err)
+		slog.Error("Failed to create MigrationTarget", slog.Any("error", err))
+		os.Exit(255)
 	}
 
-	klog.Infof("Starting Migrate() with workers=%d, sourceSize=%d, migrating from %q", *numWorkers, sourceSize, *sourceURL)
+	slog.Info("Starting Migrate() with workers=, sourceSize=, migrating from", slog.Any("numworkers", *numWorkers), slog.Uint64("sourcesize", sourceSize), slog.String("sourceurl", *sourceURL))
 	if err := m.Migrate(context.Background(), *numWorkers, sourceSize, sourceRoot, src.ReadEntryBundle); err != nil {
-		klog.Exitf("Migrate failed: %v", err)
+		slog.Error("Migrate failed", slog.Any("error", err))
+		os.Exit(255)
 	}
 }
 
@@ -99,23 +109,29 @@ func main() {
 // provided via flags.
 func storageConfigFromFlags() aws.Config {
 	if *bucket == "" {
-		klog.Exit("--bucket must be set")
+		slog.Error("--bucket must be set")
+		os.Exit(255)
 	}
 	if *dbName == "" {
-		klog.Exit("--db_name must be set")
+		slog.Error("--db_name must be set")
+		os.Exit(255)
 	}
 	if *dbHost == "" {
-		klog.Exit("--db_host must be set")
+		slog.Error("--db_host must be set")
+		os.Exit(255)
 	}
 	if *dbPort == 0 {
-		klog.Exit("--db_port must be set")
+		slog.Error("--db_port must be set")
+		os.Exit(255)
 	}
 	if *dbUser == "" {
-		klog.Exit("--db_user must be set")
+		slog.Error("--db_user must be set")
+		os.Exit(255)
 	}
 	// Empty passord isn't an option with AuroraDB MySQL.
 	if *dbPassword == "" {
-		klog.Exit("--db_password must be set")
+		slog.Error("--db_password must be set")
+		os.Exit(255)
 	}
 
 	c := mysql.Config{
