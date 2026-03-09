@@ -49,6 +49,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
+	"log/slog"
+
 	gcs "cloud.google.com/go/storage"
 	"github.com/google/go-cmp/cmp"
 	"github.com/transparency-dev/merkle/rfc6962"
@@ -66,7 +68,6 @@ import (
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -351,7 +352,7 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 			}
 			return nil
 		}); err != nil {
-			klog.Error(err)
+			slog.ErrorContext(ctx, "integrateEntriesJob failed", slog.Any("error", err))
 		}
 	}
 }
@@ -381,7 +382,7 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 			}
 			return nil
 		}); err != nil {
-			klog.Error(err)
+			slog.ErrorContext(ctx, "publishCheckpoint failed", "error", err)
 		}
 	}
 }
@@ -425,7 +426,7 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 			}
 			return nil
 		}); err != nil {
-			klog.Warning(err)
+			slog.WarnContext(ctx, "garbageCollectTask failed", slog.Any("error", err))
 		}
 	}
 
@@ -468,7 +469,7 @@ func (a *Appender) updateCheckpoint(ctx context.Context, size uint64, root []byt
 			return fmt.Errorf("writeCheckpoint: %v", err)
 		}
 
-		klog.V(2).Infof("Created and stored latest checkpoint: %d, %x", size, root)
+		slog.DebugContext(ctx, "Created and stored latest checkpoint", slog.Uint64("size", size), slog.String("root", fmt.Sprintf("%x", root)))
 
 		return nil
 	})
@@ -660,7 +661,7 @@ func integrate(ctx context.Context, fromSeq uint64, lh [][]byte, logStore *logRe
 		if err := errG.Wait(); err != nil {
 			return nil, err
 		}
-		klog.V(1).Infof("New tree: %d, %x", newSize, newRoot)
+		slog.DebugContext(ctx, "New tree integrated", slog.Uint64("size", newSize), slog.String("root", fmt.Sprintf("%x", newRoot)))
 
 		return newRoot, nil
 	})
@@ -713,20 +714,20 @@ func (a *Appender) updateEntryBundles(ctx context.Context, fromSeq uint64, entri
 			numAdded++
 			if entriesInBundle == layout.EntryBundleWidth {
 				//  This bundle is full, so we need to write it out...
-				klog.V(1).Infof("In-memory bundle idx %d is full, attempting write to GCS", bundleIndex)
+				slog.DebugContext(ctx, "In-memory bundle is full, attempting write to GCS", slog.Uint64("bundleIndex", bundleIndex))
 				goSetEntryBundle(ctx, bundleIndex, 0, bundleWriter.Bytes())
 				// ... and prepare the next entry bundle for any remaining entries in the batch
 				bundleIndex++
 				entriesInBundle = 0
 				// Don't use Reset/Truncate here - the backing []bytes is still being used by goSetEntryBundle above.
 				bundleWriter = &bytes.Buffer{}
-				klog.V(1).Infof("Starting to fill in-memory bundle idx %d", bundleIndex)
+				slog.DebugContext(ctx, "Starting to fill in-memory bundle", slog.Uint64("bundleIndex", bundleIndex))
 			}
 		}
 		// If we have a partial bundle remaining once we've added all the entries from the batch,
 		// this needs writing out too.
 		if entriesInBundle > 0 {
-			klog.V(1).Infof("Attempting to write in-memory partial bundle idx %d.%d to GCS", bundleIndex, entriesInBundle)
+			slog.DebugContext(ctx, "Attempting to write in-memory partial bundle to GCS", slog.Uint64("bundleIndex", bundleIndex), slog.Any("entriesInBundle", entriesInBundle))
 			goSetEntryBundle(ctx, bundleIndex, uint8(entriesInBundle), bundleWriter.Bytes())
 		}
 		return seqErr.Wait()
@@ -961,8 +962,7 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 				return fmt.Errorf("failed to read integration coordination info: %v", err)
 			}
 
-			klog.V(1).Infof("Consuming bundles start from %d", fromSeq)
-
+			slog.DebugContext(ctx, "Consuming bundles", slog.Int64("fromSeq", fromSeq))
 			span.AddEvent("Reading entries from sequence table")
 			// Now read the sequenced starting at the index we got above.
 			rows := txn.Read(ctx, "Seq",
@@ -1002,7 +1002,7 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 				}
 			}
 			if len(seqsConsumed) == 0 && !forceUpdate {
-				klog.V(1).Info("Found no rows to sequence")
+				slog.DebugContext(ctx, "Found no rows to sequence")
 				return nil
 			}
 
@@ -1113,7 +1113,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 
 			cpAge := time.Since(pubAt)
 			if cpAge < minStaleActive {
-				klog.V(1).Infof("publishCheckpoint: last checkpoint published %s ago (< required %s), not publishing new checkpoint", cpAge, minStaleActive)
+				slog.DebugContext(ctx, "publishCheckpoint: last checkpoint published too recently, not publishing new checkpoint", slog.Duration("cpAge", cpAge), slog.Duration("minStaleActive", minStaleActive))
 				outcomeAttrs = append(outcomeAttrs, errorTypeKey.String("skipped"))
 				return nil
 			}
@@ -1129,12 +1129,12 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 			}
 
 			if !shouldPublish {
-				klog.V(1).Infof("publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
+				slog.DebugContext(ctx, "publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
 				outcomeAttrs = append(outcomeAttrs, errorTypeKey.String("skipped_no_growth"))
 				return nil
 			}
 
-			klog.V(1).Infof("publishCheckpoint: updating checkpoint (replacing %s old checkpoint)", cpAge)
+			slog.DebugContext(ctx, "publishCheckpoint: updating checkpoint", slog.Duration("cpAge", cpAge))
 
 			span.AddEvent("Publishing checkpoint")
 			if err := f(ctx, currentSize, rootHash); err != nil {
@@ -1329,12 +1329,12 @@ func (s *gcsStorage) setObject(ctx context.Context, objName string, data []byte,
 				}
 				if !bytes.Equal(existing, data) {
 					span.AddEvent("Non-idempotent write")
-					klog.Errorf("Resource %q non-idempotent write:\n%s", objName, cmp.Diff(existing, data))
+					slog.ErrorContext(ctx, "Resource non-idempotent write", slog.String("objName", objName), slog.String("diff", cmp.Diff(existing, data)))
 					return fmt.Errorf("precondition failed: resource content for %q differs from data to-be-written", objName)
 				}
 
 				span.AddEvent("Idempotent write")
-				klog.V(2).Infof("setObject: identical resource already exists for %q, continuing", objName)
+				slog.DebugContext(ctx, "setObject: identical resource already exists", slog.String("objName", objName))
 				return nil
 			}
 
@@ -1371,7 +1371,7 @@ func (s *gcsStorage) deleteObjectsWithPrefix(ctx context.Context, objPrefix stri
 				}
 				return err
 			}
-			klog.V(2).Infof("Deleting object %s", attr.Name)
+			slog.DebugContext(ctx, "Deleting object", slog.String("name", attr.Name))
 			if err := bkt.Object(attr.Name).Delete(ctx); err != nil {
 				errs = append(errs, err)
 			}
@@ -1454,16 +1454,16 @@ func (m *MigrationStorage) AwaitIntegration(ctx context.Context, sourceSize uint
 		case <-t.C:
 			from, _, err := m.sequencer.currentTree(ctx)
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				klog.Warningf("readTreeState: %v", err)
+				slog.WarnContext(ctx, "readTreeState failed", slog.Any("error", err))
 				continue
 			}
-			klog.Infof("Integrate from %d (Target %d)", from, sourceSize)
+			slog.InfoContext(ctx, "Integrate", slog.Uint64("from", from), slog.Uint64("sourceSize", sourceSize))
 			newSize, newRoot, err := m.buildTree(ctx, sourceSize)
 			if err != nil {
-				klog.Warningf("integrate: %v", err)
+				slog.WarnContext(ctx, "integrate failed", slog.Any("error", err))
 			}
 			if newSize == sourceSize {
-				klog.Infof("Integrated to %d with roothash %x", newSize, newRoot)
+				slog.InfoContext(ctx, "Integrated", slog.Uint64("newSize", newSize), slog.String("newRoot", fmt.Sprintf("%x", newRoot)))
 				return newRoot, nil
 			}
 		}
@@ -1539,28 +1539,28 @@ func (m *MigrationStorage) buildTree(ctx context.Context, sourceSize uint64) (ui
 		}
 
 		from := uint64(fromSeq)
-		klog.V(1).Infof("Integrating from %d", from)
+		slog.DebugContext(ctx, "Integrating", slog.Uint64("from", from))
 		lh, err := m.fetchLeafHashes(ctx, from, sourceSize, sourceSize)
 		if err != nil {
 			return fmt.Errorf("fetchLeafHashes(%d, %d, %d): %v", from, sourceSize, sourceSize, err)
 		}
 
 		if len(lh) == 0 {
-			klog.Infof("Integrate: nothing to do, nothing done")
+			slog.InfoContext(ctx, "Integrate: nothing to do, nothing done")
 			// Set these to the current state of the tree so we reflect that in buildTree's return values.
 			newSize, newRoot = from, rootHash
 			return nil
 		}
 
 		added := uint64(len(lh))
-		klog.Infof("Integrate: adding %d entries to existing tree size %d", len(lh), from)
+		slog.InfoContext(ctx, "Integrate: adding entries to existing tree", slog.Int("count", len(lh)), slog.Uint64("from", from))
 		newRoot, err = integrate(ctx, from, lh, m.logStore)
 		if err != nil {
-			klog.Warningf("integrate failed: %v", err)
+			slog.WarnContext(ctx, "integrate failed", slog.Any("error", err))
 			return fmt.Errorf("integrate failed: %v", err)
 		}
 		newSize = from + added
-		klog.Infof("Integrate: added %d entries", added)
+		slog.InfoContext(ctx, "Integrate: added entries", slog.Uint64("added", added))
 
 		// integration was successful, so we can update our coordination row
 		m := make([]*spanner.Mutation, 0)
@@ -1586,7 +1586,7 @@ func createAndPrepareTables(ctx context.Context, spannerDB string, ddl []string,
 	}
 	defer func() {
 		if err := adminClient.Close(); err != nil {
-			klog.Warningf("adminClient.Close(): %v", err)
+			slog.WarnContext(ctx, "adminClient.Close() failed", slog.Any("error", err))
 		}
 	}()
 

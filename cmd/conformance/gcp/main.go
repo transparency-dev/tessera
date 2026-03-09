@@ -24,7 +24,11 @@ import (
 	"net/http"
 	"time"
 
+	"log/slog"
+	"os"
+
 	"github.com/transparency-dev/tessera"
+	"github.com/transparency-dev/tessera/internal/logger"
 	"github.com/transparency-dev/tessera/storage/gcp"
 	gcp_as "github.com/transparency-dev/tessera/storage/gcp/antispam"
 	"golang.org/x/mod/sumdb/note"
@@ -40,6 +44,7 @@ var (
 	signer             = flag.String("signer", "", "Note signer to use to sign checkpoints")
 	persistentAntispam = flag.Bool("antispam", false, "EXPERIMENTAL: Set to true to enable GCP-based persistent antispam storage")
 	traceFraction      = flag.Float64("trace_fraction", 0.01, "Fraction of open-telemetry span traces to sample")
+	projectID          = flag.String("project", "", "GCP Project ID for Cloud Logging traces (optional)")
 	additionalSigners  = []string{}
 )
 
@@ -51,9 +56,13 @@ func init() {
 }
 
 func main() {
+	// We use slogging, but not exclusively. Keep klog until everything is replaced.
 	klog.InitFlags(nil)
 	flag.Parse()
 	ctx := context.Background()
+
+	handler := slog.NewJSONHandler(os.Stderr, nil)
+	slog.SetDefault(slog.New(logger.NewGCPContextHandler(handler, *projectID)))
 
 	shutdownOTel := initOTel(ctx, *traceFraction)
 	defer shutdownOTel(ctx)
@@ -64,7 +73,8 @@ func main() {
 	gcpCfg := storageConfigFromFlags()
 	driver, err := gcp.New(ctx, gcpCfg)
 	if err != nil {
-		klog.Exitf("Failed to create new GCP storage: %v", err)
+		slog.Error("Failed to create new GCP storage", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	var antispam tessera.Antispam
@@ -73,7 +83,8 @@ func main() {
 		asOpts := gcp_as.AntispamOpts{} // Use defaults
 		antispam, err = gcp_as.NewAntispam(ctx, fmt.Sprintf("%s-antispam", *spanner), asOpts)
 		if err != nil {
-			klog.Exitf("Failed to create new GCP antispam storage: %v", err)
+			slog.Error("Failed to create new GCP antispam storage", slog.Any("error", err))
+			os.Exit(1)
 		}
 	}
 
@@ -84,7 +95,8 @@ func main() {
 		WithPushback(10*4096).
 		WithAntispam(tessera.DefaultAntispamInMemorySize, antispam))
 	if err != nil {
-		klog.Exit(err)
+		slog.Error("Failed to append", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	// Expose a HTTP handler for the conformance test writes.
@@ -121,14 +133,17 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if err := http2.ConfigureServer(h1s, h2s); err != nil {
-		klog.Exitf("http2.ConfigureServer: %v", err)
+		slog.Error("http2.ConfigureServer", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	if err := h1s.ListenAndServe(); err != nil {
 		if err := shutdown(ctx); err != nil {
-			klog.Exit(err)
+			slog.Error("Failed to shutdown", slog.Any("error", err))
+			os.Exit(1)
 		}
-		klog.Exitf("ListenAndServe: %v", err)
+		slog.Error("ListenAndServe", slog.Any("error", err))
+		os.Exit(1)
 	}
 }
 
@@ -136,10 +151,12 @@ func main() {
 // provided via flags.
 func storageConfigFromFlags() gcp.Config {
 	if *bucket == "" {
-		klog.Exit("--bucket must be set")
+		slog.Error("--bucket must be set")
+		os.Exit(1)
 	}
 	if *spanner == "" {
-		klog.Exit("--spanner must be set")
+		slog.Error("--spanner must be set")
+		os.Exit(1)
 	}
 	return gcp.Config{
 		Bucket:  *bucket,
@@ -150,14 +167,16 @@ func storageConfigFromFlags() gcp.Config {
 func signerFromFlags() (note.Signer, []note.Signer) {
 	s, err := note.NewSigner(*signer)
 	if err != nil {
-		klog.Exitf("Failed to create new signer: %v", err)
+		slog.Error("Failed to create new signer", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	var a []note.Signer
 	for _, as := range additionalSigners {
 		s, err := note.NewSigner(as)
 		if err != nil {
-			klog.Exitf("Failed to create additional signer: %v", err)
+			slog.Error("Failed to create additional signer", slog.Any("error", err))
+			os.Exit(1)
 		}
 		a = append(a, s)
 	}

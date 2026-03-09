@@ -357,6 +357,12 @@ This allows applications built with Tessera to block until leaves passed via cal
 > [!Tip]
 > This is useful if e.g. your application needs to return an inclusion proof in response to a request to add an entry to the log.
 
+### Logging
+
+Tessera utilizes the standard Go `log/slog` package for structured logging. By default, log events are emitted with their corresponding severity levels and key-value properties.
+
+Personalities and operators of the log can customize how these logs are handled by configuring the default `slog.Handler`. For example, operators deploying to Google Cloud can set up an `slog.Handler` that automatically correlates logs with [OpenTelemetry distributed traces](https://cloud.google.com/logging/docs/structured-logging) using the context-aware properties from the incoming `http.Request`. The example programs in `/cmd/` provide reference initializations of these handlers for their respective environments.
+
 ## Lifecycles
 
 ### Appender
