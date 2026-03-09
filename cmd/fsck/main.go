@@ -80,7 +80,9 @@ func main() {
 	}
 	f := fsck.New(*origin, v, src, defaultMerkleLeafHasher, fsck.Opts{N: *N})
 
-	checkErr := make(chan error, 1)
+	// checkResult is a channel to receive the result of the fsck check.
+	// It is used to signal the main goroutine when the check is complete.
+	checkResult := make(chan error, 1)
 	go func() {
 		err := f.Check(ctx)
 
@@ -90,8 +92,8 @@ func main() {
 		}
 		klog.V(1).Infof("Completed ranges:\n%s", f.Status())
 
-		checkErr <- err
-		cancel()
+		checkResult <- err
+		close(checkResult)
 	}()
 
 	if *ui {
@@ -103,7 +105,8 @@ func main() {
 	} else {
 		for {
 			select {
-			case err := <-checkErr:
+			case err := <-checkResult:
+				cancel()
 				if err != nil {
 					klog.Exitf("fsck failed: %v", err)
 				}
