@@ -56,6 +56,7 @@ func init() {
 }
 
 func main() {
+	// We use slogging, but not exclusively. Keep klog until everything is replaced.
 	klog.InitFlags(nil)
 	flag.Parse()
 	ctx := context.Background()
