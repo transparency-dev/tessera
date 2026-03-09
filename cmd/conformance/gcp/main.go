@@ -34,6 +34,7 @@ import (
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
+	"k8s.io/klog/v2"
 )
 
 var (
@@ -55,6 +56,7 @@ func init() {
 }
 
 func main() {
+	klog.InitFlags(nil)
 	flag.Parse()
 	ctx := context.Background()
 
