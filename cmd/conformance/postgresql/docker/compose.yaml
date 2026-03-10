@@ -1,0 +1,36 @@
+services:
+
+  tessera-conformance-postgresql-db:
+    container_name: tessera-postgresql-db
+    image: "postgres:17"
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_USER=tessera
+      - POSTGRES_PASSWORD=tessera
+      - POSTGRES_DB=tessera
+    restart: always
+    healthcheck:
+      test: pg_isready -U tessera -d tessera
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  tessera-conformance-postgresql:
+    container_name: tessera-conformance-postgresql
+    build:
+      context: ../../../../
+      dockerfile: ./cmd/conformance/postgresql/docker/Dockerfile
+    ports:
+      - "2025:2024"
+    command: [
+      "--pg_uri=postgres://tessera:tessera@tessera-conformance-postgresql-db:5432/tessera?sslmode=disable",
+      "--init_schema_path=/schema.sql",
+      "--private_key_path=/key",
+      "--alsologtostderr",
+      "--v=1",
+    ]
+    restart: always
+    depends_on:
+      tessera-conformance-postgresql-db:
+        condition: service_healthy
