@@ -24,6 +24,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -51,12 +52,19 @@ const (
 	streamTiledLeavesSQL             = "SELECT tile_index, size, data FROM TiledLeaves WHERE tile_index >= $1 ORDER BY tile_index ASC"
 	upsertTiledLeavesSQL             = "INSERT INTO TiledLeaves (tile_index, size, data) VALUES ($1, $2, $3) ON CONFLICT (tile_index) DO UPDATE SET size = EXCLUDED.size, data = EXCLUDED.data"
 
+	createStagingTiledLeavesSQL = "CREATE TEMP TABLE IF NOT EXISTS staging_tiled_leaves (tile_index BIGINT NOT NULL, size SMALLINT NOT NULL, data BYTEA NOT NULL) ON COMMIT DROP"
+	truncateStagingSQL          = "TRUNCATE staging_tiled_leaves"
+	mergeStagingTiledLeavesSQL  = "INSERT INTO TiledLeaves (tile_index, size, data) SELECT tile_index, size, data FROM staging_tiled_leaves ON CONFLICT (tile_index) DO UPDATE SET size = EXCLUDED.size, data = EXCLUDED.data"
+
 	checkpointID = 0
 	treeStateID  = 0
 
 	schemaCompatibilityVersion = 1
 
 	minCheckpointInterval = time.Second
+
+	// defaultCopyBatchSize is the number of entry bundles to buffer before flushing via COPY.
+	defaultCopyBatchSize = 256
 )
 
 // Storage is a PostgreSQL-based storage implementation for Tessera.
@@ -596,13 +604,29 @@ func (s *Storage) MigrationWriter(ctx context.Context, opts *tessera.MigrationOp
 	return &MigrationStorage{
 		s:            s,
 		bundleHasher: opts.LeafHasher(),
+		batchSize:    defaultCopyBatchSize,
 	}, s, nil
 }
 
+// bundleRow holds a single entry bundle write for the COPY buffer.
+type bundleRow struct {
+	index int64
+	size  int16
+	data  []byte
+}
+
 // MigrationStorage implements the tessera.MigrationTarget lifecycle contract.
+//
+// Entry bundle writes from SetEntryBundle are buffered and flushed in bulk using
+// PostgreSQL's COPY protocol via a staging table, reducing database round-trips
+// during large migrations.
 type MigrationStorage struct {
 	s            *Storage
 	bundleHasher func([]byte) ([][]byte, error)
+
+	mu        sync.Mutex
+	pending   []bundleRow
+	batchSize int
 }
 
 var _ migrate.MigrationWriter = &MigrationStorage{}
@@ -628,6 +652,11 @@ tryAgain:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-time.After(time.Second):
+		}
+
+		// Flush any pending buffered entry bundles before polling for new data.
+		if err := m.flush(ctx); err != nil {
+			klog.Warningf("AwaitIntegration: flush: %v", err)
 		}
 
 		// Release resources if we're going around and resetting the read.
@@ -722,13 +751,90 @@ func (m *MigrationStorage) integrateBatch(ctx context.Context, fromSeq uint64, l
 	return newSize, newRoot, nil
 }
 
-// SetEntryBundle stores the provided serialised entry bundle at the location implied by the provided
-// entry bundle index and partial size.
+// SetEntryBundle buffers the provided entry bundle for bulk writing via COPY.
+// When the buffer reaches batchSize, it is flushed to the database.
 //
 // Implements the tessera MigrationTarget lifecycle contract.
 func (m *MigrationStorage) SetEntryBundle(ctx context.Context, index uint64, partial uint8, bundle []byte) error {
-	_, err := m.s.pool.Exec(ctx, upsertTiledLeavesSQL, index, uint32(partial), bundle)
-	return err
+	m.mu.Lock()
+	m.pending = append(m.pending, bundleRow{
+		index: int64(index),
+		size:  int16(partial),
+		data:  bundle,
+	})
+	shouldFlush := len(m.pending) >= m.batchSize
+	m.mu.Unlock()
+
+	if shouldFlush {
+		return m.flush(ctx)
+	}
+	return nil
+}
+
+// flush writes all pending entry bundles to TiledLeaves using COPY protocol via a staging table.
+// If the buffer is empty, no database operations are performed.
+func (m *MigrationStorage) flush(ctx context.Context) error {
+	// Swap out the pending slice under the lock so writers can continue buffering.
+	m.mu.Lock()
+	if len(m.pending) == 0 {
+		m.mu.Unlock()
+		return nil
+	}
+	rows := m.pending
+	m.pending = nil
+	m.mu.Unlock()
+
+	// If we fail at any point, re-append the rows so they can be retried on the next flush.
+	var committed bool
+	defer func() {
+		if !committed {
+			m.mu.Lock()
+			m.pending = append(rows, m.pending...)
+			m.mu.Unlock()
+		}
+	}()
+
+	tx, err := m.s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("flush begin tx: %w", err)
+	}
+	defer func() {
+		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			klog.Warningf("flush: Rollback: %v", err)
+		}
+	}()
+
+	// Create the temp staging table (dropped on commit).
+	if _, err := tx.Exec(ctx, createStagingTiledLeavesSQL); err != nil {
+		return fmt.Errorf("flush create staging table: %w", err)
+	}
+	// Truncate in case the temp table persists from a previous failed attempt within the same session.
+	if _, err := tx.Exec(ctx, truncateStagingSQL); err != nil {
+		return fmt.Errorf("flush truncate staging table: %w", err)
+	}
+
+	// COPY buffered rows into the staging table.
+	cols := []string{"tile_index", "size", "data"}
+	copyCount, err := tx.CopyFrom(ctx, pgx.Identifier{"staging_tiled_leaves"}, cols, pgx.CopyFromSlice(len(rows), func(i int) ([]any, error) {
+		r := rows[i]
+		return []any{r.index, r.size, r.data}, nil
+	}))
+	if err != nil {
+		return fmt.Errorf("flush CopyFrom: %w", err)
+	}
+	klog.V(1).Infof("flush: COPY %d entry bundles to staging", copyCount)
+
+	// Merge from staging into TiledLeaves with upsert semantics.
+	if _, err := tx.Exec(ctx, mergeStagingTiledLeavesSQL); err != nil {
+		return fmt.Errorf("flush merge staging: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("flush commit: %w", err)
+	}
+
+	committed = true
+	return nil
 }
 
 // IntegratedSize returns the current size of the locally integrated log.
