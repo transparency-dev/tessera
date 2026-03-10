@@ -24,7 +24,6 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -251,15 +250,6 @@ func (s *Storage) ReadTile(ctx context.Context, level, index uint64, p uint8) ([
 	return tile, nil
 }
 
-// writeTile replaces the tile nodes at the given level and index.
-func (s *Storage) writeTile(ctx context.Context, tx pgx.Tx, level, index uint64, nodes []byte) error {
-	if _, err := tx.Exec(ctx, upsertSubtreeSQL, level, index, nodes); err != nil {
-		klog.Errorf("Failed to execute upsertSubtreeSQL: %v", err)
-		return err
-	}
-	return nil
-}
-
 // ReadEntryBundle returns the log entries at the given index.
 // If the entry bundle is not found, it returns os.ErrNotExist.
 //
@@ -305,14 +295,6 @@ func (s *Storage) IntegratedSize(ctx context.Context) (uint64, error) {
 // This is part of the tessera LogReader contract.
 func (s *Storage) NextIndex(ctx context.Context) (uint64, error) {
 	return s.IntegratedSize(ctx)
-}
-
-func (s *Storage) writeEntryBundle(ctx context.Context, tx pgx.Tx, index uint64, size uint32, entryBundle []byte) error {
-	if _, err := tx.Exec(ctx, upsertTiledLeavesSQL, index, size, entryBundle); err != nil {
-		klog.Errorf("Failed to execute upsertTiledLeavesSQL: %v", err)
-		return err
-	}
-	return nil
 }
 
 // appender implements the tessera Append lifecycle.
@@ -452,6 +434,14 @@ func (a *appender) appendEntries(ctx context.Context, tx pgx.Tx, fromSeq uint64,
 		}
 	}
 
+	// Collect bundle writes as (index, size, data) tuples for batched writing.
+	type bundleWrite struct {
+		index uint64
+		size  uint32
+		data  []byte
+	}
+	var bundleWrites []bundleWrite
+
 	// Add new entries to the bundle.
 	for _, e := range sequencedEntries {
 		if _, err := bundleWriter.Write(e.BundleData); err != nil {
@@ -459,11 +449,13 @@ func (a *appender) appendEntries(ctx context.Context, tx pgx.Tx, fromSeq uint64,
 		}
 		entriesInBundle++
 
-		// This bundle is full, so we need to write it out.
+		// This bundle is full, so we need to collect it for writing.
 		if entriesInBundle == layout.EntryBundleWidth {
-			if err := a.s.writeEntryBundle(ctx, tx, bundleIndex, uint32(entriesInBundle), bundleWriter.Bytes()); err != nil {
-				return fmt.Errorf("writeEntryBundle: %w", err)
-			}
+			bundleWrites = append(bundleWrites, bundleWrite{
+				index: bundleIndex,
+				size:  uint32(entriesInBundle),
+				data:  bundleWriter.Bytes(),
+			})
 
 			// Prepare the next entry bundle for any remaining entries in the batch.
 			bundleIndex++
@@ -473,10 +465,32 @@ func (a *appender) appendEntries(ctx context.Context, tx pgx.Tx, fromSeq uint64,
 	}
 
 	// If we have a partial bundle remaining once we've added all the entries from the batch,
-	// this needs writing out too.
+	// this needs collecting too.
 	if entriesInBundle > 0 {
-		if err := a.s.writeEntryBundle(ctx, tx, bundleIndex, uint32(entriesInBundle), bundleWriter.Bytes()); err != nil {
-			return fmt.Errorf("writeEntryBundle: %w", err)
+		bundleWrites = append(bundleWrites, bundleWrite{
+			index: bundleIndex,
+			size:  uint32(entriesInBundle),
+			data:  bundleWriter.Bytes(),
+		})
+	}
+
+	// Write all collected bundles in a single batch round-trip.
+	if len(bundleWrites) > 0 {
+		batch := &pgx.Batch{}
+		for _, bw := range bundleWrites {
+			batch.Queue(upsertTiledLeavesSQL, bw.index, bw.size, bw.data)
+		}
+		br := tx.SendBatch(ctx, batch)
+		for range bundleWrites {
+			if _, err := br.Exec(); err != nil {
+				if err := br.Close(); err != nil {
+					klog.Warningf("batch write entry bundle closing batch: %v", err)
+				}
+				return fmt.Errorf("batch write entry bundle: %w", err)
+			}
+		}
+		if err := br.Close(); err != nil {
+			return fmt.Errorf("close entry bundle write batch: %w", err)
 		}
 	}
 
@@ -484,7 +498,7 @@ func (a *appender) appendEntries(ctx context.Context, tx pgx.Tx, fromSeq uint64,
 	for i, e := range sequencedEntries {
 		lh[i] = e.LeafHash
 	}
-	newSize, newRoot, err := integrate(ctx, tx, fromSeq, lh, a.s.writeTile)
+	newSize, newRoot, err := integrate(ctx, tx, fromSeq, lh)
 	if err != nil {
 		return fmt.Errorf("integrate: %v", err)
 	}
@@ -504,48 +518,40 @@ func getTiles(ctx context.Context, tx pgx.Tx, tileIDs []storage.TileID, _ uint64
 		return hashTiles, nil
 	}
 
-	// Build the SQL and args to fetch the hash tiles.
-	var sqlBuilder strings.Builder
-	args := make([]any, 0, len(tileIDs)*2)
-	for i, id := range tileIDs {
-		if i != 0 {
-			sqlBuilder.WriteString(" UNION ALL ")
+	batch := &pgx.Batch{}
+	for _, id := range tileIDs {
+		batch.Queue(selectSubtreeByLevelAndIndexSQL, id.Level, id.Index)
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer func() {
+		if err := br.Close(); err != nil {
+			klog.Warningf("getTiles: BatchResults.Close: %v", err)
 		}
-		// Each sub-select uses $N placeholders; offset by 2 per tile.
-		paramLevel := i*2 + 1
-		paramIndex := i*2 + 2
-		fmt.Fprintf(&sqlBuilder, "SELECT nodes FROM Subtree WHERE level = $%d AND index = $%d", paramLevel, paramIndex)
-		args = append(args, id.Level, id.Index)
-	}
+	}()
 
-	rows, err := tx.Query(ctx, sqlBuilder.String(), args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query the hash tiles with SQL (%s): %w", sqlBuilder.String(), err)
-	}
-	defer rows.Close()
-
-	i := 0
-	for rows.Next() {
+	for i := range tileIDs {
 		var tile []byte
-		if err := rows.Scan(&tile); err != nil {
-			return nil, fmt.Errorf("scan subtree tile: %w", err)
+		if err := br.QueryRow().Scan(&tile); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Tile not found — leave hashTiles[i] as nil.
+				continue
+			}
+			return nil, fmt.Errorf("scan subtree tile %d: %w", i, err)
 		}
 		t := &api.HashTile{}
 		if err := t.UnmarshalText(tile); err != nil {
-			return nil, fmt.Errorf("unmarshal tile: %w", err)
+			return nil, fmt.Errorf("unmarshal tile %d: %w", i, err)
 		}
 		hashTiles[i] = t
-		i++
-	}
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error while fetching subtrees: %w", err)
 	}
 
 	return hashTiles, nil
 }
 
 // integrate adds the provided leaf hashes to the merkle tree, starting at the provided location.
-func integrate(ctx context.Context, tx pgx.Tx, fromSeq uint64, lh [][]byte, writeTile func(context.Context, pgx.Tx, uint64, uint64, []byte) error) (uint64, []byte, error) {
+// Tile reads and writes are batched via pgx.Batch for reduced round-trips.
+func integrate(ctx context.Context, tx pgx.Tx, fromSeq uint64, lh [][]byte) (uint64, []byte, error) {
 	getTilesFn := func(ctx context.Context, tileIDs []storage.TileID, treeSize uint64) ([]*api.HashTile, error) {
 		return getTiles(ctx, tx, tileIDs, treeSize)
 	}
@@ -553,14 +559,28 @@ func integrate(ctx context.Context, tx pgx.Tx, fromSeq uint64, lh [][]byte, writ
 	if err != nil {
 		return 0, nil, fmt.Errorf("storage.Integrate: %v", err)
 	}
-	for k, v := range tiles {
-		nodes, err := v.MarshalText()
-		if err != nil {
-			return 0, nil, err
+
+	if len(tiles) > 0 {
+		batch := &pgx.Batch{}
+		for k, v := range tiles {
+			nodes, err := v.MarshalText()
+			if err != nil {
+				return 0, nil, fmt.Errorf("marshal tile(%v): %w", k, err)
+			}
+			batch.Queue(upsertSubtreeSQL, k.Level, k.Index, nodes)
 		}
 
-		if err := writeTile(ctx, tx, uint64(k.Level), k.Index, nodes); err != nil {
-			return 0, nil, fmt.Errorf("failed to set tile(%v): %w", k, err)
+		br := tx.SendBatch(ctx, batch)
+		for range tiles {
+			if _, err := br.Exec(); err != nil {
+				if err := br.Close(); err != nil {
+					klog.Warningf("batch write tile closing batch: %v", err)
+				}
+				return 0, nil, fmt.Errorf("batch write tile: %w", err)
+			}
+		}
+		if err := br.Close(); err != nil {
+			return 0, nil, fmt.Errorf("close tile write batch: %w", err)
 		}
 	}
 
@@ -687,7 +707,7 @@ func (m *MigrationStorage) integrateBatch(ctx context.Context, fromSeq uint64, l
 		}
 	}()
 
-	newSize, newRoot, err := integrate(ctx, tx, fromSeq, lh, m.s.writeTile)
+	newSize, newRoot, err := integrate(ctx, tx, fromSeq, lh)
 	if err != nil {
 		return 0, nil, fmt.Errorf("integrate: %v", err)
 	}
