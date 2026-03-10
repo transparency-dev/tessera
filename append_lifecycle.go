@@ -55,7 +55,7 @@ const (
 	// to have a very large cache.
 	DefaultAntispamInMemorySize = 256 << 10
 	// DefaultWitnessTimeout is the default maximum time to wait for responses from configured witnesses.
-	DefaultWitnessTimeout = 5 * time.Second
+	DefaultWitnessTimeout = 1 * time.Second
 
 	// DefaultEntrySizeLimit is the maximum possible size of data for a single entry, as specified by C2SP tlog-tiles.
 	DefaultEntrySizeLimit = 1<<16 - 1
