@@ -275,9 +275,7 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoord
 			s, _, err := a.sequencer.currentTree(ctx)
 			return s, err
 		},
-		nextIndex: func(ctx context.Context) (uint64, error) {
-			return a.sequencer.nextIndex(ctx)
-		},
+		nextIndex: a.sequencer.nextIndex,
 	}
 	a.newCP = opts.CheckpointPublisher(reader, s.cfg.HTTPClient)
 
@@ -949,6 +947,11 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 	if limit > math.MaxInt {
 		limit = math.MaxInt
 	}
+	// Read this outside of the big write transaction below; we don't want to interfere with sequencing writes.
+	seqLimit, err := s.nextIndex(ctx)
+	if err != nil {
+		return false, fmt.Errorf("nextIndex: %v", err)
+	}
 	return otel.Trace(ctx, "tessera.storage.gcp.consumeEntries", tracer, func(ctx context.Context, span trace.Span) (bool, error) {
 		didWork := false
 		_, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
@@ -963,11 +966,15 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 				return fmt.Errorf("failed to read integration coordination info: %v", err)
 			}
 
-			slog.DebugContext(ctx, "Consuming bundles", slog.Int64("fromSeq", fromSeq))
+			if fromSeq >= int64(seqLimit) {
+				return nil
+			}
+
+			slog.DebugContext(ctx, "Consuming bundles", slog.Int64("fromSeq", fromSeq), slog.Uint64("toSeq", seqLimit-1))
 			span.AddEvent("Reading entries from sequence table")
 			// Now read the sequenced starting at the index we got above.
 			rows := txn.Read(ctx, "Seq",
-				spanner.KeyRange{Start: spanner.Key{0, fromSeq}, End: spanner.Key{0, math.MaxInt64}, Kind: spanner.ClosedOpen},
+				spanner.KeyRange{Start: spanner.Key{0, fromSeq}, End: spanner.Key{0, int64(seqLimit)}, Kind: spanner.ClosedOpen},
 				[]string{"seq", "v"})
 			defer rows.Stop()
 
