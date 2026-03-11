@@ -91,6 +91,7 @@ func TestAntispam(t *testing.T) {
 		} else if idx == 2 {
 			break
 		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	dupIdx, err := addFn(ctx, tessera.NewEntry([]byte("one")))()
 	if err != nil {

@@ -21,7 +21,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"os"
 	"sync"
@@ -157,7 +156,7 @@ func (s *Storage) maybeInitTree(ctx context.Context) error {
 	}()
 
 	treeState, err := s.readTreeStateForUpdate(ctx, tx)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		klog.Errorf("Failed to read tree state: %v", err)
 		return err
 	}
@@ -292,7 +291,7 @@ func (s *Storage) ReadEntryBundle(ctx context.Context, index uint64, p uint8) ([
 func (s *Storage) IntegratedSize(ctx context.Context) (uint64, error) {
 	ts, err := s.readTreeState(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("readTreeState: %v", err)
+		return 0, fmt.Errorf("readTreeState: %w", err)
 	}
 	return ts.size, nil
 }
@@ -399,14 +398,16 @@ func (a *appender) sequenceBatch(ctx context.Context, entries []*tessera.Entry) 
 	}
 
 	// Commit the transaction.
-	err = tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
 
 	select {
 	case a.cpUpdated <- struct{}{}:
 	default:
 	}
 
-	return err
+	return nil
 }
 
 // appendEntries incorporates the provided entries into the log starting at fromSeq.
@@ -513,7 +514,7 @@ func (a *appender) appendEntries(ctx context.Context, tx pgx.Tx, fromSeq uint64,
 
 	// Write new tree state.
 	if err := a.s.writeTreeState(ctx, tx, newSize, newRoot); err != nil {
-		return fmt.Errorf("writeCheckpoint: %w", err)
+		return fmt.Errorf("writeTreeState: %w", err)
 	}
 
 	klog.V(1).Infof("New tree: %d, %x", newSize, newRoot)
@@ -715,6 +716,7 @@ tryAgain:
 			fromSeq = newSize
 
 			if newSize == sourceSize {
+				rows.Close()
 				klog.Infof("AwaitIntegration: Integrated to %d with root hash %x", newSize, newRoot)
 				return newRoot, nil
 			}

@@ -222,6 +222,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 	errOutOfSync := errors.New("out-of-sync")
 
 	t := time.NewTicker(time.Second)
+	defer t.Stop()
 	var (
 		next func() (client.Entry[[]byte], error, bool)
 		stop func()
@@ -252,7 +253,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 
 				defer func() {
 					if tx != nil {
-						_ = tx.Rollback(ctx)
+						_ = tx.Rollback(context.Background())
 					}
 				}()
 

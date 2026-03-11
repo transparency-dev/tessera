@@ -101,6 +101,11 @@ func main() {
 		}
 		idx, err := appender.Add(r.Context(), tessera.NewEntry(b))()
 		if err != nil {
+			if errors.Is(err, tessera.ErrPushback) {
+				w.Header().Add("Retry-After", "1")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte(err.Error()))
 			return

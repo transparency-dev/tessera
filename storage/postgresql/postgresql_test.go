@@ -23,11 +23,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
 	"os"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,6 +39,7 @@ import (
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
+	"github.com/transparency-dev/tessera/testonly"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
@@ -55,8 +59,8 @@ const (
 )
 
 // TestMain checks whether the test PostgreSQL database is available and starts the tests including database schema initialization.
-// If is_pg_test_optional is set to true and PostgreSQL database cannot be opened or pinged, the test will fail immediately.
-// Otherwise, the test will be skipped if the test is optional and the database is not available.
+// If is_pg_test_optional is set to false and PostgreSQL database cannot be opened or pinged, the test will fail immediately.
+// If is_pg_test_optional is set to true (the default) and the database is not available, the tests will be skipped.
 func TestMain(m *testing.M) {
 	klog.InitFlags(nil)
 	flag.Parse()
@@ -478,6 +482,69 @@ func TestEntryBundleRoundTrip(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMigration(t *testing.T) {
+	ctx := t.Context()
+
+	// Create a source POSIX log and populate it with entries.
+	srcLog, srcShutdown := testonly.NewTestLog(t, tessera.NewAppendOptions().WithCheckpointInterval(time.Second))
+	defer func() {
+		if err := srcShutdown(ctx); err != nil {
+			t.Logf("source shutdown: %v", err)
+		}
+	}()
+
+	const numEntries = 300 // Enough to span multiple entry bundles (256 per bundle).
+	awaiter := tessera.NewPublicationAwaiter(ctx, srcLog.LogReader.ReadCheckpoint, time.Second)
+	var lastFuture tessera.IndexFuture
+	for i := range numEntries {
+		lastFuture = srcLog.Appender.Add(ctx, tessera.NewEntry(fmt.Appendf(nil, "migration entry %d", i)))
+	}
+	if _, _, err := awaiter.Await(ctx, lastFuture); err != nil {
+		t.Fatalf("Await source entries: %v", err)
+	}
+
+	// Read and parse the source checkpoint to get the tree size and root hash.
+	srcCP, err := srcLog.LogReader.ReadCheckpoint(ctx)
+	if err != nil {
+		t.Fatalf("ReadCheckpoint: %v", err)
+	}
+	bits := strings.Split(string(srcCP), "\n")
+	sourceSize, err := strconv.ParseUint(bits[1], 10, 64)
+	if err != nil {
+		t.Fatalf("parse source size: %v", err)
+	}
+	sourceRoot, err := base64.StdEncoding.DecodeString(bits[2])
+	if err != nil {
+		t.Fatalf("parse source root: %v", err)
+	}
+
+	// Initialize the PostgreSQL target and run the migration.
+	initDatabaseSchema(ctx)
+
+	driver, err := New(ctx, testPool)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	mt, err := tessera.NewMigrationTarget(ctx, driver, tessera.NewMigrationOptions())
+	if err != nil {
+		t.Fatalf("NewMigrationTarget: %v", err)
+	}
+
+	if err := mt.Migrate(ctx, 2, sourceSize, sourceRoot, srcLog.LogReader.ReadEntryBundle); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// Verify the target has the expected tree size.
+	gotSize, err := driver.IntegratedSize(ctx)
+	if err != nil {
+		t.Fatalf("IntegratedSize: %v", err)
+	}
+	if gotSize != sourceSize {
+		t.Errorf("target size %d != source size %d", gotSize, sourceSize)
 	}
 }
 
