@@ -30,6 +30,7 @@ import (
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/storage/postgresql"
+	pg_as "github.com/transparency-dev/tessera/storage/postgresql/antispam"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
@@ -43,6 +44,8 @@ var (
 	listen                    = flag.String("listen", ":2024", "Address:port to listen on")
 	privateKeyPath            = flag.String("private_key_path", "", "Location of private key file")
 	publishInterval           = flag.Duration("publish_interval", 3*time.Second, "How frequently to publish updated checkpoints")
+	antispamEnable            = flag.Bool("antispam", false, "EXPERIMENTAL: Set to true to enable persistent antispam storage")
+	antispamPgURI             = flag.String("antispam_pg_uri", "", "Connection string for the antispam PostgreSQL database (defaults to --pg_uri)")
 	additionalPrivateKeyPaths = []string{}
 )
 
@@ -68,10 +71,23 @@ func main() {
 		klog.Exitf("Failed to create new PostgreSQL storage: %v", err)
 	}
 
+	var antispam tessera.Antispam
+	if *antispamEnable {
+		asDSN := *antispamPgURI
+		if asDSN == "" {
+			asDSN = *pgURI
+		}
+		asOpts := pg_as.AntispamOpts{}
+		antispam, err = pg_as.NewAntispam(ctx, asDSN, asOpts)
+		if err != nil {
+			klog.Exitf("Failed to create new PostgreSQL antispam storage: %v", err)
+		}
+	}
+
 	appender, shutdown, reader, err := tessera.NewAppender(ctx, driver, tessera.NewAppendOptions().
 		WithCheckpointSigner(noteSigner, additionalSigners...).
 		WithCheckpointInterval(*publishInterval).
-		WithAntispam(tessera.DefaultAntispamInMemorySize, nil))
+		WithAntispam(tessera.DefaultAntispamInMemorySize, antispam))
 	if err != nil {
 		klog.Exit(err)
 	}
