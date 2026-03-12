@@ -10,6 +10,11 @@ services:
     environment:
       LOG_PRIVATE_KEY: "PRIVATE+KEY+example.com/log/testdata+33d7b496+AeymY/SZAX0jZcJ8enZ5FY1Dz+wTML2yWSkK+9DSF3eg"
       LOG_PUBLIC_KEY: "example.com/log/testdata+33d7b496+AeHTu4Q3hEIMHNqc6fASMsq3rKNx280NI+oO5xCFkkSx"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:2025/checkpoint"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
     command: [
       "--storage_dir=/tmp/tessera-posix-log",
       "--listen=:2025",
