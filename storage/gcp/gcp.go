@@ -725,7 +725,7 @@ func (a *Appender) updateEntryBundles(ctx context.Context, fromSeq uint64, entri
 		// If we have a partial bundle remaining once we've added all the entries from the batch,
 		// this needs writing out too.
 		if entriesInBundle > 0 {
-			slog.DebugContext(ctx, "Attempting to write in-memory partial bundle to GCS", slog.Uint64("bundleIndex", bundleIndex), slog.Any("entriesInBundle", entriesInBundle))
+			slog.DebugContext(ctx, "Attempting to write in-memory partial bundle to GCS", slog.Uint64("bundleIndex", bundleIndex), slog.Uint64("entriesInBundle", entriesInBundle))
 			goSetEntryBundle(ctx, bundleIndex, uint8(entriesInBundle), bundleWriter.Bytes())
 		}
 		return seqErr.Wait()

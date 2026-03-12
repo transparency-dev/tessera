@@ -144,7 +144,6 @@ endpoint.
       --db_name=tessera \
       --db_host=$LOG_RDS_DB \
       --signer=$(cat /home/ec2-user/tessera-keys/$LOG_NAME.sec) \
-      --v=3
     ```
 
  1. 🎉 **Congratulations** 🎉
@@ -191,7 +190,6 @@ The instructions to do this for the codelab are largely the same, except:
       --db_name=tessera \
       --db_host=$LOG_RDS_DB \
       --signer=$(cat /home/ec2-user/tessera-keys/$LOG_NAME.sec) \
-      --v=3 \
       --antispam=true \
       --antispam_db_name=antispam_db
     ```

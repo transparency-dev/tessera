@@ -16,13 +16,15 @@ package badger
 
 import (
 	"crypto/sha256"
+	"fmt"
 	"testing"
 	"time"
+
+	"log/slog"
 
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/testonly"
-	"k8s.io/klog/v2"
 )
 
 type testLookup struct {
@@ -85,7 +87,7 @@ func TestAntispamStorage(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Await(%d): %v", i, err)
 				}
-				klog.Infof("%d == %x", i, entry.Identity())
+				slog.Info("integrated entry", slog.Int("i", i), slog.String("identity", fmt.Sprintf("%x", entry.Identity())))
 				entryIndex[string(testIDHash(e))] = idx.Index
 			}
 
@@ -101,7 +103,7 @@ func TestAntispamStorage(t *testing.T) {
 					t.Logf("IntegratedSize: %v", err)
 					continue
 				}
-				klog.Infof("Wait for follower (%d) to catch up with tree (%d)", pos, sz)
+				slog.Info("Wait for follower () to catch up with tree", slog.Uint64("pos", pos), slog.Uint64("sz", sz))
 				if pos >= sz {
 					break
 				}
@@ -169,7 +171,7 @@ func TestAntispamPushbackRecovers(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Await(%d): %v", i, err)
 				}
-				klog.Infof("%d == %x", i, entry.Identity())
+				slog.Info("integrated entry", slog.Int("i", i), slog.String("identity", fmt.Sprintf("%x", entry.Identity())))
 				entryIndex[string(testIDHash(e))] = idx.Index
 			}
 
@@ -188,7 +190,7 @@ func TestAntispamPushbackRecovers(t *testing.T) {
 					t.Logf("IntegratedSize: %v", err)
 					continue
 				}
-				klog.Infof("Wait for follower (%d) to catch up with tree (%d)", pos, sz)
+				slog.Info("Wait for follower () to catch up with tree", slog.Uint64("pos", pos), slog.Uint64("sz", sz))
 				if pos >= sz {
 					break
 				}

@@ -27,13 +27,14 @@ import (
 	"strings"
 	"testing"
 
+	"log/slog"
+
 	"github.com/bitfield/script"
 	"github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/fsck"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -248,7 +249,8 @@ func fsckLog(t *testing.T, dir string) error {
 	}
 	v, err := note.NewVerifier(testVerifier)
 	if err != nil {
-		klog.Exitf("Invalid verifier in %q: %v", testVerifier, err)
+		slog.Error("Invalid verifier", slog.String("verifier", testVerifier), slog.Any("error", err))
+		os.Exit(255)
 	}
 	f := fsck.New(v.Name(), v, src, defaultMerkleLeafHasher, fsck.Opts{N: 1})
 	return f.Check(t.Context())

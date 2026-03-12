@@ -21,13 +21,14 @@ import (
 	"sync"
 	"testing"
 
+	"log/slog"
+
 	"github.com/google/go-cmp/cmp"
 	"github.com/transparency-dev/merkle/compact"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
-	"k8s.io/klog/v2"
 )
 
 func TestNewRangeFetchesTiles(t *testing.T) {
@@ -227,7 +228,7 @@ func (m *memTileStore[T]) getTiles(_ context.Context, ids []TileID, treeSize uin
 	r := make([]*T, len(ids))
 	for i, id := range ids {
 		k := layout.TilePath(id.Level, id.Index, layout.PartialTileSize(id.Level, id.Index, treeSize))
-		klog.V(1).Infof("mem.getTile(%q, %d)", k, treeSize)
+		slog.Debug("mem.getTile", slog.String("k", k), slog.Uint64("treesize", treeSize))
 		d, ok := m.mem[k]
 		if !ok {
 			continue
@@ -242,7 +243,7 @@ func (m *memTileStore[T]) setTile(_ context.Context, id TileID, treeSize uint64,
 	defer m.Unlock()
 
 	k := layout.TilePath(id.Level, id.Index, layout.PartialTileSize(id.Level, id.Index, treeSize))
-	klog.V(1).Infof("mem.setTile(%q, %d)", k, treeSize)
+	slog.Debug("mem.setTile", slog.String("k", k), slog.Uint64("treesize", treeSize))
 	_, ok := m.mem[k]
 	if ok {
 		return fmt.Errorf("%q is already present", k)

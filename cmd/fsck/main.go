@@ -23,6 +23,8 @@ import (
 	"os"
 	"time"
 
+	"log/slog"
+
 	f_note "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
@@ -31,7 +33,6 @@ import (
 	"github.com/transparency-dev/tessera/fsck"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/time/rate"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -42,15 +43,17 @@ var (
 	pubKey      = flag.String("public_key", "", "Path to a file containing the log's public key")
 	qps         = flag.Float64("qps", 0, "Max QPS to send to the target log. Set to zero for unlimited")
 	ui          = flag.Bool("ui", true, "Set to true to use a TUI to display progress, or false for logging")
+	slogLevel   = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is INFO. See https://pkg.go.dev/log/slog#Level.")
 )
 
 func main() {
-	klog.InitFlags(nil)
 	flag.Parse()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 	ctx, cancel := context.WithCancel(context.Background())
 	logURL, err := url.Parse(*storageURL)
 	if err != nil {
-		klog.Exitf("Invalid --storage_url %q: %v", *storageURL, err)
+		slog.Error("Invalid --storage_url", slog.String("param", *storageURL), slog.Any("error", err))
+		os.Exit(255)
 	}
 	var src fsck.Fetcher
 
@@ -61,7 +64,8 @@ func main() {
 	} else {
 		httpSrc, err := client.NewHTTPFetcher(logURL, nil)
 		if err != nil {
-			klog.Exitf("Failed to create HTTP fetcher: %v", err)
+			slog.Error("Failed to create HTTP fetcher", slog.Any("error", err))
+			os.Exit(255)
 		}
 		if *bearerToken != "" {
 			httpSrc.SetAuthorizationHeader(fmt.Sprintf("Bearer %s", *bearerToken))
@@ -88,9 +92,9 @@ func main() {
 
 		// Only log the error if we're using the TUI, otherwise it will be double logged in headless mode.
 		if err != nil && *ui {
-			klog.Errorf("fsck failed: %v", err)
+			slog.Error("fsck failed", slog.Any("error", err))
 		}
-		klog.V(1).Infof("Completed ranges:\n%s", f.Status())
+		slog.Debug("Completed ranges", slog.Any("status", f.Status()))
 
 		checkResult <- err
 		close(checkResult)
@@ -98,7 +102,7 @@ func main() {
 
 	if *ui {
 		if err := tui.RunApp(ctx, f); err != nil {
-			klog.Errorf("App exited: %v", err)
+			slog.Error("App exited", slog.Any("error", err))
 		}
 		// User may have exited the UI, cancel the context to signal to everything else.
 		cancel()
@@ -108,11 +112,12 @@ func main() {
 			case err := <-checkResult:
 				cancel()
 				if err != nil {
-					klog.Exitf("fsck failed: %v", err)
+					slog.Error("fsck failed", slog.Any("error", err))
+					os.Exit(255)
 				}
 				return
 			case <-time.After(time.Second):
-				klog.V(1).Infof("Ranges:\n%s", f.Status())
+				slog.Debug("Ranges", slog.Any("status", f.Status()))
 			}
 		}
 	}
@@ -134,15 +139,18 @@ func defaultMerkleLeafHasher(bundle []byte) ([][]byte, error) {
 
 func verifierFromFlags() note.Verifier {
 	if *pubKey == "" {
-		klog.Exit("Must provide the --public_key flag")
+		slog.Error("Must provide the --public_key flag")
+		os.Exit(255)
 	}
 	b, err := os.ReadFile(*pubKey)
 	if err != nil {
-		klog.Exitf("Failed to read verifier from %q: %v", *pubKey, err)
+		slog.Error("Failed to read verifier from", slog.String("pubkey", *pubKey), slog.Any("error", err))
+		os.Exit(255)
 	}
 	v, err := f_note.NewVerifier(string(b))
 	if err != nil {
-		klog.Exitf("Invalid verifier in %q: %v", *pubKey, err)
+		slog.Error("Invalid verifier in", slog.String("pubkey", *pubKey), slog.Any("error", err))
+		os.Exit(255)
 	}
 	return v
 }

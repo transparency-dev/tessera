@@ -18,13 +18,12 @@ package tui
 import (
 	"bufio"
 	"context"
-	"flag"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/transparency-dev/tessera/cmd/fsck/tui"
 	"github.com/transparency-dev/tessera/fsck"
-	"k8s.io/klog/v2"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -35,10 +34,8 @@ func RunApp(ctx context.Context, f *fsck.Fsck) error {
 	p := tea.NewProgram(m)
 
 	// Redirect logging so as to appear above the UI
-	_ = flag.Set("logtostderr", "false")
-	_ = flag.Set("alsologtostderr", "false")
 	r, w := io.Pipe()
-	klog.SetOutput(w)
+	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	go func() {
 		s := bufio.NewScanner(r)
 		for s.Scan() {

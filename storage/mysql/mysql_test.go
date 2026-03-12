@@ -32,13 +32,14 @@ import (
 	"testing"
 	"time"
 
+	"log/slog"
+
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/sync/errgroup"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -58,39 +59,41 @@ const (
 // If is_mysql_test_optional is set to true and MySQL database cannot be opened or pinged, the test will fail immediately.
 // Otherwise, the test will be skipped if the test is optional and the database is not available.
 func TestMain(m *testing.M) {
-	klog.InitFlags(nil)
 	flag.Parse()
 	ctx := context.Background()
 
 	db, err := sql.Open("mysql", *mysqlURI)
 	if err != nil {
 		if *isMySQLTestOptional {
-			klog.Warning("MySQL not available, skipping all MySQL storage tests")
+			slog.Warn("MySQL not available, skipping all MySQL storage tests")
 			return
 		}
-		klog.Fatalf("Failed to open MySQL test db: %v", err)
+		slog.Error("Failed to open MySQL test db", slog.Any("error", err))
+		os.Exit(255)
 	}
 	defer func() {
 		if err := db.Close(); err != nil {
-			klog.Warningf("Failed to close MySQL database: %v", err)
+			slog.Warn("Failed to close MySQL database", slog.Any("error", err))
 		}
 	}()
 	if err := db.PingContext(ctx); err != nil {
 		if *isMySQLTestOptional {
-			klog.Warning("MySQL not available, skipping all MySQL storage tests")
+			slog.Warn("MySQL not available, skipping all MySQL storage tests")
 			return
 		}
-		klog.Fatalf("Failed to ping MySQL test db: %v", err)
+		slog.Error("Failed to ping MySQL test db", slog.Any("error", err))
+		os.Exit(255)
 	}
 	testDB = db
 
-	klog.Info("Successfully connected to MySQL test database")
+	slog.Info("Successfully connected to MySQL test database")
 
 	initDatabaseSchema(ctx)
 
 	noteSigner, err = note.NewSigner(testPrivateKey)
 	if err != nil {
-		klog.Fatalf("Failed to create new signer: %v", err)
+		slog.Error("Failed to create new signer", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	os.Exit(m.Run())
@@ -105,28 +108,32 @@ func initDatabaseSchema(ctx context.Context) {
 
 	rawSchema, err := os.ReadFile("schema.sql")
 	if err != nil {
-		klog.Fatalf("Failed to read schema.sql: %v", err)
+		slog.Error("Failed to read schema.sql", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	db, err := sql.Open("mysql", *mysqlURI+"?multiStatements=true")
 	if err != nil {
-		klog.Fatalf("Failed to connect to DB: %v", err)
+		slog.Error("Failed to connect to DB", slog.Any("error", err))
+		os.Exit(255)
 	}
 	defer func() {
 		if err := db.Close(); err != nil {
-			klog.Warningf("Failed to close db: %v", err)
+			slog.Warn("Failed to close db", slog.Any("error", err))
 		}
 	}()
 
 	if _, err := db.ExecContext(ctx, dropTablesSQL); err != nil {
-		klog.Fatalf("Failed to drop all tables: %v", err)
+		slog.Error("Failed to drop all tables", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	if _, err := db.ExecContext(ctx, string(rawSchema)); err != nil {
-		klog.Fatalf("Failed to execute init database schema: %v", err)
+		slog.Error("Failed to execute init database schema", slog.Any("error", err))
+		os.Exit(255)
 	}
 
-	klog.Info("Database schema initialized successfully")
+	slog.Info("Database schema initialized successfully")
 }
 
 func TestAppend(t *testing.T) {

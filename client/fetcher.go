@@ -24,9 +24,10 @@ import (
 	"path"
 	"strings"
 
+	"log/slog"
+
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/internal/fetcher"
-	"k8s.io/klog/v2"
 )
 
 // NewHTTPFetcher creates a new HTTPFetcher for the log rooted at the given URL, using
@@ -88,7 +89,7 @@ func (h HTTPFetcher) fetch(ctx context.Context, p string) ([]byte, error) {
 
 	defer func() {
 		if err := r.Body.Close(); err != nil {
-			klog.Errorf("resp.Body.Close(): %v", err)
+			slog.Error("resp.Body.Close", slog.Any("error", err))
 		}
 	}()
 	return io.ReadAll(r.Body)

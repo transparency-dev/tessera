@@ -29,9 +29,10 @@ import (
 
 	"golang.org/x/mod/sumdb/note"
 
+	"log/slog"
+
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/storage/posix"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -41,6 +42,7 @@ var (
 	witnessPolicyFile = flag.String("witness_policy_file", "", "(Optional) Path to the file containing the witness policy in the format describe at https://git.glasklar.is/sigsum/core/sigsum-go/-/blob/main/doc/policy.md")
 	witnessTimeout    = flag.Duration("witness_timeout", tessera.DefaultWitnessTimeout, "Maximum time to wait for witness responses.")
 	witnessFailOpen   = flag.Bool("witness_fail_open", false, "Still publish a checkpoint even if witness policy could not be met")
+	slogLevel         = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is INFO. See https://pkg.go.dev/log/slog#Level.")
 )
 
 // entryInfo binds the actual bytes to be added as a leaf with a
@@ -53,11 +55,11 @@ type entryInfo struct {
 }
 
 func main() {
-	klog.InitFlags(nil)
 	flag.Parse()
 	ctx := context.Background()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 
-	klog.V(1).Infof("Initialising driver")
+	slog.Debug("Initialising driver")
 
 	// Gather the info needed for reading/writing checkpoints
 	s := getSignerOrDie()
@@ -72,10 +74,11 @@ func main() {
 		},
 	)
 	if err != nil {
-		klog.Exitf("Failed to construct storage: %v", err)
+		slog.Error("Failed to construct storage", slog.Any("error", err))
+		os.Exit(255)
 	}
 
-	klog.V(1).Infof("Reading entries")
+	slog.Debug("Reading entries")
 	// Evaluate the glob provided by the --entries flag to determine the files containing leaves
 	filesToAdd := readEntriesOrDie()
 	batchSize := uint(len(filesToAdd))
@@ -84,7 +87,7 @@ func main() {
 		batchSize = 1
 	}
 
-	klog.V(1).Infof("Configuring options")
+	slog.Debug("Configuring options")
 	opts := tessera.NewAppendOptions().
 		WithCheckpointSigner(s).
 		// Hint to Tessera the number of entries we're about to add via the batchSize parameter below,
@@ -99,11 +102,13 @@ func main() {
 	if *witnessPolicyFile != "" {
 		f, err := os.ReadFile(*witnessPolicyFile)
 		if err != nil {
-			klog.Exitf("failed to read witness policy file %q: %v", *witnessPolicyFile, err)
+			slog.Error("Failed to read witness policy file", slog.String("witnesspolicyfile", *witnessPolicyFile), slog.Any("error", err))
+			os.Exit(255)
 		}
 		wg, err := tessera.NewWitnessGroupFromPolicy(f)
 		if err != nil {
-			klog.Exitf("failed to create witness group from policy: %v", err)
+			slog.Error("Failed to create witness group from policy", slog.Any("error", err))
+			os.Exit(255)
 		}
 
 		wOpts := &tessera.WitnessOptions{
@@ -113,49 +118,53 @@ func main() {
 		opts.WithWitnesses(wg, wOpts)
 	}
 
-	klog.V(1).Infof("Creating appender")
+	slog.Debug("Creating appender")
 	appender, shutdown, r, err := tessera.NewAppender(ctx, driver, opts)
 	if err != nil {
-		klog.Exit(err)
+		slog.Error("Failed to create new appender", slog.Any("error", err))
+		os.Exit(255)
 	}
 
-	klog.V(1).Infof("Creating awaiter")
+	slog.Debug("Creating awaiter")
 	// We don't want to exit until our entries have been integrated into the tree, so we'll use Tessera's
 	// PublicationAwaiter to help with that.
 	await := tessera.NewPublicationAwaiter(ctx, r.ReadCheckpoint, 100*time.Millisecond)
 
-	klog.V(1).Infof("Adding entries")
+	slog.Debug("Adding entries")
 	// Add each of the leaves in order, and store the futures in a slice
 	// that we will check once all leaves are sent to storage.
 	indexFutures := make([]entryInfo, 0, len(filesToAdd))
 	for _, fp := range filesToAdd {
 		b, err := os.ReadFile(fp)
 		if err != nil {
-			klog.Exitf("Failed to read entry file %q: %q", fp, err)
+			slog.Error("Failed to read entry file", slog.String("fp", fp), slog.Any("error", err))
+			os.Exit(255)
 		}
 
 		f := appender.Add(ctx, tessera.NewEntry(b))
 		indexFutures = append(indexFutures, entryInfo{name: fp, f: f})
 	}
 
-	klog.V(1).Infof("Awaiting entries")
+	slog.Debug("Awaiting entries")
 	// Two options to ensure all work is done:
 	// 1) Check each of the futures to ensure that the leaves are sequenced.
 	for _, entry := range indexFutures {
 		seq, _, err := await.Await(ctx, entry.f)
 		if err != nil {
-			klog.Exitf("Failed to sequence %q: %q", entry.name, err)
+			slog.Error("Failed to sequence", slog.String("name", entry.name), slog.Any("error", err))
+			os.Exit(255)
 		}
-		klog.Infof("%d: %v", seq.Index, entry.name)
+		slog.Info("Integrated entry", slog.Uint64("index", seq.Index), slog.String("name", entry.name))
 	}
-	klog.V(1).Infof("Futures resolved")
-	klog.V(1).Infof("Shutting down")
+	slog.Debug("Futures resolved")
+	slog.Debug("Shutting down")
 
 	// 2) shutdown the appender
 	if err := shutdown(ctx); err != nil {
-		klog.Exitf("Failed to shut down cleanly: %v", err)
+		slog.Error("Failed to shut down cleanly", slog.Any("error", err))
+		os.Exit(255)
 	}
-	klog.V(1).Infof("Finished")
+	slog.Debug("Finished")
 }
 
 // Read log private key from file or environment variable
@@ -165,17 +174,20 @@ func getSignerOrDie() note.Signer {
 	if len(*privKeyFile) > 0 {
 		privKey, err = getKeyFile(*privKeyFile)
 		if err != nil {
-			klog.Exitf("Unable to get private key: %q", err)
+			slog.Error("Unable to get private key", slog.Any("error", err))
+			os.Exit(255)
 		}
 	} else {
 		privKey = os.Getenv("LOG_PRIVATE_KEY")
 		if len(privKey) == 0 {
-			klog.Exit("Supply private key file path using --private_key or set LOG_PRIVATE_KEY environment variable")
+			slog.Error("Supply private key file path using --private_key or set LOG_PRIVATE_KEY environment variable")
+			os.Exit(255)
 		}
 	}
 	s, err := note.NewSigner(privKey)
 	if err != nil {
-		klog.Exitf("Failed to instantiate signer: %q", err)
+		slog.Error("Failed to instantiate signer", slog.Any("error", err))
+		os.Exit(255)
 	}
 	return s
 }
@@ -191,8 +203,9 @@ func getKeyFile(path string) (string, error) {
 func readEntriesOrDie() []string {
 	toAdd, err := filepath.Glob(*entries)
 	if err != nil {
-		klog.Exitf("Failed to glob entries %q: %q", *entries, err)
+		slog.Error("Failed to glob entries", slog.String("entries", *entries), slog.Any("error", err))
+		os.Exit(255)
 	}
-	klog.V(1).Infof("toAdd: %v", toAdd)
+	slog.Debug("toAdd", slog.Any("files", toAdd))
 	return toAdd
 }

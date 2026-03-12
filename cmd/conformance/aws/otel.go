@@ -17,6 +17,9 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+
+	"log/slog"
 
 	ec2 "go.opentelemetry.io/contrib/detectors/aws/ec2/v2"
 	"go.opentelemetry.io/contrib/detectors/aws/ecs"
@@ -28,7 +31,6 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
-	"k8s.io/klog/v2"
 )
 
 // initOTel initialises the open telemetry support for metrics and tracing.
@@ -49,7 +51,7 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 		}
 		shutdownFuncs = nil
 		if err != nil {
-			klog.Errorf("OTel shutdown: %v", err)
+			slog.Error("OTel shutdown", slog.Any("error", err))
 		}
 	}
 
@@ -68,7 +70,8 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 		resource.WithDetectors(ec2ResourceDetector, ecsResourceDetector),
 	)
 	if err != nil {
-		klog.Exitf("Failed to detect resources: %v", err)
+		slog.Error("Failed to detect resources", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	// Code below is mostly taken from the OTEL AWS documentation: https://aws-otel.github.io/docs/getting-started/go-sdk/manual-instr
@@ -76,7 +79,8 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 	// Create and start new OTLP metric exporter
 	metricExporter, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithInsecure(), otlpmetricgrpc.WithEndpoint("localhost:4317"))
 	if err != nil {
-		klog.Exitf("Failed to create new OTLP metric exporter: %v", err)
+		slog.Error("Failed to create new OTLP metric exporter", slog.Any("error", err))
+		os.Exit(255)
 	}
 	mp := metric.NewMeterProvider(
 		metric.WithReader(metric.NewPeriodicReader(metricExporter)),
@@ -88,7 +92,8 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 	// Create and start new OTLP trace exporter
 	traceExporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithInsecure(), otlptracegrpc.WithEndpoint("localhost:4317"))
 	if err != nil {
-		klog.Exitf("Failed to create new OTLP trace exporter: %v", err)
+		slog.Error("Failed to create new OTLP trace exporter", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	idg := xray.NewIDGenerator()

@@ -18,8 +18,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"time"
+
+	"log/slog"
 
 	"github.com/transparency-dev/merkle/compact"
 	"github.com/transparency-dev/merkle/rfc6962"
@@ -29,7 +32,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/exp/maps"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -46,7 +48,8 @@ func init() {
 		metric.WithDescription("Number of times the tree builder calculated a new root hash"),
 		metric.WithUnit("{call}"))
 	if err != nil {
-		klog.Exitf("Failed to create integrateCount metric: %v", err)
+		slog.Error("Failed to create integrateCount metric", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	integrateBatchSizeHistogram, err = meter.Int64Histogram(
@@ -55,7 +58,8 @@ func init() {
 		metric.WithUnit("{leaves}"),
 		metric.WithExplicitBucketBoundaries(batchSizeHistogramBuckets...))
 	if err != nil {
-		klog.Exitf("Failed to create integrateBatchSizeHistogram metric: %v", err)
+		slog.Error("Failed to create integrateBatchSizeHistogram metric", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	integrateLatencyHistogram, err = meter.Int64Histogram(
@@ -64,7 +68,8 @@ func init() {
 		metric.WithUnit("ms"),
 		metric.WithExplicitBucketBoundaries(latencyHistogramBuckets...))
 	if err != nil {
-		klog.Exitf("Failed to create integrateLatencyHistogram metric: %v", err)
+		slog.Error("Failed to create integrateLatencyHistogram metric", slog.Any("error", err))
+		os.Exit(255)
 	}
 }
 
@@ -154,7 +159,7 @@ func (t *treeBuilder) integrate(ctx context.Context, fromSize uint64, leafHashes
 			return 0, nil, nil, fmt.Errorf("invalid log state, unable to recalculate root: %w", err)
 		}
 		if len(leafHashes) == 0 {
-			klog.V(1).Infof("Nothing to do.")
+			slog.Debug("Nothing to do")
 			// C2SP.org/log-tiles says all Merkle operations are those from RFC6962, we need to override
 			// the root of the empty tree to match (compact.Range will return an empty slice).
 			if fromSize == 0 {
@@ -165,7 +170,7 @@ func (t *treeBuilder) integrate(ctx context.Context, fromSize uint64, leafHashes
 		}
 
 		span.AddEvent("Loaded state")
-		klog.V(1).Infof("Loaded state with roothash %x", r)
+		slog.Debug("Loaded state", slog.String("hash", fmt.Sprintf("%x", r)))
 		// Create a new compact range which represents the update to the tree
 		newRange := t.rf.NewEmptyRange(fromSize)
 		tc := newTileWriteCache(fromSize, t.readCache.Get)
@@ -204,7 +209,7 @@ func (t *treeBuilder) integrate(ctx context.Context, fromSize uint64, leafHashes
 
 		// All calculation is now complete, all that remains is to store the new
 		// tiles and updated log state.
-		klog.V(1).Infof("New log state: size 0x%x hash: %x", baseRange.End(), newRoot)
+		slog.Debug("New log state", slog.String("size", fmt.Sprintf("%x", baseRange.End())), slog.String("hash", fmt.Sprintf("%x", newRoot)))
 
 		integrateCount.Add(ctx, 1)
 		integrateBatchSizeHistogram.Record(ctx, int64(len(leafHashes)))
@@ -234,7 +239,7 @@ func (r *tileReadCache) Get(ctx context.Context, tileID TileID, treeSize uint64)
 		k := layout.TilePath(uint64(tileID.Level), tileID.Index, layout.PartialTileSize(tileID.Level, tileID.Index, treeSize))
 		e, ok := r.entries[k]
 		if !ok {
-			klog.V(1).Infof("Readcache miss: %q", k)
+			slog.Debug("Readcache miss", slog.String("k", k))
 			span.AddEvent(fmt.Sprintf("Cache miss %q", k))
 			t, err := r.getTiles(ctx, []TileID{tileID}, treeSize)
 			if err != nil {

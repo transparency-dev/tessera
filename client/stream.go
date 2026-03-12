@@ -20,8 +20,9 @@ import (
 	"fmt"
 	"iter"
 
+	"log/slog"
+
 	"github.com/transparency-dev/tessera/api/layout"
-	"k8s.io/klog/v2"
 )
 
 // TreeSizeFunc is a function which knows how to return the current tree size of a log.
@@ -86,7 +87,7 @@ func EntryBundles(ctx context.Context, numWorkers uint, getSize TreeSizeFunc, ge
 			tokens <- struct{}{}
 		}
 
-		klog.V(1).Infof("stream.EntryBundles: streaming [%d, %d)", fromEntry, fromEntry+N)
+		slog.Debug("stream.EntryBundles: streaming", slog.Uint64("from", fromEntry), slog.Uint64("to", fromEntry+N))
 
 		// For each bundle, pop a future into the bundles channel and kick off an async request
 		// to resolve it.
@@ -114,7 +115,7 @@ func EntryBundles(ctx context.Context, numWorkers uint, getSize TreeSizeFunc, ge
 			bundles <- f
 		}
 
-		klog.V(1).Infof("stream.EntryBundles: exiting")
+		slog.Debug("stream.EntryBundles: exiting")
 	}()
 
 	return func(yield func(Bundle, error) bool) {
@@ -131,7 +132,7 @@ func EntryBundles(ctx context.Context, numWorkers uint, getSize TreeSizeFunc, ge
 				return
 			}
 		}
-		klog.V(1).Infof("stream.EntryBundles: iter done")
+		slog.Debug("stream.EntryBundles: iter done")
 	}
 }
 

@@ -24,31 +24,34 @@ import (
 	"path/filepath"
 	"time"
 
+	"log/slog"
+
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/client"
 	mirror "github.com/transparency-dev/tessera/cmd/experimental/mirror/internal"
-	"k8s.io/klog/v2"
 )
 
 var (
 	storageDir = flag.String("storage_dir", "", "Root directory to store log data.")
 	sourceURL  = flag.String("source_url", "", "Base URL for the source log.")
 	numWorkers = flag.Uint("num_workers", 30, "Number of migration worker goroutines.")
+	slogLevel  = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is INFO. See https://pkg.go.dev/log/slog#Level.")
 )
 
 func main() {
-	klog.InitFlags(nil)
-	klog.CopyStandardLogTo("INFO")
 	flag.Parse()
 	ctx := context.Background()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 
 	srcURL, err := url.Parse(*sourceURL)
 	if err != nil {
-		klog.Exitf("Invalid --source_url %q: %v", *sourceURL, err)
+		slog.Error("Invalid --source_url", slog.String("param", *sourceURL), slog.Any("error", err))
+		os.Exit(255)
 	}
 	src, err := client.NewHTTPFetcher(srcURL, nil)
 	if err != nil {
-		klog.Exitf("Failed to create HTTP fetcher: %v", err)
+		slog.Error("Failed to create HTTP fetcher", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	m := &mirror.Mirror{
@@ -71,11 +74,12 @@ func main() {
 	}()
 
 	if err := m.Run(ctx); err != nil {
-		klog.Exitf("Failed to mirror log: %v", err)
+		slog.Error("Failed to mirror log", slog.Any("error", err))
+		os.Exit(255)
 	}
 
 	printProgress(m.Progress)
-	klog.Info("Log mirrored successfully.")
+	slog.Info("Log mirrored successfully.")
 }
 
 func printProgress(f func() (uint64, uint64)) {
@@ -85,7 +89,7 @@ func printProgress(f func() (uint64, uint64)) {
 	if total == done && done == 0 {
 		p = 100.0
 	}
-	klog.Infof("Progress: %d of %d resources (%0.2f%%)", done, total, p)
+	slog.Info("Progress", slog.Uint64("done", done), slog.Uint64("total", total), slog.Float64("percent", p))
 }
 
 type posixTarget struct {
