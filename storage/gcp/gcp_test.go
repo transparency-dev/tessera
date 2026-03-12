@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"reflect"
 	"strings"
@@ -40,6 +41,10 @@ import (
 	storage "github.com/transparency-dev/tessera/storage/internal"
 	"golang.org/x/mod/sumdb/note"
 )
+
+func init() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+}
 
 func newSpannerDB(t *testing.T) (*spanner.Client, func()) {
 	t.Helper()
