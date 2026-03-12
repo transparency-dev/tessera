@@ -28,8 +28,7 @@ services:
       "--mysql_uri=tessera:tessera@tcp(tessera-conformance-mysql-db:3306)/tessera",
       "--init_schema_path=/schema.sql",
       "--private_key_path=/key",
-      "--alsologtostderr",
-      "--v=1",
+      "--slog_level=-4",
     ]
     restart: always
     depends_on:

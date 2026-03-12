@@ -18,7 +18,6 @@ package tui
 import (
 	"bufio"
 	"context"
-	"flag"
 	"io"
 	"log/slog"
 	"time"
@@ -35,10 +34,8 @@ func RunApp(ctx context.Context, f *fsck.Fsck) error {
 	p := tea.NewProgram(m)
 
 	// Redirect logging so as to appear above the UI
-	_ = flag.Set("logtostderr", "false")
-	_ = flag.Set("alsologtostderr", "false")
 	r, w := io.Pipe()
-	slog.SetDefault(slog.New(slog.NewTextHandler(w, nil)))
+	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	go func() {
 		s := bufio.NewScanner(r)
 		for s.Scan() {

@@ -56,6 +56,7 @@ var (
 	signer            = flag.String("signer", "", "Note signer to use to sign checkpoints")
 	publishInterval   = flag.Duration("publish_interval", 3*time.Second, "How frequently to publish updated checkpoints")
 	traceFraction     = flag.Float64("trace_fraction", 0, "Fraction of open-telemetry span traces to sample")
+	slogLevel         = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is INFO. See https://pkg.go.dev/log/slog#Level.")
 	additionalSigners = []string{}
 
 	antispamEnable = flag.Bool("antispam", false, "EXPERIMENTAL: Set to true to enable persistent antispam storage")
@@ -72,7 +73,7 @@ func init() {
 func main() {
 	flag.Parse()
 	ctx := context.Background()
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 
 	shutdownOTel := initOTel(ctx, *traceFraction)
 	defer shutdownOTel(ctx)

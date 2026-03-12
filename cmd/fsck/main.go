@@ -43,11 +43,12 @@ var (
 	pubKey      = flag.String("public_key", "", "Path to a file containing the log's public key")
 	qps         = flag.Float64("qps", 0, "Max QPS to send to the target log. Set to zero for unlimited")
 	ui          = flag.Bool("ui", true, "Set to true to use a TUI to display progress, or false for logging")
+	slogLevel   = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is INFO. See https://pkg.go.dev/log/slog#Level.")
 )
 
 func main() {
 	flag.Parse()
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 	ctx, cancel := context.WithCancel(context.Background())
 	logURL, err := url.Parse(*storageURL)
 	if err != nil {

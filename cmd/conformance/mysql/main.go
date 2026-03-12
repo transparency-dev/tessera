@@ -46,6 +46,7 @@ var (
 	listen                    = flag.String("listen", ":2024", "Address:port to listen on")
 	privateKeyPath            = flag.String("private_key_path", "", "Location of private key file")
 	publishInterval           = flag.Duration("publish_interval", 3*time.Second, "How frequently to publish updated checkpoints")
+	slogLevel                 = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is INFO. See https://pkg.go.dev/log/slog#Level.")
 	additionalPrivateKeyPaths = []string{}
 )
 
@@ -59,7 +60,7 @@ func init() {
 func main() {
 	flag.Parse()
 	ctx := context.Background()
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 
 	db := createDatabaseOrDie(ctx)
 	noteSigner, additionalSigners := createSignersOrDie()

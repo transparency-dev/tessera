@@ -35,12 +35,13 @@ var (
 	storageDir = flag.String("storage_dir", "", "Root directory to store log data.")
 	sourceURL  = flag.String("source_url", "", "Base URL for the source log.")
 	numWorkers = flag.Uint("num_workers", 30, "Number of migration worker goroutines.")
+	slogLevel  = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is INFO. See https://pkg.go.dev/log/slog#Level.")
 )
 
 func main() {
 	flag.Parse()
 	ctx := context.Background()
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 
 	srcURL, err := url.Parse(*sourceURL)
 	if err != nil {

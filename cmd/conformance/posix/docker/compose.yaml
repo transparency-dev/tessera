@@ -18,8 +18,7 @@ services:
     command: [
       "--storage_dir=/tmp/tessera-posix-log",
       "--listen=:2025",
-      "--alsologtostderr",
-      "--v=2",
+      "--slog_level=-4"
     ]
     volumes:
       - /tmp/tessera-posix-log:/tmp/tessera-posix-log
