@@ -49,7 +49,7 @@ func init() {
 		metric.WithUnit("{call}"))
 	if err != nil {
 		slog.Error("Failed to create integrateCount metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	integrateBatchSizeHistogram, err = meter.Int64Histogram(
@@ -59,7 +59,7 @@ func init() {
 		metric.WithExplicitBucketBoundaries(batchSizeHistogramBuckets...))
 	if err != nil {
 		slog.Error("Failed to create integrateBatchSizeHistogram metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	integrateLatencyHistogram, err = meter.Int64Histogram(
@@ -69,7 +69,7 @@ func init() {
 		metric.WithExplicitBucketBoundaries(latencyHistogramBuckets...))
 	if err != nil {
 		slog.Error("Failed to create integrateLatencyHistogram metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 }
 

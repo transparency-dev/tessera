@@ -45,7 +45,7 @@ var (
 	privKeyFile               = flag.String("private_key", "", "Location of private key file. If unset, uses the contents of the LOG_PRIVATE_KEY environment variable.")
 	persistentAntispam        = flag.Bool("antispam", false, "EXPERIMENTAL: Set to true to enable Badger-based persistent antispam storage")
 	additionalPrivateKeyFiles = []string{}
-	slogLevel                 = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is INFO. See https://pkg.go.dev/log/slog#Level.")
+	slogLevel                 = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is 0 (INFO). See https://pkg.go.dev/log/slog#Level for other levels.")
 )
 
 func init() {
@@ -74,7 +74,7 @@ func main() {
 	driver, err := posix.New(ctx, posix.Config{Path: *storageDir})
 	if err != nil {
 		slog.Error("Failed to construct storage", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	var antispam tessera.Antispam
 	// Persistent antispam is currently experimental, so there's no terraform or documentation yet!
@@ -83,7 +83,7 @@ func main() {
 		antispam, err = badger_as.NewAntispam(ctx, filepath.Join(*storageDir, ".state", "antispam"), asOpts)
 		if err != nil {
 			slog.Error("Failed to create new Badger antispam storage", slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 	}
 
@@ -95,7 +95,7 @@ func main() {
 		WithAntispam(tessera.DefaultAntispamInMemorySize, antispam))
 	if err != nil {
 		slog.Error("Failed to create new appender", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	// Define a handler for /add that accepts POST requests and adds the POST body to the log
@@ -123,10 +123,9 @@ func main() {
 	http.Handle("GET /tile/", addCacheHeaders("max-age=31536000, immutable", fs))
 	http.Handle("GET /entries/", fs)
 
-	// TODO(mhutchinson): Change the listen flag to just a port, or fix up this address formatting
-	slog.Info("Environment variables useful for accessing this log:\n" +
-		fmt.Sprintf("export WRITE_URL=http://localhost%s/ \n", *listen) +
-		fmt.Sprintf("export READ_URL=http://localhost%s/ \n", *listen))
+	fmt.Printf("Environment variables useful for accessing this log:\n"+
+		"export WRITE_URL=http://localhost%s/ \n"+
+		"export READ_URL=http://localhost%s/ \n", *listen, *listen)
 	// Run the HTTP server with the single handler and block until this is terminated
 	h2s := &http2.Server{}
 	h1s := &http.Server{
@@ -136,16 +135,16 @@ func main() {
 	}
 	if err := http2.ConfigureServer(h1s, h2s); err != nil {
 		slog.Error("http2.ConfigureServer", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	if err := h1s.ListenAndServe(); err != nil {
 		if err := shutdown(ctx); err != nil {
 			slog.Error("Failed to cleanly shutdown after ListenAndServe", slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 		slog.Error("ListenAndServe", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 }
 
@@ -156,12 +155,12 @@ func getSignersOrDie() (note.Signer, []note.Signer) {
 		kr, err := getKeyFile(p)
 		if err != nil {
 			slog.Error("Unable to get additional private key", slog.String("file", p), slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 		k, err := note.NewSigner(kr)
 		if err != nil {
 			slog.Error("Failed to instantiate signer", slog.String("file", p), slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 		a = append(a, k)
 	}
@@ -176,19 +175,19 @@ func getSignerOrDie() note.Signer {
 		privKey, err = getKeyFile(*privKeyFile)
 		if err != nil {
 			slog.Error("Unable to get private key", slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 	} else {
 		privKey = os.Getenv("LOG_PRIVATE_KEY")
 		if len(privKey) == 0 {
 			slog.Error("Supply private key file path using --private_key or set LOG_PRIVATE_KEY environment variable")
-			os.Exit(255)
+			os.Exit(1)
 		}
 	}
 	s, err := note.NewSigner(privKey)
 	if err != nil {
 		slog.Error("Failed to instantiate signer", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	return s
 }

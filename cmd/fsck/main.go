@@ -43,7 +43,7 @@ var (
 	pubKey      = flag.String("public_key", "", "Path to a file containing the log's public key")
 	qps         = flag.Float64("qps", 0, "Max QPS to send to the target log. Set to zero for unlimited")
 	ui          = flag.Bool("ui", true, "Set to true to use a TUI to display progress, or false for logging")
-	slogLevel   = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is INFO. See https://pkg.go.dev/log/slog#Level.")
+	slogLevel   = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is 0 (INFO). See https://pkg.go.dev/log/slog#Level for other levels.")
 )
 
 func main() {
@@ -53,7 +53,7 @@ func main() {
 	logURL, err := url.Parse(*storageURL)
 	if err != nil {
 		slog.Error("Invalid --storage_url", slog.String("param", *storageURL), slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	var src fsck.Fetcher
 
@@ -65,7 +65,7 @@ func main() {
 		httpSrc, err := client.NewHTTPFetcher(logURL, nil)
 		if err != nil {
 			slog.Error("Failed to create HTTP fetcher", slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 		if *bearerToken != "" {
 			httpSrc.SetAuthorizationHeader(fmt.Sprintf("Bearer %s", *bearerToken))
@@ -113,7 +113,7 @@ func main() {
 				cancel()
 				if err != nil {
 					slog.Error("fsck failed", slog.Any("error", err))
-					os.Exit(255)
+					os.Exit(1)
 				}
 				return
 			case <-time.After(time.Second):
@@ -140,17 +140,17 @@ func defaultMerkleLeafHasher(bundle []byte) ([][]byte, error) {
 func verifierFromFlags() note.Verifier {
 	if *pubKey == "" {
 		slog.Error("Must provide the --public_key flag")
-		os.Exit(255)
+		os.Exit(1)
 	}
 	b, err := os.ReadFile(*pubKey)
 	if err != nil {
 		slog.Error("Failed to read verifier from", slog.String("pubkey", *pubKey), slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	v, err := f_note.NewVerifier(string(b))
 	if err != nil {
 		slog.Error("Invalid verifier in", slog.String("pubkey", *pubKey), slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	return v
 }

@@ -250,7 +250,7 @@ func fsckLog(t *testing.T, dir string) error {
 	v, err := note.NewVerifier(testVerifier)
 	if err != nil {
 		slog.Error("Invalid verifier", slog.String("verifier", testVerifier), slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	f := fsck.New(v.Name(), v, src, defaultMerkleLeafHasher, fsck.Opts{N: 1})
 	return f.Check(t.Context())

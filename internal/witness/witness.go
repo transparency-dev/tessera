@@ -66,7 +66,7 @@ func init() {
 		metric.WithUnit("{call}"))
 	if err != nil {
 		slog.Error("Failed to create witnessReqsTotal metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	witnessReqHistogram, err = meter.Int64Histogram(
 		"tessera.witness.duration",
@@ -75,7 +75,7 @@ func init() {
 		metric.WithExplicitBucketBoundaries(witnessHistogramBuckets...))
 	if err != nil {
 		slog.Error("Failed to create witnessReqHistogram metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	witnessRespsTotal, err = meter.Int64Counter(
 		"tessera.witness.response",
@@ -83,7 +83,7 @@ func init() {
 		metric.WithUnit("{call}"))
 	if err != nil {
 		slog.Error("Failed to create witnessRespsTotal metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 }
 

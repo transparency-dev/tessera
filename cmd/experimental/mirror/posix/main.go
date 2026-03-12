@@ -35,7 +35,7 @@ var (
 	storageDir = flag.String("storage_dir", "", "Root directory to store log data.")
 	sourceURL  = flag.String("source_url", "", "Base URL for the source log.")
 	numWorkers = flag.Uint("num_workers", 30, "Number of migration worker goroutines.")
-	slogLevel  = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is INFO. See https://pkg.go.dev/log/slog#Level.")
+	slogLevel  = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is 0 (INFO). See https://pkg.go.dev/log/slog#Level for other levels.")
 )
 
 func main() {
@@ -46,12 +46,12 @@ func main() {
 	srcURL, err := url.Parse(*sourceURL)
 	if err != nil {
 		slog.Error("Invalid --source_url", slog.String("param", *sourceURL), slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	src, err := client.NewHTTPFetcher(srcURL, nil)
 	if err != nil {
 		slog.Error("Failed to create HTTP fetcher", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	m := &mirror.Mirror{
@@ -75,7 +75,7 @@ func main() {
 
 	if err := m.Run(ctx); err != nil {
 		slog.Error("Failed to mirror log", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	printProgress(m.Progress)

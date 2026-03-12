@@ -109,7 +109,7 @@ func main() {
 	logSigV, err := note.NewVerifier(*logPubKey)
 	if err != nil {
 		slog.Error("failed to create verifier", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	r := mustCreateReaders(logURL)
@@ -123,13 +123,13 @@ func main() {
 	tracker, err := client.NewLogStateTracker(ctx, r.ReadTile, cpRaw, logSigV, logSigV.Name(), cons)
 	if err != nil {
 		slog.Error("Failed to create LogStateTracker", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	// Fetch initial state of log
 	_, _, _, err = tracker.Update(ctx)
 	if err != nil {
 		slog.Error("Failed to get initial state of the log", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	ha := loadtest.NewHammerAnalyser(func() uint64 { return tracker.Latest().Size })
@@ -244,7 +244,7 @@ func mustCreateReaders(us []string) loadtest.LogReader {
 		rURL, err := url.Parse(u)
 		if err != nil {
 			slog.Error("Invalid log reader URL", slog.String("u", u), slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 
 		switch rURL.Scheme {
@@ -252,7 +252,7 @@ func mustCreateReaders(us []string) loadtest.LogReader {
 			c, err := client.NewHTTPFetcher(rURL, hc)
 			if err != nil {
 				slog.Error("Failed to create HTTP fetcher", slog.String("u", u), slog.Any("error", err))
-				os.Exit(255)
+				os.Exit(1)
 			}
 			if *bearerToken != "" {
 				c.SetAuthorizationHeader(fmt.Sprintf("Bearer %s", *bearerToken))
@@ -262,7 +262,7 @@ func mustCreateReaders(us []string) loadtest.LogReader {
 			r = append(r, client.FileFetcher{Root: rURL.Path})
 		default:
 			slog.Error("Unsupported scheme on log URL", slog.String("scheme", rURL.Scheme))
-			os.Exit(255)
+			os.Exit(1)
 		}
 	}
 	return loadtest.NewRoundRobinReader(r)
@@ -278,7 +278,7 @@ func mustCreateWriters(us []string) loadtest.LeafWriter {
 		wURL, err := url.Parse(u)
 		if err != nil {
 			slog.Error("Invalid log writer URL", slog.String("u", u), slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 		w = append(w, httpWriter(wURL, hc, *bearerTokenWrite))
 	}

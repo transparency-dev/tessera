@@ -42,7 +42,7 @@ var (
 	witnessPolicyFile = flag.String("witness_policy_file", "", "(Optional) Path to the file containing the witness policy in the format describe at https://git.glasklar.is/sigsum/core/sigsum-go/-/blob/main/doc/policy.md")
 	witnessTimeout    = flag.Duration("witness_timeout", tessera.DefaultWitnessTimeout, "Maximum time to wait for witness responses.")
 	witnessFailOpen   = flag.Bool("witness_fail_open", false, "Still publish a checkpoint even if witness policy could not be met")
-	slogLevel         = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is INFO. See https://pkg.go.dev/log/slog#Level.")
+	slogLevel         = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is 0 (INFO). See https://pkg.go.dev/log/slog#Level for other levels.")
 )
 
 // entryInfo binds the actual bytes to be added as a leaf with a
@@ -75,7 +75,7 @@ func main() {
 	)
 	if err != nil {
 		slog.Error("Failed to construct storage", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	slog.Debug("Reading entries")
@@ -103,12 +103,12 @@ func main() {
 		f, err := os.ReadFile(*witnessPolicyFile)
 		if err != nil {
 			slog.Error("Failed to read witness policy file", slog.String("witnesspolicyfile", *witnessPolicyFile), slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 		wg, err := tessera.NewWitnessGroupFromPolicy(f)
 		if err != nil {
 			slog.Error("Failed to create witness group from policy", slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 
 		wOpts := &tessera.WitnessOptions{
@@ -122,7 +122,7 @@ func main() {
 	appender, shutdown, r, err := tessera.NewAppender(ctx, driver, opts)
 	if err != nil {
 		slog.Error("Failed to create new appender", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	slog.Debug("Creating awaiter")
@@ -138,7 +138,7 @@ func main() {
 		b, err := os.ReadFile(fp)
 		if err != nil {
 			slog.Error("Failed to read entry file", slog.String("fp", fp), slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 
 		f := appender.Add(ctx, tessera.NewEntry(b))
@@ -152,7 +152,7 @@ func main() {
 		seq, _, err := await.Await(ctx, entry.f)
 		if err != nil {
 			slog.Error("Failed to sequence", slog.String("name", entry.name), slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 		slog.Info("Integrated entry", slog.Uint64("index", seq.Index), slog.String("name", entry.name))
 	}
@@ -162,7 +162,7 @@ func main() {
 	// 2) shutdown the appender
 	if err := shutdown(ctx); err != nil {
 		slog.Error("Failed to shut down cleanly", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	slog.Debug("Finished")
 }
@@ -175,19 +175,19 @@ func getSignerOrDie() note.Signer {
 		privKey, err = getKeyFile(*privKeyFile)
 		if err != nil {
 			slog.Error("Unable to get private key", slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 	} else {
 		privKey = os.Getenv("LOG_PRIVATE_KEY")
 		if len(privKey) == 0 {
 			slog.Error("Supply private key file path using --private_key or set LOG_PRIVATE_KEY environment variable")
-			os.Exit(255)
+			os.Exit(1)
 		}
 	}
 	s, err := note.NewSigner(privKey)
 	if err != nil {
 		slog.Error("Failed to instantiate signer", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	return s
 }
@@ -204,7 +204,7 @@ func readEntriesOrDie() []string {
 	toAdd, err := filepath.Glob(*entries)
 	if err != nil {
 		slog.Error("Failed to glob entries", slog.String("entries", *entries), slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	slog.Debug("toAdd", slog.Any("files", toAdd))
 	return toAdd

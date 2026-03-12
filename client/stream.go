@@ -87,7 +87,7 @@ func EntryBundles(ctx context.Context, numWorkers uint, getSize TreeSizeFunc, ge
 			tokens <- struct{}{}
 		}
 
-		slog.Debug("stream.EntryBundles: streaming", slog.Uint64("from", fromEntry), slog.Uint64("to", fromEntry+N))
+		slog.Debug("stream.EntryBundles: streaming", slog.Uint64("from", fromEntry), slog.Uint64("N", N))
 
 		// For each bundle, pop a future into the bundles channel and kick off an async request
 		// to resolve it.

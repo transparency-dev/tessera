@@ -287,14 +287,14 @@ func (f *fsckTree) visit(id compact.NodeID, h []byte) {
 	}
 	if hIdx != uint64(len(t.Nodes)) {
 		slog.Error("LOGIC ERROR", slog.Any("tlevel", tLevel), slog.Uint64("tidx", tIdx), slog.Uint64("hidx", hIdx), slog.Int("nodes", len(t.Nodes)))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	t.Nodes = append(t.Nodes, h)
 	if len(t.Nodes) == layout.EntryBundleWidth {
 		c, err := t.MarshalText()
 		if err != nil {
 			slog.Error("Failed to marshal tile", slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 		f.expectedResources <- resource{
 			level:   uint64(tLevel),
@@ -313,7 +313,7 @@ func (f *fsckTree) flushPartialTiles() {
 		c, err := t.MarshalText()
 		if err != nil {
 			slog.Error("Failed to marshal tile", slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 		f.expectedResources <- resource{
 			level:   uint64(k.Level),

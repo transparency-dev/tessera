@@ -52,7 +52,7 @@ func init() {
 		metric.WithExplicitBucketBoundaries(histogramBuckets...))
 	if err != nil {
 		slog.Error("Failed to create opsHistogram metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	publishCount, err = meter.Int64Counter(
@@ -61,6 +61,6 @@ func init() {
 		metric.WithUnit("{call}"))
 	if err != nil {
 		slog.Error("Failed to create checkpoint publication counter metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 }

@@ -71,7 +71,7 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 	)
 	if err != nil {
 		slog.Error("Failed to detect resources", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	// Code below is mostly taken from the OTEL AWS documentation: https://aws-otel.github.io/docs/getting-started/go-sdk/manual-instr
@@ -80,7 +80,7 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 	metricExporter, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithInsecure(), otlpmetricgrpc.WithEndpoint("localhost:4317"))
 	if err != nil {
 		slog.Error("Failed to create new OTLP metric exporter", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	mp := metric.NewMeterProvider(
 		metric.WithReader(metric.NewPeriodicReader(metricExporter)),
@@ -93,7 +93,7 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 	traceExporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithInsecure(), otlptracegrpc.WithEndpoint("localhost:4317"))
 	if err != nil {
 		slog.Error("Failed to create new OTLP trace exporter", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	idg := xray.NewIDGenerator()

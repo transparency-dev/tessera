@@ -56,7 +56,7 @@ var (
 	signer            = flag.String("signer", "", "Note signer to use to sign checkpoints")
 	publishInterval   = flag.Duration("publish_interval", 3*time.Second, "How frequently to publish updated checkpoints")
 	traceFraction     = flag.Float64("trace_fraction", 0, "Fraction of open-telemetry span traces to sample")
-	slogLevel         = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is INFO. See https://pkg.go.dev/log/slog#Level.")
+	slogLevel         = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is 0 (INFO). See https://pkg.go.dev/log/slog#Level for other levels.")
 	additionalSigners = []string{}
 
 	antispamEnable = flag.Bool("antispam", false, "EXPERIMENTAL: Set to true to enable persistent antispam storage")
@@ -84,7 +84,7 @@ func main() {
 	driver, err := aws.New(ctx, awsCfg)
 	if err != nil {
 		slog.Error("Failed to create new AWS storage", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 	var antispam tessera.Antispam
 	// Persistent antispam is currently experimental, so there's no documentation yet!
@@ -93,7 +93,7 @@ func main() {
 		antispam, err = aws_as.NewAntispam(ctx, antispamMysqlConfig().FormatDSN(), asOpts)
 		if err != nil {
 			slog.Error("Failed to create new AWS antispam storage", slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 	}
 	appender, shutdown, _, err := tessera.NewAppender(ctx, driver, tessera.NewAppendOptions().
@@ -104,7 +104,7 @@ func main() {
 		WithAntispam(tessera.DefaultAntispamInMemorySize, antispam))
 	if err != nil {
 		slog.Error("Failed to create new appender", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	// Expose a HTTP handler for the conformance test writes.
@@ -140,16 +140,16 @@ func main() {
 	}
 	if err := http2.ConfigureServer(h1s, h2s); err != nil {
 		slog.Error("http2.ConfigureServer", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	if err := h1s.ListenAndServe(); err != nil {
 		if err := shutdown(ctx); err != nil {
 			slog.Error("Failed to cleanly shutdown after ListenAndServe", slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 		slog.Error("ListenAndServe", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 }
 
@@ -158,28 +158,28 @@ func main() {
 func storageConfigFromFlags() aws.Config {
 	if *bucket == "" {
 		slog.Error("--bucket must be set")
-		os.Exit(255)
+		os.Exit(1)
 	}
 	if *dbName == "" {
 		slog.Error("--db_name must be set")
-		os.Exit(255)
+		os.Exit(1)
 	}
 	if *dbHost == "" {
 		slog.Error("--db_host must be set")
-		os.Exit(255)
+		os.Exit(1)
 	}
 	if *dbPort == 0 {
 		slog.Error("--db_port must be set")
-		os.Exit(255)
+		os.Exit(1)
 	}
 	if *dbUser == "" {
 		slog.Error("--db_user must be set")
-		os.Exit(255)
+		os.Exit(1)
 	}
 	// Empty password isn't an option with AuroraDB MySQL.
 	if *dbPassword == "" {
 		slog.Error("--db_password must be set")
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	c := mysql.Config{
@@ -222,24 +222,24 @@ func storageConfigFromFlags() aws.Config {
 func antispamMysqlConfig() *mysql.Config {
 	if *antispamDb == "" {
 		slog.Error("--antispam_db_name must be set")
-		os.Exit(255)
+		os.Exit(1)
 	}
 	if *dbHost == "" {
 		slog.Error("--db_host must be set")
-		os.Exit(255)
+		os.Exit(1)
 	}
 	if *dbPort == 0 {
 		slog.Error("--db_port must be set")
-		os.Exit(255)
+		os.Exit(1)
 	}
 	if *dbUser == "" {
 		slog.Error("--db_user must be set")
-		os.Exit(255)
+		os.Exit(1)
 	}
 	// Empty password isn't an option with AuroraDB MySQL.
 	if *dbPassword == "" {
 		slog.Error("--db_password must be set")
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	return &mysql.Config{
@@ -257,7 +257,7 @@ func signerFromFlags() (note.Signer, []note.Signer) {
 	s, err := note.NewSigner(*signer)
 	if err != nil {
 		slog.Error("Failed to create new signer", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	var a []note.Signer
@@ -265,7 +265,7 @@ func signerFromFlags() (note.Signer, []note.Signer) {
 		s, err := note.NewSigner(as)
 		if err != nil {
 			slog.Error("Failed to create additional signer", slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 		a = append(a, s)
 	}

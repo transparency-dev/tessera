@@ -91,7 +91,7 @@ func init() {
 		metric.WithUnit("{call}"))
 	if err != nil {
 		slog.Error("Failed to create appenderAddsTotal metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	appenderAddHistogram, err = meter.Int64Histogram(
@@ -101,7 +101,7 @@ func init() {
 		metric.WithExplicitBucketBoundaries(histogramBuckets...))
 	if err != nil {
 		slog.Error("Failed to create appenderAddDuration metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	appenderHighestIndex, err = meter.Int64Gauge(
@@ -109,7 +109,7 @@ func init() {
 		metric.WithDescription("Highest index assigned by appender lifecycle Add function"))
 	if err != nil {
 		slog.Error("Failed to create appenderHighestIndex metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	appenderIntegratedSize, err = meter.Int64Gauge(
@@ -118,7 +118,7 @@ func init() {
 		metric.WithUnit("{entry}"))
 	if err != nil {
 		slog.Error("Failed to create appenderIntegratedSize metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	appenderIntegrateLatency, err = meter.Int64Histogram(
@@ -128,7 +128,7 @@ func init() {
 		metric.WithExplicitBucketBoundaries(histogramBuckets...))
 	if err != nil {
 		slog.Error("Failed to create appenderIntegrateLatency metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	appenderDeadlineRemaining, err = meter.Int64Histogram(
@@ -138,7 +138,7 @@ func init() {
 		metric.WithExplicitBucketBoundaries(histogramBuckets...))
 	if err != nil {
 		slog.Error("Failed to create appenderDeadlineRemaining metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	appenderNextIndex, err = meter.Int64Gauge(
@@ -146,7 +146,7 @@ func init() {
 		metric.WithDescription("The next available index to be assigned to entries"))
 	if err != nil {
 		slog.Error("Failed to create appenderNextIndex metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	appenderSignedSize, err = meter.Int64Gauge(
@@ -155,7 +155,7 @@ func init() {
 		metric.WithUnit("{entry}"))
 	if err != nil {
 		slog.Error("Failed to create appenderSignedSize metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	appenderWitnessedSize, err = meter.Int64Gauge(
@@ -164,7 +164,7 @@ func init() {
 		metric.WithUnit("{entry}"))
 	if err != nil {
 		slog.Error("Failed to create appenderWitnessedSize metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	followerEntriesProcessed, err = meter.Int64Gauge(
@@ -173,7 +173,7 @@ func init() {
 		metric.WithUnit("{entry}"))
 	if err != nil {
 		slog.Error("Failed to create followerEntriesProcessed metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	followerLag, err = meter.Int64Gauge(
@@ -182,7 +182,7 @@ func init() {
 		metric.WithUnit("{entry}"))
 	if err != nil {
 		slog.Error("Failed to create followerLag metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	appenderWitnessRequests, err = meter.Int64Counter(
@@ -191,7 +191,7 @@ func init() {
 		metric.WithUnit("{call}"))
 	if err != nil {
 		slog.Error("Failed to create appenderWitnessRequests metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	appenderWitnessHistogram, err = meter.Int64Histogram(
@@ -201,7 +201,7 @@ func init() {
 		metric.WithExplicitBucketBoundaries(histogramBuckets...))
 	if err != nil {
 		slog.Error("Failed to create appenderWitnessHistogram metric", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 }
@@ -761,7 +761,7 @@ func (o *AppendOptions) WithCheckpointSigner(s note.Signer, additionalSigners ..
 	for _, signer := range additionalSigners {
 		if origin != signer.Name() {
 			slog.Error("WithCheckpointSigner: additional signer name does not match primary signer name", slog.String("name", signer.Name()), slog.String("origin", origin))
-			os.Exit(255)
+			os.Exit(1)
 		}
 	}
 	o.newCP = func(ctx context.Context, size uint64, hash []byte) ([]byte, error) {

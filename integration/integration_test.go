@@ -77,13 +77,13 @@ func TestMain(m *testing.M) {
 	noteVerifier, err = note.NewVerifier(*logPublicKey)
 	if err != nil {
 		slog.Error("Failed to create new verifier", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	logReadBaseURL, err = url.Parse(*logURL)
 	if err != nil {
 		slog.Error("failed to parse logURL", slog.Any("error", err))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	switch logReadBaseURL.Scheme {
@@ -91,7 +91,7 @@ func TestMain(m *testing.M) {
 		hf, err := client.NewHTTPFetcher(logReadBaseURL, nil)
 		if err != nil {
 			slog.Error("NewHTTPFetcher", slog.Any("error", err))
-			os.Exit(255)
+			os.Exit(1)
 		}
 		logReadCP = hf.ReadCheckpoint
 		logReadTile = hf.ReadTile
@@ -103,7 +103,7 @@ func TestMain(m *testing.M) {
 		logReadEntryBundle = ff.ReadEntryBundle
 	default:
 		slog.Error("unsupported url scheme", slog.String("scheme", logReadBaseURL.Scheme))
-		os.Exit(255)
+		os.Exit(1)
 	}
 
 	os.Exit(m.Run())
