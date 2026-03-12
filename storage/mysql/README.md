@@ -1,48 +1,18 @@
 # Tessera on MySQL
 
-This directory contains the implementation of a storage backend for Tessera using MySQL. This allows Tessera to leverage MySQL as its underlying database for storing checkpoint, entry hashes and data in tiles format.
+This directory originally contained the outline of a MySQL-based storage implementation.
 
-## Design
+This implementation was removed after the
+[v1.0.2](https://github.com/transparency-dev/tessera/releases/tag/v1.0.2) release for a few reasons:
+  * Primarily, it implements a pattern where the _read path_ of the log is still served directly
+    from the same database that is also concerned with the coordination and write-throughput of the log.
+    This has been the source of performance and scalability issues in previous t-log implementations.
+  * Despite early initial interest from folks we polled prior to implementing, the completion of the MySQL
+    support has not actually been requested nor, as far as we're aware, the current implementation deployed.
 
-See [MySQL storage design documentation](./DESIGN.md).
+Alternative options include:
+  * The "AWS" implementation, which was designed to run with any MySQL-compatible DBMS and any S3-compatible
+    object storage system.
+  * The POSIX implementation, which was designed to be as easy as possible to run while still being production-ready.
 
-### Requirements
-
-- A running MySQL server instance. This storage implementation has been tested against MySQL 8.4.
-
-## Usage
-
-### Constructing the Storage Object
-
-Here is an example code snippet to initialise the MySQL storage in Tessera.
-
-```go
-import (
-    "context"
-
-    "github.com/transparency-dev/tessera"
-    "github.com/transparency-dev/tessera/storage/mysql"
-    "k8s.io/klog/v2"
-)
-
-func main() {
-    mysqlURI := "user:password@tcp(db:3306)/tessera"
-    db, err := sql.Open("mysql", mysqlURI)
-    if err != nil {
-        klog.Exitf("Failed to connect to DB: %v", err)
-    }
-
-    storage, err := mysql.New(ctx, db)
-    if err != nil {
-        klog.Exitf("Failed to create new MySQL storage: %v", err)
-    }
-}
-```
-
-### Example Personality
-
-See [MySQL conformance example](/cmd/conformance/mysql/).
-
-## Future Work
-
-- [Separate sequencing and integration](https://github.com/transparency-dev/tessera/pull/282)
+If these don't work, please get in touch/file an issue.
