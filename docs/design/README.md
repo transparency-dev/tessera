@@ -102,7 +102,6 @@ Each of the provided storage implementations has an associated "one-pager" desig
 a detailed explanation of how it works:
 
 * [GCP](/storage/gcp/README.md)
-* [MySQL](/storage/mysql/DESIGN.md)
 * [POSIX filesystem](/storage/posix/README.md)
 
 Every storage implementation is required to expose a small number of fairly high-level APIs which

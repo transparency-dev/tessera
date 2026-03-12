@@ -6,22 +6,6 @@ permissions:
   contents: read
 
 jobs:
-  benchmark-mysql:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - name: Start Tessera
-        run: docker compose -f ./cmd/conformance/mysql/docker/compose.yaml up --build --detach
-      - name: Run benchmark
-        run: go run ./internal/hammer --log_public_key=transparency.dev/tessera/example+ae330e15+ASf4/L1zE859VqlfQgGzKy34l91Gl8W6wfwp+vKP62DW --log_url=http://localhost:2024 --max_read_ops=0 --num_writers=512 --max_write_ops=512 --max_runtime=1m --leaf_write_goal=2500 --show_ui=false
-      - name: Stop Tessera
-        if: ${{ always() }}
-        run: docker compose -f ./cmd/conformance/mysql/docker/compose.yaml down
-
   benchmark-posix:
     runs-on: ubuntu-latest
     

@@ -27,27 +27,6 @@ jobs:
       - name: Run tests
         run: go test -v -race ./...
 
-  test-mysql:
-    env:
-      DB_DATABASE: test_tessera
-      DB_USER: root
-      DB_PASSWORD: root
-
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - name: Start MySQL
-        run: |
-          sudo /etc/init.d/mysql start
-          mysql -e "CREATE DATABASE IF NOT EXISTS $DB_DATABASE;" -u$DB_USER -p$DB_PASSWORD
-      - name: Test with Go
-        # Parallel tests are disabled for the MySQL test database to always be in a known state.
-        run: go test -p=1 -v -race ./storage/mysql/... -is_mysql_test_optional=false
-
   test-aws-mysql:
     env:
       DB_DATABASE: test_tessera

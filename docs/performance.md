@@ -5,11 +5,7 @@ Tessera is designed to scale to meet the needs of most currently envisioned work
 All storage backends have been tested to meet the write-throughput of CT-scale loads without issue.
 The read API of Tessera based logs scales extremely well due to the immutable resource based approach used, which allows for:
 1. Aggressive caching to be applied, e.g. via CDN
-2. Horizontal scaling of read infrastructure (e.g. object storage)[^1]
-
-[^1]: The MySQL storage backend is different to the others in that reads must be served via the personality rather than directly,
-      however, due to changes in how MySQL is used compared to Trillian v1, read performance should be far better, and _could_ still
-      be scaled horizontally with additional MySQL read replicas & read-only personality instances.
+2. Horizontal scaling of read infrastructure (e.g. object storage)
 
 Below are some indicative figures which show the rough scale of performance we've seen from deploying Tessera conformance
 binaries in various environments.
@@ -128,47 +124,6 @@ A small `e2-micro` free-tier VM is able to sustain > 1500 writes/s using a mount
 ```
 
 More details on Tessera POSIX performance can be found [here](/storage/posix/PERFORMANCE.md).
-
-
-## MySQL
-
-Figures below were measured using VMs on GCP in order to provide an idea of size of machine required to
-achieve the results.
-
-> [!NOTE]
-> Note that for Tessera on GCP deployments, we **strongly recommend** using the Tessera GCP storage implementation instead.
-
-
-### GCP free-tier + CloudSQL
-
-Tessera running on an `e2-micro` free tier VM instance on GCP, using CloudSQL for storage can sustain around 2000 write/s.
-
-```
-┌───────────────────────────────────────────────────────────────────────┐
-│Read (8 workers): Current max: 0/s. Oversupply in last second: 0       │
-│Write (512 workers): Current max: 2571/s. Oversupply in last second: 0 │
-│TreeSize: 2530480 (Δ 2047qps over 30s)                                 │
-│Time-in-queue: 41ms/120ms/288ms (min/avg/max)                          │
-│Observed-time-to-integrate: 568ms/636ms/782ms (min/avg/max)            │
-└───────────────────────────────────────────────────────────────────────┘
-```
-
-### GCP free-tier VM only
-
-Tessera + MySQL both running on an `e2-micro` free tier VM instance on GCP can sustain around 300 writes/s.
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│Read (8 workers): Current max: 0/s. Oversupply in last second: 0      │
-│Write (256 workers): Current max: 409/s. Oversupply in last second: 0 │
-│TreeSize: 240921 (Δ 307qps over 30s)                                  │
-│Time-in-queue: 86ms/566ms/2172ms (min/avg/max)                        │
-│Observed-time-to-integrate: 516ms/1056ms/2531ms (min/avg/max)         │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-More details on Tessera MySQL performance can be found [here](/storage/mysql/PERFORMANCE.md).
-
 
 ## AWS
 
