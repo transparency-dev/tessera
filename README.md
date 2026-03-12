@@ -20,7 +20,6 @@ but here's a summary of the high level goals:
 *   Support for both cloud and on-premises infrastructure
     *   [GCP](./storage/gcp/)
     *   [AWS](./storage/aws/)
-    *   [MySQL](./storage/mysql/)
     *   [POSIX](./storage/posix/)
 *   Make it easy to build and deploy new transparency logs on supported infrastructure
     *   Library instead of microservice architecture
@@ -66,13 +65,12 @@ See the table below for details.
 | Amazon Web Services     |    ✅    |     ⚠️    |    ✅    |          ✅        |                                               |
 | Google Cloud Platform   |    ✅    |     ⚠️    |    ✅    |          ✅        |                                               |
 | POSIX filesystem        |    ✅    |     ⚠️    |    ✅    |          ✅        |                                               |
-| MySQL                   |    ⚠️    |     ⚠️    |    ❌    |          N/A       | MySQL will remain in BETA for the time being. |
 
 
 > [!Note]
 > Please get in touch if you are interested in using any of the features or drivers held back in BETA above.
 
-Users of GCP, AWS, MySQL, and POSIX are welcome to try the relevant [Getting Started](#getting-started) guide.
+Users of GCP, AWS, and POSIX are welcome to try the relevant [Getting Started](#getting-started) guide.
 
 ## Roadmap
 
@@ -80,7 +78,7 @@ Production ready around mid 2025.
 
 |  #  | Step                                                      | Status |
 | :-: | --------------------------------------------------------- | :----: |
-|  1  | Drivers for GCP, AWS, MySQL, and POSIX                    |   ✅   |
+|  1  | Drivers for GCP, AWS, and POSIX                           |   ✅   |
 |  2  | [tlog-tiles API][] support                                |   ✅   |
 |  3  | Example code and terraform scripts for easy onboarding    |   ✅   |
 |  4  | Stable API                                                |   ✅   |
@@ -159,8 +157,6 @@ This will walk you through setting up your first log, writing some entries to it
 Take a look at the example personalities in the `/cmd/` directory:
   - [posix](./cmd/conformance/posix/): example of operating a log backed by a local filesystem
     - This example runs an HTTP web server that takes arbitrary data and adds it to a file-based log.
-  - [mysql](./cmd/conformance/mysql/): example of operating a log that uses MySQL
-    - This example is easiest deployed via `docker compose`, which allows for easy setup and teardown.
   - [gcp](./cmd/conformance/gcp/): example of operating a log running in GCP.
     - This example can be deployed via terraform, see the [deployment instructions](./deployment/live/gcp/conformance#manual-deployment).
   - [aws](./cmd/conformance/aws/): example of operating a log running on AWS.
@@ -183,17 +179,17 @@ Before starting to write your own personality, it is strongly recommended that y
 When writing your Tessera personality, the first decision you need to make is which of the native drivers to use:
  *   [GCP](./storage/gcp/)
  *   [AWS](./storage/aws/)
- *   [MySQL](./storage/mysql/)
  *   [POSIX](./storage/posix/)
 
 The easiest drivers to operate and to scale are the cloud implementations: GCP and AWS.
 These are the recommended choice for the majority of users running in production.
 
-If you aren't using a cloud provider, then your options are MySQL and POSIX:
+If you aren't using a cloud provider, then your options are POSIX, or deploying the "AWS" implementation
+with local MySQL and S3 compatible services:
 - POSIX is the simplest to get started with as it needs little in the way of extra infrastructure, and
   if you already serve static files as part of your business/project this could be a good fit.
-- Alternatively, if you are used to operating user-facing applications backed by a RDBMS, then MySQL could
-  be a natural fit.
+- Alternatively, if you are used to operating user-facing applications backed by MySQL and S3, then the
+  "AWS" backend could be a natural fit.
 
 To get a sense of the rough performance you can expect from the different backends, take a look at
 [docs/performance.md](/docs/performance.md).
@@ -219,7 +215,6 @@ Import the main `tessera` package, and the driver for the storage backend you wa
 	"github.com/transparency-dev/tessera/storage/posix"
 	// "github.com/transparency-dev/tessera/storage/aws"
 	// "github.com/transparency-dev/tessera/storage/gcp"
-	// "github.com/transparency-dev/tessera/storage/mysql"
 
 ```
 
@@ -287,11 +282,8 @@ Tessera makes the log readable via the [tlog-tiles API][].
 In the case of AWS and GCP, the data to be served is written to object storage and served directly by the cloud provider.
 The log operator only needs to ensure that these object storage instances are publicly readable, and set up a URL to point to them.
 
-In the case of MySQL and POSIX, the log operator will need to take more steps to make the data available.
+In the case of POSIX, the log operator will need to take more steps to make the data available.
 POSIX writes out the files exactly as per the API spec, so the log operator can serve these via an HTTP File Server.
-
-MySQL is the odd implementation in that it requires personality code to handle read traffic.
-See the example personalities written for MySQL to see how this Go web server should be configured.
 
 ## Features
 
@@ -417,15 +409,11 @@ once the next-available sequence number and published checkpoint size have conve
 
 A quiescent log using GCP, AWS, or POSIX that is now permanently read-only can be made cheaper to operate. The implementations no longer need any running binaries running Tessera code. Any databases created for this log (i.e. the sequencing tables, or antispam) can be deleted. The read-path can be served directly from the storage buckets (for GCP, AWS) or via a standard HTTP file server (for POSIX).
 
-A log using MySQL must continue to run a personality in order to serve the read path, and thus cannot benefit from the same degree of cost savings when frozen.
-
 ### Deleting a Log
 
 Deleting a log is generally performed after [Freezing a Log](#freezing-a-log).
 
 Deleting a GCP, AWS, or POSIX log that has already been frozen just requires deleting the storage bucket or files from disk.
-
-Deleting a MySQL log can be done by turning down the personality binaries, and then deleting the database.
 
 ### Sharding a Log
 
