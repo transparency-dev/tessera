@@ -133,7 +133,7 @@ func (mt *MigrationTarget) Migrate(ctx context.Context, numWorkers uint, sourceS
 			}
 			s, err := mt.writer.IntegratedSize(ctx)
 			if err != nil {
-				slog.Warn("Size", slog.Any("error", err))
+				slog.WarnContext(ctx, "Size", slog.Any("error", err))
 			}
 
 			info := []string{}
@@ -143,12 +143,12 @@ func (mt *MigrationTarget) Migrate(ctx context.Context, numWorkers uint, sourceS
 			for _, f := range mt.followers {
 				p, err := f.EntriesProcessed(ctx)
 				if err != nil {
-					slog.Info("EntriesProcessed", slog.String("name", f.Name()), slog.Any("error", err))
+					slog.InfoContext(ctx, "EntriesProcessed", slog.String("name", f.Name()), slog.Any("error", err))
 					continue
 				}
 				info = append(info, progress(f.Name(), p, sourceSize))
 			}
-			slog.Info("Progress", slog.String("status", strings.Join(info, ", ")))
+			slog.InfoContext(ctx, "Progress", slog.String("status", strings.Join(info, ", ")))
 
 		}
 	}()
@@ -170,7 +170,7 @@ func (mt *MigrationTarget) Migrate(ctx context.Context, numWorkers uint, sourceS
 	})
 
 	for _, f := range mt.followers {
-		slog.Info("Starting follower", slog.String("name", f.Name()))
+		slog.InfoContext(ctx, "Starting follower", slog.String("name", f.Name()))
 		go f.Follow(cctx, mt.reader)
 		errG.Go(awaitFollower(cctx, f, sourceSize))
 	}
@@ -183,7 +183,7 @@ func (mt *MigrationTarget) Migrate(ctx context.Context, numWorkers uint, sourceS
 		return fmt.Errorf("migration completed, but local root hash %x != source root hash %x", calculatedRoot, sourceRoot)
 	}
 
-	slog.Info("Migration successful.")
+	slog.InfoContext(ctx, "Migration successful.")
 	return nil
 }
 
@@ -200,11 +200,11 @@ func awaitFollower(ctx context.Context, f Follower, i uint64) func() error {
 
 			pos, err := f.EntriesProcessed(ctx)
 			if err != nil {
-				slog.Info("EntriesProcessed", slog.String("name", f.Name()), slog.Any("error", err))
+				slog.InfoContext(ctx, "EntriesProcessed", slog.String("name", f.Name()), slog.Any("error", err))
 				continue
 			}
 			if pos >= i {
-				slog.Info("follower complete", slog.String("name", f.Name()))
+				slog.InfoContext(ctx, "follower complete", slog.String("name", f.Name()))
 				return nil
 			}
 		}

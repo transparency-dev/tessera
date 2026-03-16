@@ -90,9 +90,9 @@ func (f *Fsck) Check(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to fetch and verify checkpoint: %v", err)
 	}
-	slog.Info("Fsck: checking log", slog.Uint64("size", cp.Size))
+	slog.InfoContext(ctx, "Fsck: checking log", slog.Uint64("size", cp.Size))
 
-	slog.Debug("Fsck: checkpoint", slog.Any("cpraw", cpRaw))
+	slog.DebugContext(ctx, "Fsck: checkpoint", slog.Any("cpraw", cpRaw))
 
 	f.rangeTracker = newRangeTracker(cp.Size)
 
@@ -160,7 +160,7 @@ func (f *Fsck) Check(ctx context.Context) error {
 	case !bytes.Equal(gotRoot, cp.Hash):
 		return fmt.Errorf("calculated root %x, but checkpoint claims %x", gotRoot, cp.Hash)
 	default:
-		slog.Info("Successfully fsck'd log", slog.Uint64("size", cp.Size), slog.String("rootb64", base64.StdEncoding.EncodeToString(gotRoot)), slog.String("roothex", fmt.Sprintf("%x", gotRoot)))
+		slog.InfoContext(ctx, "Successfully fsck'd log", slog.Uint64("size", cp.Size), slog.String("rootb64", base64.StdEncoding.EncodeToString(gotRoot)), slog.String("roothex", fmt.Sprintf("%x", gotRoot)))
 	}
 
 	return nil
@@ -286,14 +286,14 @@ func (f *fsckTree) visit(id compact.NodeID, h []byte) {
 		f.pendingTiles[k] = t
 	}
 	if hIdx != uint64(len(t.Nodes)) {
-		slog.Error("LOGIC ERROR", slog.Any("tlevel", tLevel), slog.Uint64("tidx", tIdx), slog.Uint64("hidx", hIdx), slog.Int("nodes", len(t.Nodes)))
+		slog.ErrorContext(context.Background(), "LOGIC ERROR", slog.Any("tlevel", tLevel), slog.Uint64("tidx", tIdx), slog.Uint64("hidx", hIdx), slog.Int("nodes", len(t.Nodes)))
 		os.Exit(1)
 	}
 	t.Nodes = append(t.Nodes, h)
 	if len(t.Nodes) == layout.EntryBundleWidth {
 		c, err := t.MarshalText()
 		if err != nil {
-			slog.Error("Failed to marshal tile", slog.Any("error", err))
+			slog.ErrorContext(context.Background(), "Failed to marshal tile", slog.Any("error", err))
 			os.Exit(1)
 		}
 		f.expectedResources <- resource{
@@ -312,7 +312,7 @@ func (f *fsckTree) flushPartialTiles() {
 	for k, t := range f.pendingTiles {
 		c, err := t.MarshalText()
 		if err != nil {
-			slog.Error("Failed to marshal tile", slog.Any("error", err))
+			slog.ErrorContext(context.Background(), "Failed to marshal tile", slog.Any("error", err))
 			os.Exit(1)
 		}
 		f.expectedResources <- resource{
@@ -351,7 +351,7 @@ func (f *fsckTree) resourceCheckWorker(ctx context.Context) func() error {
 				return fmt.Errorf("%s: log has:\n%x\nexpected:\n%x", p, data, r.content)
 			}
 			f.rangeTracker.Update(int(r.level), r.index, OK)
-			slog.Debug("OK", slog.String("id", id), slog.String("p", p))
+			slog.DebugContext(ctx, "OK", slog.String("id", id), slog.String("p", p))
 		}
 		return nil
 	}

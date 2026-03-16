@@ -15,6 +15,7 @@
 package aws
 
 import (
+	"context"
 	"log/slog"
 	"os"
 
@@ -51,7 +52,7 @@ func init() {
 		metric.WithUnit("ms"),
 		metric.WithExplicitBucketBoundaries(histogramBuckets...))
 	if err != nil {
-		slog.Error("Failed to create opsHistogram metric", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to create opsHistogram metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -60,7 +61,7 @@ func init() {
 		metric.WithDescription("Number of checkpoint publication attempts by result"),
 		metric.WithUnit("{call}"))
 	if err != nil {
-		slog.Error("Failed to create checkpoint publication counter metric", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to create checkpoint publication counter metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 }

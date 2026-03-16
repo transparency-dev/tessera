@@ -51,7 +51,7 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 		}
 		shutdownFuncs = nil
 		if err != nil {
-			slog.Error("OTel shutdown", slog.Any("error", err))
+			slog.ErrorContext(ctx, "OTel shutdown", slog.Any("error", err))
 		}
 	}
 
@@ -70,7 +70,7 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 		resource.WithDetectors(ec2ResourceDetector, ecsResourceDetector),
 	)
 	if err != nil {
-		slog.Error("Failed to detect resources", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to detect resources", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -79,7 +79,7 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 	// Create and start new OTLP metric exporter
 	metricExporter, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithInsecure(), otlpmetricgrpc.WithEndpoint("localhost:4317"))
 	if err != nil {
-		slog.Error("Failed to create new OTLP metric exporter", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create new OTLP metric exporter", slog.Any("error", err))
 		os.Exit(1)
 	}
 	mp := metric.NewMeterProvider(
@@ -92,7 +92,7 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 	// Create and start new OTLP trace exporter
 	traceExporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithInsecure(), otlptracegrpc.WithEndpoint("localhost:4317"))
 	if err != nil {
-		slog.Error("Failed to create new OTLP trace exporter", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create new OTLP trace exporter", slog.Any("error", err))
 		os.Exit(1)
 	}
 

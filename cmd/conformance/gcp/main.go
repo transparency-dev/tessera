@@ -71,7 +71,7 @@ func main() {
 	gcpCfg := storageConfigFromFlags()
 	driver, err := gcp.New(ctx, gcpCfg)
 	if err != nil {
-		slog.Error("Failed to create new GCP storage", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create new GCP storage", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -81,7 +81,7 @@ func main() {
 		asOpts := gcp_as.AntispamOpts{} // Use defaults
 		antispam, err = gcp_as.NewAntispam(ctx, fmt.Sprintf("%s-antispam", *spanner), asOpts)
 		if err != nil {
-			slog.Error("Failed to create new GCP antispam storage", slog.Any("error", err))
+			slog.ErrorContext(ctx, "Failed to create new GCP antispam storage", slog.Any("error", err))
 			os.Exit(1)
 		}
 	}
@@ -93,7 +93,7 @@ func main() {
 		WithPushback(10*4096).
 		WithAntispam(tessera.DefaultAntispamInMemorySize, antispam))
 	if err != nil {
-		slog.Error("Failed to append", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to append", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -131,16 +131,16 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if err := http2.ConfigureServer(h1s, h2s); err != nil {
-		slog.Error("http2.ConfigureServer", slog.Any("error", err))
+		slog.ErrorContext(ctx, "http2.ConfigureServer", slog.Any("error", err))
 		os.Exit(1)
 	}
 
 	if err := h1s.ListenAndServe(); err != nil {
 		if err := shutdown(ctx); err != nil {
-			slog.Error("Failed to shutdown", slog.Any("error", err))
+			slog.ErrorContext(ctx, "Failed to shutdown", slog.Any("error", err))
 			os.Exit(1)
 		}
-		slog.Error("ListenAndServe", slog.Any("error", err))
+		slog.ErrorContext(ctx, "ListenAndServe", slog.Any("error", err))
 		os.Exit(1)
 	}
 }
@@ -149,11 +149,11 @@ func main() {
 // provided via flags.
 func storageConfigFromFlags() gcp.Config {
 	if *bucket == "" {
-		slog.Error("--bucket must be set")
+		slog.ErrorContext(context.Background(), "--bucket must be set")
 		os.Exit(1)
 	}
 	if *spanner == "" {
-		slog.Error("--spanner must be set")
+		slog.ErrorContext(context.Background(), "--spanner must be set")
 		os.Exit(1)
 	}
 	return gcp.Config{
@@ -165,7 +165,7 @@ func storageConfigFromFlags() gcp.Config {
 func signerFromFlags() (note.Signer, []note.Signer) {
 	s, err := note.NewSigner(*signer)
 	if err != nil {
-		slog.Error("Failed to create new signer", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to create new signer", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -173,7 +173,7 @@ func signerFromFlags() (note.Signer, []note.Signer) {
 	for _, as := range additionalSigners {
 		s, err := note.NewSigner(as)
 		if err != nil {
-			slog.Error("Failed to create additional signer", slog.Any("error", err))
+			slog.ErrorContext(context.Background(), "Failed to create additional signer", slog.Any("error", err))
 			os.Exit(1)
 		}
 		a = append(a, s)

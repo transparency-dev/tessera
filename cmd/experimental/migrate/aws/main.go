@@ -59,28 +59,28 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 
 	if *sourceURL == "" {
-		slog.Error("Missing parameter: --source_url")
+		slog.ErrorContext(ctx, "Missing parameter: --source_url")
 		os.Exit(1)
 	}
 	srcURL, err := url.Parse(*sourceURL)
 	if err != nil {
-		slog.Error("Invalid --source_url", slog.String("param", *sourceURL), slog.Any("error", err))
+		slog.ErrorContext(ctx, "Invalid --source_url", slog.String("param", *sourceURL), slog.Any("error", err))
 		os.Exit(1)
 	}
 	src, err := client.NewHTTPFetcher(srcURL, nil)
 	if err != nil {
-		slog.Error("Failed to create HTTP fetcher", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create HTTP fetcher", slog.Any("error", err))
 		os.Exit(1)
 	}
 	sourceCP, err := src.ReadCheckpoint(ctx)
 	if err != nil {
-		slog.Error("fetch initial source checkpoint", slog.Any("error", err))
+		slog.ErrorContext(ctx, "fetch initial source checkpoint", slog.Any("error", err))
 		os.Exit(1)
 	}
 	// TODO(mhutchinson): parse this safely.
 	_, sourceSize, sourceRoot, err := parse.CheckpointUnsafe(sourceCP)
 	if err != nil {
-		slog.Error("Failed to parse checkpoint", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to parse checkpoint", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -88,20 +88,20 @@ func main() {
 	awsCfg := storageConfigFromFlags()
 	driver, err := aws.New(ctx, awsCfg)
 	if err != nil {
-		slog.Error("Failed to create new AWS storage", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create new AWS storage", slog.Any("error", err))
 		os.Exit(1)
 	}
 	opts := tessera.NewMigrationOptions()
 
 	m, err := tessera.NewMigrationTarget(ctx, driver, opts)
 	if err != nil {
-		slog.Error("Failed to create MigrationTarget", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create MigrationTarget", slog.Any("error", err))
 		os.Exit(1)
 	}
 
-	slog.Info("Starting Migrate() with workers=, sourceSize=, migrating from", slog.Any("numworkers", *numWorkers), slog.Uint64("sourcesize", sourceSize), slog.String("sourceurl", *sourceURL))
+	slog.InfoContext(ctx, "Starting Migrate() with workers=, sourceSize=, migrating from", slog.Any("numworkers", *numWorkers), slog.Uint64("sourcesize", sourceSize), slog.String("sourceurl", *sourceURL))
 	if err := m.Migrate(context.Background(), *numWorkers, sourceSize, sourceRoot, src.ReadEntryBundle); err != nil {
-		slog.Error("Migrate failed", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Migrate failed", slog.Any("error", err))
 		os.Exit(1)
 	}
 }
@@ -110,28 +110,28 @@ func main() {
 // provided via flags.
 func storageConfigFromFlags() aws.Config {
 	if *bucket == "" {
-		slog.Error("--bucket must be set")
+		slog.ErrorContext(context.Background(), "--bucket must be set")
 		os.Exit(1)
 	}
 	if *dbName == "" {
-		slog.Error("--db_name must be set")
+		slog.ErrorContext(context.Background(), "--db_name must be set")
 		os.Exit(1)
 	}
 	if *dbHost == "" {
-		slog.Error("--db_host must be set")
+		slog.ErrorContext(context.Background(), "--db_host must be set")
 		os.Exit(1)
 	}
 	if *dbPort == 0 {
-		slog.Error("--db_port must be set")
+		slog.ErrorContext(context.Background(), "--db_port must be set")
 		os.Exit(1)
 	}
 	if *dbUser == "" {
-		slog.Error("--db_user must be set")
+		slog.ErrorContext(context.Background(), "--db_user must be set")
 		os.Exit(1)
 	}
 	// Empty passord isn't an option with AuroraDB MySQL.
 	if *dbPassword == "" {
-		slog.Error("--db_password must be set")
+		slog.ErrorContext(context.Background(), "--db_password must be set")
 		os.Exit(1)
 	}
 

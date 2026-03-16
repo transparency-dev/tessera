@@ -328,7 +328,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 								return fmt.Errorf("entryReader.next: %v", err)
 							}
 							if wantIdx := followFrom + uint64(i); e.Index != wantIdx {
-								slog.Info("Out of sync", slog.Uint64("index", e.Index), slog.Uint64("wantidx", wantIdx))
+								slog.InfoContext(ctx, "Out of sync", slog.Uint64("index", e.Index), slog.Uint64("wantidx", wantIdx))
 								// We're out of sync
 								return errOutOfSync
 							}
@@ -366,7 +366,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 			})
 			if err != nil {
 				if err != errOutOfSync {
-					slog.Error("Failed to commit antispam population tx", slog.Any("error", err))
+					slog.ErrorContext(ctx, "Failed to commit antispam population tx", slog.Any("error", err))
 				}
 				stop()
 				next = nil

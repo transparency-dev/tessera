@@ -59,7 +59,7 @@ func main() {
 	ctx := context.Background()
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 
-	slog.Debug("Initialising driver")
+	slog.DebugContext(ctx, "Initialising driver")
 
 	// Gather the info needed for reading/writing checkpoints
 	s := getSignerOrDie()
@@ -74,11 +74,11 @@ func main() {
 		},
 	)
 	if err != nil {
-		slog.Error("Failed to construct storage", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to construct storage", slog.Any("error", err))
 		os.Exit(1)
 	}
 
-	slog.Debug("Reading entries")
+	slog.DebugContext(ctx, "Reading entries")
 	// Evaluate the glob provided by the --entries flag to determine the files containing leaves
 	filesToAdd := readEntriesOrDie()
 	batchSize := uint(len(filesToAdd))
@@ -87,7 +87,7 @@ func main() {
 		batchSize = 1
 	}
 
-	slog.Debug("Configuring options")
+	slog.DebugContext(ctx, "Configuring options")
 	opts := tessera.NewAppendOptions().
 		WithCheckpointSigner(s).
 		// Hint to Tessera the number of entries we're about to add via the batchSize parameter below,
@@ -102,12 +102,12 @@ func main() {
 	if *witnessPolicyFile != "" {
 		f, err := os.ReadFile(*witnessPolicyFile)
 		if err != nil {
-			slog.Error("Failed to read witness policy file", slog.String("witnesspolicyfile", *witnessPolicyFile), slog.Any("error", err))
+			slog.ErrorContext(ctx, "Failed to read witness policy file", slog.String("witnesspolicyfile", *witnessPolicyFile), slog.Any("error", err))
 			os.Exit(1)
 		}
 		wg, err := tessera.NewWitnessGroupFromPolicy(f)
 		if err != nil {
-			slog.Error("Failed to create witness group from policy", slog.Any("error", err))
+			slog.ErrorContext(ctx, "Failed to create witness group from policy", slog.Any("error", err))
 			os.Exit(1)
 		}
 
@@ -118,26 +118,26 @@ func main() {
 		opts.WithWitnesses(wg, wOpts)
 	}
 
-	slog.Debug("Creating appender")
+	slog.DebugContext(ctx, "Creating appender")
 	appender, shutdown, r, err := tessera.NewAppender(ctx, driver, opts)
 	if err != nil {
-		slog.Error("Failed to create new appender", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create new appender", slog.Any("error", err))
 		os.Exit(1)
 	}
 
-	slog.Debug("Creating awaiter")
+	slog.DebugContext(ctx, "Creating awaiter")
 	// We don't want to exit until our entries have been integrated into the tree, so we'll use Tessera's
 	// PublicationAwaiter to help with that.
 	await := tessera.NewPublicationAwaiter(ctx, r.ReadCheckpoint, 100*time.Millisecond)
 
-	slog.Debug("Adding entries")
+	slog.DebugContext(ctx, "Adding entries")
 	// Add each of the leaves in order, and store the futures in a slice
 	// that we will check once all leaves are sent to storage.
 	indexFutures := make([]entryInfo, 0, len(filesToAdd))
 	for _, fp := range filesToAdd {
 		b, err := os.ReadFile(fp)
 		if err != nil {
-			slog.Error("Failed to read entry file", slog.String("fp", fp), slog.Any("error", err))
+			slog.ErrorContext(ctx, "Failed to read entry file", slog.String("fp", fp), slog.Any("error", err))
 			os.Exit(1)
 		}
 
@@ -145,26 +145,26 @@ func main() {
 		indexFutures = append(indexFutures, entryInfo{name: fp, f: f})
 	}
 
-	slog.Debug("Awaiting entries")
+	slog.DebugContext(ctx, "Awaiting entries")
 	// Two options to ensure all work is done:
 	// 1) Check each of the futures to ensure that the leaves are sequenced.
 	for _, entry := range indexFutures {
 		seq, _, err := await.Await(ctx, entry.f)
 		if err != nil {
-			slog.Error("Failed to sequence", slog.String("name", entry.name), slog.Any("error", err))
+			slog.ErrorContext(ctx, "Failed to sequence", slog.String("name", entry.name), slog.Any("error", err))
 			os.Exit(1)
 		}
-		slog.Info("Integrated entry", slog.Uint64("index", seq.Index), slog.String("name", entry.name))
+		slog.InfoContext(ctx, "Integrated entry", slog.Uint64("index", seq.Index), slog.String("name", entry.name))
 	}
-	slog.Debug("Futures resolved")
-	slog.Debug("Shutting down")
+	slog.DebugContext(ctx, "Futures resolved")
+	slog.DebugContext(ctx, "Shutting down")
 
 	// 2) shutdown the appender
 	if err := shutdown(ctx); err != nil {
-		slog.Error("Failed to shut down cleanly", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to shut down cleanly", slog.Any("error", err))
 		os.Exit(1)
 	}
-	slog.Debug("Finished")
+	slog.DebugContext(ctx, "Finished")
 }
 
 // Read log private key from file or environment variable
@@ -174,19 +174,19 @@ func getSignerOrDie() note.Signer {
 	if len(*privKeyFile) > 0 {
 		privKey, err = getKeyFile(*privKeyFile)
 		if err != nil {
-			slog.Error("Unable to get private key", slog.Any("error", err))
+			slog.ErrorContext(context.Background(), "Unable to get private key", slog.Any("error", err))
 			os.Exit(1)
 		}
 	} else {
 		privKey = os.Getenv("LOG_PRIVATE_KEY")
 		if len(privKey) == 0 {
-			slog.Error("Supply private key file path using --private_key or set LOG_PRIVATE_KEY environment variable")
+			slog.ErrorContext(context.Background(), "Supply private key file path using --private_key or set LOG_PRIVATE_KEY environment variable")
 			os.Exit(1)
 		}
 	}
 	s, err := note.NewSigner(privKey)
 	if err != nil {
-		slog.Error("Failed to instantiate signer", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to instantiate signer", slog.Any("error", err))
 		os.Exit(1)
 	}
 	return s
@@ -203,9 +203,9 @@ func getKeyFile(path string) (string, error) {
 func readEntriesOrDie() []string {
 	toAdd, err := filepath.Glob(*entries)
 	if err != nil {
-		slog.Error("Failed to glob entries", slog.String("entries", *entries), slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to glob entries", slog.String("entries", *entries), slog.Any("error", err))
 		os.Exit(1)
 	}
-	slog.Debug("toAdd", slog.Any("files", toAdd))
+	slog.DebugContext(context.Background(), "toAdd", slog.Any("files", toAdd))
 	return toAdd
 }

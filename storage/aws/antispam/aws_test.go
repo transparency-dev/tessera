@@ -44,7 +44,7 @@ func TestMain(m *testing.M) {
 func TestAntispam(t *testing.T) {
 	ctx := t.Context()
 	if canSkipMySQLTest(t, ctx) {
-		slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
 		t.Skip("MySQL not available, skipping test")
 	}
 	mustDropTables(t, ctx)
@@ -110,7 +110,7 @@ func TestAntispam(t *testing.T) {
 func TestAntispamPushbackRecovers(t *testing.T) {
 	ctx := t.Context()
 	if canSkipMySQLTest(t, ctx) {
-		slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
 		t.Skip("MySQL not available, skipping test")
 	}
 	mustDropTables(t, ctx)

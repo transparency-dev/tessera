@@ -108,27 +108,27 @@ func main() {
 
 	logSigV, err := note.NewVerifier(*logPubKey)
 	if err != nil {
-		slog.Error("failed to create verifier", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to create verifier", slog.Any("error", err))
 		os.Exit(1)
 	}
 
-	r := mustCreateReaders(logURL)
+	r := mustCreateReaders(ctx, logURL)
 	if len(writeLogURL) == 0 {
 		writeLogURL = logURL
 	}
-	w := mustCreateWriters(writeLogURL)
+	w := mustCreateWriters(ctx, writeLogURL)
 
 	var cpRaw []byte
 	cons := client.UnilateralConsensus(r.ReadCheckpoint)
 	tracker, err := client.NewLogStateTracker(ctx, r.ReadTile, cpRaw, logSigV, logSigV.Name(), cons)
 	if err != nil {
-		slog.Error("Failed to create LogStateTracker", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create LogStateTracker", slog.Any("error", err))
 		os.Exit(1)
 	}
 	// Fetch initial state of log
 	_, _, _, err = tracker.Update(ctx)
 	if err != nil {
-		slog.Error("Failed to get initial state of the log", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to get initial state of the log", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -150,7 +150,7 @@ func main() {
 		go func() {
 			startTime := time.Now()
 			goal := tracker.Latest().Size + uint64(*leafWriteGoal)
-			slog.Info("Waiting for target tree size", slog.Uint64("size", goal))
+			slog.InfoContext(ctx, "Waiting for target tree size", slog.Uint64("size", goal))
 			tick := time.NewTicker(1 * time.Second)
 			for {
 				select {
@@ -159,7 +159,7 @@ func main() {
 				case <-tick.C:
 					if tracker.Latest().Size >= goal {
 						elapsed := time.Since(startTime)
-						slog.Info("Reached tree size goal; exiting", slog.Uint64("size", goal), slog.Duration("elapsed", elapsed))
+						slog.InfoContext(ctx, "Reached tree size goal; exiting", slog.Uint64("size", goal), slog.Duration("elapsed", elapsed))
 						cancel()
 						return
 					}
@@ -169,13 +169,13 @@ func main() {
 	}
 	if *maxRunTime > 0 {
 		go func() {
-			slog.Info("Configured max runtime", slog.Duration("duration", *maxRunTime))
+			slog.InfoContext(ctx, "Configured max runtime", slog.Duration("duration", *maxRunTime))
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				case <-time.After(*maxRunTime):
-					slog.Info("Max runtime reached; exiting")
+					slog.InfoContext(ctx, "Max runtime reached; exiting")
 					exitCode = 1
 					cancel()
 					return
@@ -235,7 +235,7 @@ func newLeafGenerator(startSize uint64, minLeafSize int, dupChance float64) func
 	}
 }
 
-func mustCreateReaders(us []string) loadtest.LogReader {
+func mustCreateReaders(ctx context.Context, us []string) loadtest.LogReader {
 	r := []loadtest.LogReader{}
 	for _, u := range us {
 		if !strings.HasSuffix(u, "/") {
@@ -243,7 +243,7 @@ func mustCreateReaders(us []string) loadtest.LogReader {
 		}
 		rURL, err := url.Parse(u)
 		if err != nil {
-			slog.Error("Invalid log reader URL", slog.String("u", u), slog.Any("error", err))
+			slog.ErrorContext(ctx, "Invalid log reader URL", slog.String("u", u), slog.Any("error", err))
 			os.Exit(1)
 		}
 
@@ -251,7 +251,7 @@ func mustCreateReaders(us []string) loadtest.LogReader {
 		case "http", "https":
 			c, err := client.NewHTTPFetcher(rURL, hc)
 			if err != nil {
-				slog.Error("Failed to create HTTP fetcher", slog.String("u", u), slog.Any("error", err))
+				slog.ErrorContext(ctx, "Failed to create HTTP fetcher", slog.String("u", u), slog.Any("error", err))
 				os.Exit(1)
 			}
 			if *bearerToken != "" {
@@ -261,14 +261,14 @@ func mustCreateReaders(us []string) loadtest.LogReader {
 		case "file":
 			r = append(r, client.FileFetcher{Root: rURL.Path})
 		default:
-			slog.Error("Unsupported scheme on log URL", slog.String("scheme", rURL.Scheme))
+			slog.ErrorContext(ctx, "Unsupported scheme on log URL", slog.String("scheme", rURL.Scheme))
 			os.Exit(1)
 		}
 	}
 	return loadtest.NewRoundRobinReader(r)
 }
 
-func mustCreateWriters(us []string) loadtest.LeafWriter {
+func mustCreateWriters(ctx context.Context, us []string) loadtest.LeafWriter {
 	w := []loadtest.LeafWriter{}
 	for _, u := range us {
 		if !strings.HasSuffix(u, "/") {
@@ -277,17 +277,17 @@ func mustCreateWriters(us []string) loadtest.LeafWriter {
 		u += "add"
 		wURL, err := url.Parse(u)
 		if err != nil {
-			slog.Error("Invalid log writer URL", slog.String("u", u), slog.Any("error", err))
+			slog.ErrorContext(ctx, "Invalid log writer URL", slog.String("u", u), slog.Any("error", err))
 			os.Exit(1)
 		}
-		w = append(w, httpWriter(wURL, hc, *bearerTokenWrite))
+		w = append(w, httpWriter(ctx, wURL, hc, *bearerTokenWrite))
 	}
 	return loadtest.NewRoundRobinWriter(w)
 }
 
-func httpWriter(u *url.URL, hc *http.Client, bearerToken string) loadtest.LeafWriter {
+func httpWriter(ctx context.Context, u *url.URL, hc *http.Client, bearerToken string) loadtest.LeafWriter {
 	cTrace := &httptrace.ClientTrace{
-		GotConn: func(info httptrace.GotConnInfo) { slog.Info("connection established %#v") },
+		GotConn: func(info httptrace.GotConnInfo) { slog.InfoContext(ctx, "connection established %#v") },
 	}
 	return func(ctx context.Context, newLeaf []byte) (uint64, error) {
 		req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(newLeaf))

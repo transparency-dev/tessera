@@ -124,7 +124,7 @@ func (a *PublicationAwaiter) pollLoop(ctx context.Context, readCheckpoint func(c
 			select {
 			case <-ctx.Done():
 				span.AddEvent("context.done")
-				slog.Debug("PublicationAwaiter exiting due to context completion")
+				slog.DebugContext(ctx, "PublicationAwaiter exiting due to context completion")
 				cp, cpSize, cpErr = nil, 0, ctx.Err()
 				ctxDone = true
 			case <-time.After(pollPeriod):

@@ -15,6 +15,7 @@
 package badger
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"testing"
@@ -87,7 +88,7 @@ func TestAntispamStorage(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Await(%d): %v", i, err)
 				}
-				slog.Info("integrated entry", slog.Int("i", i), slog.String("identity", fmt.Sprintf("%x", entry.Identity())))
+				slog.InfoContext(context.Background(), "integrated entry", slog.Int("i", i), slog.String("identity", fmt.Sprintf("%x", entry.Identity())))
 				entryIndex[string(testIDHash(e))] = idx.Index
 			}
 
@@ -103,7 +104,7 @@ func TestAntispamStorage(t *testing.T) {
 					t.Logf("IntegratedSize: %v", err)
 					continue
 				}
-				slog.Info("Wait for follower () to catch up with tree", slog.Uint64("pos", pos), slog.Uint64("sz", sz))
+				slog.InfoContext(context.Background(), "Wait for follower () to catch up with tree", slog.Uint64("pos", pos), slog.Uint64("sz", sz))
 				if pos >= sz {
 					break
 				}
@@ -171,7 +172,7 @@ func TestAntispamPushbackRecovers(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Await(%d): %v", i, err)
 				}
-				slog.Info("integrated entry", slog.Int("i", i), slog.String("identity", fmt.Sprintf("%x", entry.Identity())))
+				slog.InfoContext(context.Background(), "integrated entry", slog.Int("i", i), slog.String("identity", fmt.Sprintf("%x", entry.Identity())))
 				entryIndex[string(testIDHash(e))] = idx.Index
 			}
 
@@ -190,7 +191,7 @@ func TestAntispamPushbackRecovers(t *testing.T) {
 					t.Logf("IntegratedSize: %v", err)
 					continue
 				}
-				slog.Info("Wait for follower () to catch up with tree", slog.Uint64("pos", pos), slog.Uint64("sz", sz))
+				slog.InfoContext(context.Background(), "Wait for follower () to catch up with tree", slog.Uint64("pos", pos), slog.Uint64("sz", sz))
 				if pos >= sz {
 					break
 				}

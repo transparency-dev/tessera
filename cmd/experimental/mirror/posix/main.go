@@ -45,12 +45,12 @@ func main() {
 
 	srcURL, err := url.Parse(*sourceURL)
 	if err != nil {
-		slog.Error("Invalid --source_url", slog.String("param", *sourceURL), slog.Any("error", err))
+		slog.ErrorContext(ctx, "Invalid --source_url", slog.String("param", *sourceURL), slog.Any("error", err))
 		os.Exit(1)
 	}
 	src, err := client.NewHTTPFetcher(srcURL, nil)
 	if err != nil {
-		slog.Error("Failed to create HTTP fetcher", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create HTTP fetcher", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -68,28 +68,28 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				printProgress(m.Progress)
+				printProgress(ctx, m.Progress)
 			}
 		}
 	}()
 
 	if err := m.Run(ctx); err != nil {
-		slog.Error("Failed to mirror log", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to mirror log", slog.Any("error", err))
 		os.Exit(1)
 	}
 
-	printProgress(m.Progress)
-	slog.Info("Log mirrored successfully.")
+	printProgress(ctx, m.Progress)
+	slog.InfoContext(ctx, "Log mirrored successfully.")
 }
 
-func printProgress(f func() (uint64, uint64)) {
+func printProgress(ctx context.Context, f func() (uint64, uint64)) {
 	total, done := f()
 	p := float64(done*100) / float64(total)
 	// Let's just say we're 100% done if we've completed no work when nothing needed doing.
 	if total == done && done == 0 {
 		p = 100.0
 	}
-	slog.Info("Progress", slog.Uint64("done", done), slog.Uint64("total", total), slog.Float64("percent", p))
+	slog.InfoContext(ctx, "Progress", slog.Uint64("done", done), slog.Uint64("total", total), slog.Float64("percent", p))
 }
 
 type posixTarget struct {

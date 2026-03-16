@@ -228,7 +228,7 @@ func (m *memTileStore[T]) getTiles(_ context.Context, ids []TileID, treeSize uin
 	r := make([]*T, len(ids))
 	for i, id := range ids {
 		k := layout.TilePath(id.Level, id.Index, layout.PartialTileSize(id.Level, id.Index, treeSize))
-		slog.Debug("mem.getTile", slog.String("k", k), slog.Uint64("treesize", treeSize))
+		slog.DebugContext(context.Background(), "mem.getTile", slog.String("k", k), slog.Uint64("treesize", treeSize))
 		d, ok := m.mem[k]
 		if !ok {
 			continue
@@ -243,7 +243,7 @@ func (m *memTileStore[T]) setTile(_ context.Context, id TileID, treeSize uint64,
 	defer m.Unlock()
 
 	k := layout.TilePath(id.Level, id.Index, layout.PartialTileSize(id.Level, id.Index, treeSize))
-	slog.Debug("mem.setTile", slog.String("k", k), slog.Uint64("treesize", treeSize))
+	slog.DebugContext(context.Background(), "mem.setTile", slog.String("k", k), slog.Uint64("treesize", treeSize))
 	_, ok := m.mem[k]
 	if ok {
 		return fmt.Errorf("%q is already present", k)

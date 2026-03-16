@@ -118,11 +118,11 @@ func (a *HammerAnalyser) errorLoop(ctx context.Context) {
 			return
 		case <-tick.C:
 			if pbCount > 0 {
-				slog.Warn("received pushback from log", slog.Int("requests", pbCount))
+				slog.WarnContext(ctx, "received pushback from log", slog.Int("requests", pbCount))
 				pbCount = 0
 			}
 			if lastErrCount > 0 {
-				slog.Warn("errors", slog.Int("count", lastErrCount), slog.String("lasterror", lastErr))
+				slog.WarnContext(ctx, "errors", slog.Int("count", lastErrCount), slog.String("lasterror", lastErr))
 				lastErrCount = 0
 			}
 		case err := <-a.ErrChan:
@@ -132,7 +132,7 @@ func (a *HammerAnalyser) errorLoop(ctx context.Context) {
 			}
 			es := err.Error()
 			if es != lastErr && lastErrCount > 0 {
-				slog.Warn("errors", slog.Int("count", lastErrCount), slog.String("lasterror", lastErr))
+				slog.WarnContext(ctx, "errors", slog.Int("count", lastErrCount), slog.String("lasterror", lastErr))
 				lastErr = es
 				lastErrCount = 0
 				continue

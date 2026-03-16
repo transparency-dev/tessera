@@ -83,6 +83,7 @@ var (
 )
 
 func init() {
+	ctx := context.Background()
 	var err error
 
 	appenderAddsTotal, err = meter.Int64Counter(
@@ -90,7 +91,7 @@ func init() {
 		metric.WithDescription("Number of calls to the appender lifecycle Add function"),
 		metric.WithUnit("{call}"))
 	if err != nil {
-		slog.Error("Failed to create appenderAddsTotal metric", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create appenderAddsTotal metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -100,7 +101,7 @@ func init() {
 		metric.WithUnit("ms"),
 		metric.WithExplicitBucketBoundaries(histogramBuckets...))
 	if err != nil {
-		slog.Error("Failed to create appenderAddDuration metric", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create appenderAddDuration metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -108,7 +109,7 @@ func init() {
 		"tessera.appender.index",
 		metric.WithDescription("Highest index assigned by appender lifecycle Add function"))
 	if err != nil {
-		slog.Error("Failed to create appenderHighestIndex metric", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create appenderHighestIndex metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -117,7 +118,7 @@ func init() {
 		metric.WithDescription("Size of the integrated (but not necessarily published) tree"),
 		metric.WithUnit("{entry}"))
 	if err != nil {
-		slog.Error("Failed to create appenderIntegratedSize metric", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create appenderIntegratedSize metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -127,7 +128,7 @@ func init() {
 		metric.WithUnit("ms"),
 		metric.WithExplicitBucketBoundaries(histogramBuckets...))
 	if err != nil {
-		slog.Error("Failed to create appenderIntegrateLatency metric", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create appenderIntegrateLatency metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -137,7 +138,7 @@ func init() {
 		metric.WithUnit("ms"),
 		metric.WithExplicitBucketBoundaries(histogramBuckets...))
 	if err != nil {
-		slog.Error("Failed to create appenderDeadlineRemaining metric", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create appenderDeadlineRemaining metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -145,7 +146,7 @@ func init() {
 		"tessera.appender.next_index",
 		metric.WithDescription("The next available index to be assigned to entries"))
 	if err != nil {
-		slog.Error("Failed to create appenderNextIndex metric", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create appenderNextIndex metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -154,7 +155,7 @@ func init() {
 		metric.WithDescription("Size of the latest signed checkpoint"),
 		metric.WithUnit("{entry}"))
 	if err != nil {
-		slog.Error("Failed to create appenderSignedSize metric", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create appenderSignedSize metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -163,7 +164,7 @@ func init() {
 		metric.WithDescription("Size of the latest successfully witnessed checkpoint"),
 		metric.WithUnit("{entry}"))
 	if err != nil {
-		slog.Error("Failed to create appenderWitnessedSize metric", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create appenderWitnessedSize metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -172,7 +173,7 @@ func init() {
 		metric.WithDescription("Number of entries processed"),
 		metric.WithUnit("{entry}"))
 	if err != nil {
-		slog.Error("Failed to create followerEntriesProcessed metric", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create followerEntriesProcessed metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -181,7 +182,7 @@ func init() {
 		metric.WithDescription("Number of unprocessed entries in the current integrated tree"),
 		metric.WithUnit("{entry}"))
 	if err != nil {
-		slog.Error("Failed to create followerLag metric", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create followerLag metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -190,7 +191,7 @@ func init() {
 		metric.WithDescription("Number of attempts to witness a log checkpoint"),
 		metric.WithUnit("{call}"))
 	if err != nil {
-		slog.Error("Failed to create appenderWitnessRequests metric", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create appenderWitnessRequests metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -200,7 +201,7 @@ func init() {
 		metric.WithUnit("ms"),
 		metric.WithExplicitBucketBoundaries(histogramBuckets...))
 	if err != nil {
-		slog.Error("Failed to create appenderWitnessHistogram metric", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create appenderWitnessHistogram metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -352,12 +353,12 @@ func followerStats(ctx context.Context, f Follower, size func(context.Context) (
 
 		n, err := f.EntriesProcessed(ctx)
 		if err != nil {
-			slog.Error("followerStats: error in EntriesProcessed", slog.String("name", name), slog.Any("error", err))
+			slog.ErrorContext(ctx, "followerStats: error in EntriesProcessed", slog.String("name", name), slog.Any("error", err))
 			continue
 		}
 		s, err := size(ctx)
 		if err != nil {
-			slog.Error("followerStats: error in follower size", slog.String("name", name), slog.Any("error", err))
+			slog.ErrorContext(ctx, "followerStats: error in follower size", slog.String("name", name), slog.Any("error", err))
 		}
 		attrs := metric.WithAttributes(followerNameKey.String(name))
 		followerEntriesProcessed.Record(ctx, otel.Clamp64(n), attrs)
@@ -415,7 +416,7 @@ func (i *integrationStats) latency(size uint64) (time.Duration, bool) {
 // This is a long running function, exitingly only when the provided context is done.
 func (i *integrationStats) updateStats(ctx context.Context, r LogReader) {
 	if r == nil {
-		slog.Warn("updateStates: nil logreader provided, not updating stats")
+		slog.WarnContext(ctx, "updateStates: nil logreader provided, not updating stats")
 		return
 	}
 	t := time.NewTicker(100 * time.Millisecond)
@@ -427,7 +428,7 @@ func (i *integrationStats) updateStats(ctx context.Context, r LogReader) {
 		}
 		s, err := r.IntegratedSize(ctx)
 		if err != nil {
-			slog.Error("Error calling IntegratedSize", slog.Any("error", err))
+			slog.ErrorContext(ctx, "Error calling IntegratedSize", slog.Any("error", err))
 			continue
 		}
 		appenderIntegratedSize.Record(ctx, otel.Clamp64(s))
@@ -436,7 +437,7 @@ func (i *integrationStats) updateStats(ctx context.Context, r LogReader) {
 		}
 		i, err := r.NextIndex(ctx)
 		if err != nil {
-			slog.Error("Error calling NextIndex", slog.Any("error", err))
+			slog.ErrorContext(ctx, "Error calling NextIndex", slog.Any("error", err))
 		}
 		appenderNextIndex.Record(ctx, otel.Clamp64(i))
 	}
@@ -559,7 +560,7 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		slog.Debug("Shutting down, waiting for checkpoint", slog.Uint64("goal", maxIndex), slog.Uint64("current", size))
+		slog.DebugContext(ctx, "Shutting down, waiting for checkpoint", slog.Uint64("goal", maxIndex), slog.Uint64("current", size))
 		if size > maxIndex {
 			return nil
 		}
@@ -674,7 +675,7 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 				var oldSize uint64
 				oldCP, err := lr.ReadCheckpoint(ctx)
 				if err != nil {
-					slog.Info("Failed to fetch old checkpoint", slog.Any("error", err))
+					slog.InfoContext(ctx, "Failed to fetch old checkpoint", slog.Any("error", err))
 				} else {
 					_, oldSize, _, err = parse.CheckpointUnsafe(oldCP)
 					if err != nil {
@@ -696,7 +697,7 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 						appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(attribute.String("error.type", "failed")))
 						return nil, err
 					}
-					slog.Warn("WitnessGateway: failing-open despite error", slog.Any("error", err))
+					slog.WarnContext(ctx, "WitnessGateway: failing-open despite error", slog.Any("error", err))
 					witAttr = append(witAttr, attribute.String("error.type", "failed_open"))
 				}
 
@@ -760,7 +761,7 @@ func (o *AppendOptions) WithCheckpointSigner(s note.Signer, additionalSigners ..
 	origin := s.Name()
 	for _, signer := range additionalSigners {
 		if origin != signer.Name() {
-			slog.Error("WithCheckpointSigner: additional signer name does not match primary signer name", slog.String("name", signer.Name()), slog.String("origin", origin))
+			slog.ErrorContext(context.Background(), "WithCheckpointSigner: additional signer name does not match primary signer name", slog.String("name", signer.Name()), slog.String("origin", origin))
 			os.Exit(1)
 		}
 	}
