@@ -52,7 +52,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	logURL, err := url.Parse(*storageURL)
 	if err != nil {
-		slog.Error("Invalid --storage_url", slog.String("param", *storageURL), slog.Any("error", err))
+		slog.ErrorContext(ctx, "Invalid --storage_url", slog.String("param", *storageURL), slog.Any("error", err))
 		os.Exit(1)
 	}
 	var src fsck.Fetcher
@@ -64,7 +64,7 @@ func main() {
 	} else {
 		httpSrc, err := client.NewHTTPFetcher(logURL, nil)
 		if err != nil {
-			slog.Error("Failed to create HTTP fetcher", slog.Any("error", err))
+			slog.ErrorContext(ctx, "Failed to create HTTP fetcher", slog.Any("error", err))
 			os.Exit(1)
 		}
 		if *bearerToken != "" {
@@ -78,7 +78,7 @@ func main() {
 			delegate: src,
 		}
 	}
-	v := verifierFromFlags()
+	v := verifierFromFlags(ctx)
 	if *origin == "" {
 		*origin = v.Name()
 	}
@@ -92,9 +92,9 @@ func main() {
 
 		// Only log the error if we're using the TUI, otherwise it will be double logged in headless mode.
 		if err != nil && *ui {
-			slog.Error("fsck failed", slog.Any("error", err))
+			slog.ErrorContext(ctx, "fsck failed", slog.Any("error", err))
 		}
-		slog.Debug("Completed ranges", slog.Any("status", f.Status()))
+		slog.DebugContext(ctx, "Completed ranges", slog.Any("status", f.Status()))
 
 		checkResult <- err
 		close(checkResult)
@@ -102,7 +102,7 @@ func main() {
 
 	if *ui {
 		if err := tui.RunApp(ctx, f); err != nil {
-			slog.Error("App exited", slog.Any("error", err))
+			slog.ErrorContext(ctx, "App exited", slog.Any("error", err))
 		}
 		// User may have exited the UI, cancel the context to signal to everything else.
 		cancel()
@@ -112,12 +112,12 @@ func main() {
 			case err := <-checkResult:
 				cancel()
 				if err != nil {
-					slog.Error("fsck failed", slog.Any("error", err))
+					slog.ErrorContext(ctx, "fsck failed", slog.Any("error", err))
 					os.Exit(1)
 				}
 				return
 			case <-time.After(time.Second):
-				slog.Debug("Ranges", slog.Any("status", f.Status()))
+				slog.DebugContext(ctx, "Ranges", slog.Any("status", f.Status()))
 			}
 		}
 	}
@@ -137,19 +137,19 @@ func defaultMerkleLeafHasher(bundle []byte) ([][]byte, error) {
 	return r, nil
 }
 
-func verifierFromFlags() note.Verifier {
+func verifierFromFlags(ctx context.Context) note.Verifier {
 	if *pubKey == "" {
-		slog.Error("Must provide the --public_key flag")
+		slog.ErrorContext(ctx, "Must provide the --public_key flag")
 		os.Exit(1)
 	}
 	b, err := os.ReadFile(*pubKey)
 	if err != nil {
-		slog.Error("Failed to read verifier from", slog.String("pubkey", *pubKey), slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to read verifier from", slog.String("pubkey", *pubKey), slog.Any("error", err))
 		os.Exit(1)
 	}
 	v, err := f_note.NewVerifier(string(b))
 	if err != nil {
-		slog.Error("Invalid verifier in", slog.String("pubkey", *pubKey), slog.Any("error", err))
+		slog.ErrorContext(ctx, "Invalid verifier in", slog.String("pubkey", *pubKey), slog.Any("error", err))
 		os.Exit(1)
 	}
 	return v

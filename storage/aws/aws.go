@@ -299,7 +299,7 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 			}
 			return nil
 		}); err != nil {
-			slog.Error("integrateEntries", slog.Any("error", err))
+			slog.ErrorContext(ctx, "integrateEntries", slog.Any("error", err))
 		}
 	}
 }
@@ -329,7 +329,7 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 			}
 			return nil
 		}); err != nil {
-			slog.Error("Failed to execute checkpoint publisher job", slog.Any("error", err))
+			slog.ErrorContext(ctx, "Failed to execute checkpoint publisher job", slog.Any("error", err))
 		}
 	}
 }
@@ -373,7 +373,7 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 			}
 			return nil
 		}); err != nil {
-			slog.Warn("Failed to execute garbage Collector job", slog.Any("error", err))
+			slog.WarnContext(ctx, "Failed to execute garbage Collector job", slog.Any("error", err))
 		}
 	}
 
@@ -419,7 +419,7 @@ func (a *Appender) updateCheckpoint(ctx context.Context, size uint64, root []byt
 		return fmt.Errorf("writeCheckpoint: %v", err)
 	}
 
-	slog.Debug("Created and stored latest checkpoint", slog.Uint64("size", size), slog.String("root", fmt.Sprintf("%x", root)))
+	slog.DebugContext(ctx, "Created and stored latest checkpoint", slog.Uint64("size", size), slog.String("root", fmt.Sprintf("%x", root)))
 
 	return nil
 }
@@ -502,20 +502,20 @@ func (a *Appender) updateEntryBundles(ctx context.Context, fromSeq uint64, entri
 		numAdded++
 		if entriesInBundle == layout.EntryBundleWidth {
 			//  This bundle is full, so we need to write it out...
-			slog.Debug("In-memory bundle is full, attempting write to S3", slog.Uint64("bundleindex", bundleIndex))
+			slog.DebugContext(ctx, "In-memory bundle is full, attempting write to S3", slog.Uint64("bundleindex", bundleIndex))
 			goSetEntryBundle(ctx, bundleIndex, 0, bundleWriter.Bytes())
 			// ... and prepare the next entry bundle for any remaining entries in the batch
 			bundleIndex++
 			entriesInBundle = 0
 			// Don't use Reset/Truncate here - the backing []bytes is still being used by goSetEntryBundle above.
 			bundleWriter = &bytes.Buffer{}
-			slog.Debug("Starting to fill in-memory bundle", slog.Uint64("bundleindex", bundleIndex))
+			slog.DebugContext(ctx, "Starting to fill in-memory bundle", slog.Uint64("bundleindex", bundleIndex))
 		}
 	}
 	// If we have a partial bundle remaining once we've added all the entries from the batch,
 	// this needs writing out too.
 	if entriesInBundle > 0 {
-		slog.Debug("Attempting to write in-memory partial bundle idx . to S3", slog.Uint64("bundleindex", bundleIndex), slog.Uint64("entriesinbundle", entriesInBundle))
+		slog.DebugContext(ctx, "Attempting to write in-memory partial bundle idx . to S3", slog.Uint64("bundleindex", bundleIndex), slog.Uint64("entriesinbundle", entriesInBundle))
 		goSetEntryBundle(ctx, bundleIndex, uint8(entriesInBundle), bundleWriter.Bytes())
 	}
 	return seqErr.Wait()
@@ -567,16 +567,16 @@ func (m *MigrationStorage) AwaitIntegration(ctx context.Context, sourceSize uint
 		case <-t.C:
 			from, _, err := m.sequencer.currentTree(ctx)
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				slog.Warn("readTreeState", slog.Any("error", err))
+				slog.WarnContext(ctx, "readTreeState", slog.Any("error", err))
 				continue
 			}
-			slog.Info("Integrating", slog.Uint64("from", from), slog.Uint64("target", sourceSize))
+			slog.InfoContext(ctx, "Integrating", slog.Uint64("from", from), slog.Uint64("target", sourceSize))
 			newSize, newRoot, err := m.buildTree(ctx, sourceSize)
 			if err != nil {
-				slog.Warn("integrate", slog.Any("error", err))
+				slog.WarnContext(ctx, "integrate", slog.Any("error", err))
 			}
 			if newSize == sourceSize {
-				slog.Info("Integration complete", slog.Uint64("size", newSize), slog.String("root", fmt.Sprintf("%x", newRoot)))
+				slog.InfoContext(ctx, "Integration complete", slog.Uint64("size", newSize), slog.String("root", fmt.Sprintf("%x", newRoot)))
 				return newRoot, nil
 			}
 		}
@@ -646,7 +646,7 @@ func (m *MigrationStorage) buildTree(ctx context.Context, sourceSize uint64) (ui
 	defer func() {
 		if tx != nil {
 			if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
-				slog.Error("Failed to rollback Tx", slog.Any("error", err))
+				slog.ErrorContext(ctx, "Failed to rollback Tx", slog.Any("error", err))
 			}
 		}
 	}()
@@ -659,7 +659,7 @@ func (m *MigrationStorage) buildTree(ctx context.Context, sourceSize uint64) (ui
 		return 0, nil, fmt.Errorf("failed to read IntCoord: %v", err)
 	}
 
-	slog.Debug("Integrating", slog.Uint64("from", from))
+	slog.DebugContext(ctx, "Integrating", slog.Uint64("from", from))
 
 	lh, err := m.fetchLeafHashes(ctx, from, sourceSize, sourceSize)
 	if err != nil {
@@ -667,19 +667,19 @@ func (m *MigrationStorage) buildTree(ctx context.Context, sourceSize uint64) (ui
 	}
 
 	if len(lh) == 0 {
-		slog.Info("Integrate: nothing to do, nothing done")
+		slog.InfoContext(ctx, "Integrate: nothing to do, nothing done")
 		return from, rootHash, nil
 	}
 
 	added := uint64(len(lh))
-	slog.Info("Integrate: adding entries to existing tree size", slog.Int("count", len(lh)), slog.Uint64("from", from))
+	slog.InfoContext(ctx, "Integrate: adding entries to existing tree size", slog.Int("count", len(lh)), slog.Uint64("from", from))
 	newRoot, err = integrate(ctx, from, lh, m.logStore)
 	if err != nil {
-		slog.Warn("integrate failed", slog.Any("error", err))
+		slog.WarnContext(ctx, "integrate failed", slog.Any("error", err))
 		return 0, nil, fmt.Errorf("integrate failed: %v", err)
 	}
 	newSize = from + added
-	slog.Info("Integrate: added entries", slog.Uint64("count", added))
+	slog.InfoContext(ctx, "Integrate: added entries", slog.Uint64("count", added))
 
 	if _, err := tx.ExecContext(ctx, "UPDATE IntCoord SET seq=?, rootHash=? WHERE id=?", newSize, newRoot, 0); err != nil {
 		return 0, nil, fmt.Errorf("update intcoord: %v", err)
@@ -753,7 +753,7 @@ func (lrs *logResourceStore) setTile(ctx context.Context, level, index, logSize 
 		return err
 	}
 	tPath := layout.TilePath(level, index, layout.PartialTileSize(level, index, logSize))
-	slog.Debug("StoreTile", slog.String("tpath", tPath), slog.Int("count", len(tile.Nodes)))
+	slog.DebugContext(ctx, "StoreTile", slog.String("tpath", tPath), slog.Int("count", len(tile.Nodes)))
 
 	err = lrs.objStore.setObjectIfNoneMatch(ctx, tPath, data, logContType, logCacheControl)
 	opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("writeTile")))
@@ -855,7 +855,7 @@ func integrate(ctx context.Context, fromSeq uint64, lh [][]byte, lrs *logResourc
 	if err := errG.Wait(); err != nil {
 		return nil, err
 	}
-	slog.Debug("New tree", slog.Uint64("size", newSize), slog.String("root", fmt.Sprintf("%x", newRoot)))
+	slog.DebugContext(ctx, "New tree", slog.Uint64("size", newSize), slog.String("root", fmt.Sprintf("%x", newRoot)))
 	return newRoot, nil
 }
 
@@ -1061,7 +1061,7 @@ func (s *mySQLSequencer) assignEntries(ctx context.Context, entries []*tessera.E
 	defer func() {
 		if tx != nil {
 			if err := tx.Rollback(); err != nil {
-				slog.Error("failed to rollback Tx", slog.Any("error", err))
+				slog.ErrorContext(ctx, "failed to rollback Tx", slog.Any("error", err))
 			}
 		}
 	}()
@@ -1129,7 +1129,7 @@ func (s *mySQLSequencer) consumeEntries(ctx context.Context, limit uint64, f con
 	defer func() {
 		if tx != nil {
 			if err := tx.Rollback(); err != nil {
-				slog.Error("failed to rollback Tx", slog.Any("error", err))
+				slog.ErrorContext(ctx, "failed to rollback Tx", slog.Any("error", err))
 			}
 		}
 	}()
@@ -1143,7 +1143,7 @@ func (s *mySQLSequencer) consumeEntries(ctx context.Context, limit uint64, f con
 	} else if err != nil {
 		return false, fmt.Errorf("failed to read IntCoord: %v", err)
 	}
-	slog.Debug("Consuming", slog.Uint64("fromseq", fromSeq))
+	slog.DebugContext(ctx, "Consuming", slog.Uint64("fromseq", fromSeq))
 
 	// Now read the sequenced starting at the index we got above.
 	rows, err := tx.QueryContext(ctx, "SELECT seq, v FROM Seq WHERE id = ? AND seq >= ? ORDER BY seq LIMIT ? FOR UPDATE", 0, fromSeq, limit)
@@ -1152,7 +1152,7 @@ func (s *mySQLSequencer) consumeEntries(ctx context.Context, limit uint64, f con
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Warn("rows.Close", slog.Any("error", err))
+			slog.WarnContext(ctx, "rows.Close", slog.Any("error", err))
 		}
 	}()
 
@@ -1182,7 +1182,7 @@ func (s *mySQLSequencer) consumeEntries(ctx context.Context, limit uint64, f con
 		orderCheck += uint64(len(b))
 	}
 	if len(seqsConsumed) == 0 && !forceUpdate {
-		slog.Debug("Found no rows to sequence")
+		slog.DebugContext(ctx, "Found no rows to sequence")
 		return false, nil
 	}
 
@@ -1270,7 +1270,7 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 	}
 	cpAge := time.Since(time.Unix(pubAt, 0))
 	if cpAge < minStaleActive {
-		slog.Debug("publishCheckpoint: last checkpoint published too recently, not publishing new checkpoint", slog.Duration("age", cpAge), slog.Duration("minstaleactive", minStaleActive))
+		slog.DebugContext(ctx, "publishCheckpoint: last checkpoint published too recently, not publishing new checkpoint", slog.Duration("age", cpAge), slog.Duration("minstaleactive", minStaleActive))
 		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped")))
 		return nil
 	}
@@ -1295,12 +1295,12 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 	}
 
 	if !shouldPublish {
-		slog.Debug("publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
+		slog.DebugContext(ctx, "publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
 		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped_no_growth")))
 		return nil
 	}
 
-	slog.Debug("publishCheckpoint: updating checkpoint (replacing old checkpoint)", slog.Duration("age", cpAge))
+	slog.DebugContext(ctx, "publishCheckpoint: updating checkpoint (replacing old checkpoint)", slog.Duration("age", cpAge))
 
 	if err := f(ctx, fromSeq, rootHash); err != nil {
 		return err
@@ -1501,11 +1501,11 @@ func (s *s3Storage) setObjectIfNoneMatch(ctx context.Context, objName string, da
 				return fmt.Errorf("failed to fetch existing content for %q: %v", objName, err)
 			}
 			if !bytes.Equal(existing, data) {
-				slog.Error("Resource non-idempotent writen", slog.String("objname", objName), slog.String("diff", cmp.Diff(existing, data)))
+				slog.ErrorContext(ctx, "Resource non-idempotent writen", slog.String("objname", objName), slog.String("diff", cmp.Diff(existing, data)))
 				return fmt.Errorf("precondition failed: resource content for %q differs from data to-be-written", objName)
 			}
 
-			slog.Debug("setObjectIfNoneMatch: identical resource already exists. Continuing", slog.String("objname", objName))
+			slog.DebugContext(ctx, "setObjectIfNoneMatch: identical resource already exists. Continuing", slog.String("objname", objName))
 			return nil
 		}
 
@@ -1536,7 +1536,7 @@ func (s *s3Storage) deleteObjectsWithPrefix(ctx context.Context, objPrefix strin
 			},
 		}
 		for _, k := range l.Contents {
-			slog.Debug("Deleting object", slog.String("key", *k.Key))
+			slog.DebugContext(ctx, "Deleting object", slog.String("key", *k.Key))
 			di.Delete.Objects = append(di.Delete.Objects, types.ObjectIdentifier{Key: k.Key})
 		}
 		if _, err := s.s3Client.DeleteObjects(ctx, di); err != nil {
@@ -1553,6 +1553,6 @@ Qu80vNj7tiOe0lkdc8hwZK9YxavT0+FTP++vU6DUKvpEOr1+VGTk3IBXKSX9AHz5xXRgAQAA`
 	g, _ := base64.StdEncoding.DecodeString(d)
 	r, _ := gzip.NewReader(bytes.NewReader(g))
 	t, _ := io.ReadAll(r)
-	slog.Info("Running in non-AWS mode - see storage/aws/README.md for more details.")
-	slog.Info("Here be dragons!\n", slog.Any("t", t))
+	slog.InfoContext(context.Background(), "Running in non-AWS mode - see storage/aws/README.md for more details.")
+	slog.InfoContext(context.Background(), "Here be dragons!\n", slog.Any("t", t))
 }

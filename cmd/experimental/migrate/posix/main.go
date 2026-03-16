@@ -46,45 +46,45 @@ func main() {
 
 	srcURL, err := url.Parse(*sourceURL)
 	if err != nil {
-		slog.Error("Invalid --source_url", slog.String("param", *sourceURL), slog.Any("error", err))
+		slog.ErrorContext(ctx, "Invalid --source_url", slog.String("param", *sourceURL), slog.Any("error", err))
 		os.Exit(1)
 	}
 	src, err := client.NewHTTPFetcher(srcURL, nil)
 	if err != nil {
-		slog.Error("Failed to create HTTP fetcher", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create HTTP fetcher", slog.Any("error", err))
 		os.Exit(1)
 	}
 	sourceCP, err := src.ReadCheckpoint(ctx)
 	if err != nil {
-		slog.Error("fetch initial source checkpoint", slog.Any("error", err))
+		slog.ErrorContext(ctx, "fetch initial source checkpoint", slog.Any("error", err))
 		os.Exit(1)
 	}
 	bits := strings.Split(string(sourceCP), "\n")
 	sourceSize, err := strconv.ParseUint(bits[1], 10, 64)
 	if err != nil {
-		slog.Error("invalid CP size", slog.String("size", bits[1]), slog.Any("error", err))
+		slog.ErrorContext(ctx, "invalid CP size", slog.String("size", bits[1]), slog.Any("error", err))
 		os.Exit(1)
 	}
 	sourceRoot, err := base64.StdEncoding.DecodeString(bits[2])
 	if err != nil {
-		slog.Error("invalid checkpoint roothash", slog.String("hash", bits[2]), slog.Any("error", err))
+		slog.ErrorContext(ctx, "invalid checkpoint roothash", slog.String("hash", bits[2]), slog.Any("error", err))
 		os.Exit(1)
 	}
 
 	driver, err := posix.New(ctx, posix.Config{Path: *storageDir})
 	if err != nil {
-		slog.Error("Failed to create new POSIX storage driver", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create new POSIX storage driver", slog.Any("error", err))
 		os.Exit(1)
 	}
 	// Create our Tessera migration target instance
 	m, err := tessera.NewMigrationTarget(ctx, driver, tessera.NewMigrationOptions())
 	if err != nil {
-		slog.Error("Failed to create new POSIX storage", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create new POSIX storage", slog.Any("error", err))
 		os.Exit(1)
 	}
 
 	if err := m.Migrate(context.Background(), *numWorkers, sourceSize, sourceRoot, src.ReadEntryBundle); err != nil {
-		slog.Error("Migrate failed", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Migrate failed", slog.Any("error", err))
 		os.Exit(1)
 	}
 }

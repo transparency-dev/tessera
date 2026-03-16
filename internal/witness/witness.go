@@ -65,7 +65,7 @@ func init() {
 		metric.WithDescription("Number of requests to the witnesses' submit endpoint"),
 		metric.WithUnit("{call}"))
 	if err != nil {
-		slog.Error("Failed to create witnessReqsTotal metric", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to create witnessReqsTotal metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 	witnessReqHistogram, err = meter.Int64Histogram(
@@ -74,7 +74,7 @@ func init() {
 		metric.WithUnit("ms"),
 		metric.WithExplicitBucketBoundaries(witnessHistogramBuckets...))
 	if err != nil {
-		slog.Error("Failed to create witnessReqHistogram metric", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to create witnessReqHistogram metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 	witnessRespsTotal, err = meter.Int64Counter(
@@ -82,7 +82,7 @@ func init() {
 		metric.WithDescription("Number of responses from the witnesses' submit endpoint"),
 		metric.WithUnit("{call}"))
 	if err != nil {
-		slog.Error("Failed to create witnessRespsTotal metric", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to create witnessRespsTotal metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 }
@@ -362,7 +362,7 @@ func (w *witness) update(ctx context.Context, cp []byte, size uint64, fetchProof
 					return nil, fmt.Errorf("witness at %q replied with x.tlog.size %d, larger than log size %d", w.url, newWitSize, size)
 				}
 
-				slog.Info("Witness replied with x.tlog.size different than our hint. Retrying.", slog.String("url", w.url), slog.Uint64("reply", newWitSize), slog.Uint64("hinted", w.size))
+				slog.InfoContext(ctx, "Witness replied with x.tlog.size different than our hint. Retrying.", slog.String("url", w.url), slog.Uint64("reply", newWitSize), slog.Uint64("hinted", w.size))
 				w.size = newWitSize
 				// Witnesses could cause this recursion to go on for longer than expected if they keep triggering this case.
 				// This is why we pass the context with an incrementing value to detect this unlikely case.

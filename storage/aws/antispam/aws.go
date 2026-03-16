@@ -366,7 +366,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 					return ctx.Err()
 				}
 
-				slog.Debug("Inserting entries into antispam database", slog.Int("count", len(curEntries)), slog.Uint64("followfrom", followFrom), slog.Uint64("logsize", logSize))
+				slog.DebugContext(ctx, "Inserting entries into antispam database", slog.Int("count", len(curEntries)), slog.Uint64("followfrom", followFrom), slog.Uint64("logsize", logSize))
 
 				args := make([]string, 0, len(curEntries))
 				vals := make([]any, 0, 2*len(curEntries))
@@ -397,7 +397,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 			})
 			if err != nil {
 				if err != errOutOfSync {
-					slog.Error("Failed to commit antispam population tx", slog.Any("error", err))
+					slog.ErrorContext(ctx, "Failed to commit antispam population tx", slog.Any("error", err))
 				}
 				if next != nil {
 					stop()

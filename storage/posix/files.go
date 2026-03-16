@@ -178,7 +178,7 @@ func (a *appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 			ctx, cancel := context.WithTimeout(ctx, defaultPublicationTimeout)
 			defer cancel()
 			if err := a.publishCheckpoint(ctx, pubInterval, republishInterval); err != nil {
-				slog.Warn("publishCheckpoint failed", slog.Any("error", err))
+				slog.WarnContext(ctx, "publishCheckpoint failed", slog.Any("error", err))
 			}
 		}()
 	}
@@ -299,7 +299,7 @@ func (a *appender) sequenceBatch(ctx context.Context, entries []*tessera.Entry) 
 		size = 0
 	}
 	a.curSize = size
-	slog.Debug("Sequencing", slog.Uint64("from", a.curSize))
+	slog.DebugContext(ctx, "Sequencing", slog.Uint64("from", a.curSize))
 
 	if len(entries) == 0 {
 		return nil
@@ -360,7 +360,7 @@ func (a *appender) sequenceBatch(ctx context.Context, entries []*tessera.Entry) 
 	// If this is broken out into an async process, we'll need to update the implementation of NextIndex, too.
 	newSize, newRoot, err := doIntegrate(ctx, seq, leafHashes, a.logStorage)
 	if err != nil {
-		slog.Error("Integrate failed", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Integrate failed", slog.Any("error", err))
 		return err
 	}
 	if err := a.s.writeTreeState(ctx, newSize, newRoot); err != nil {
@@ -387,7 +387,7 @@ func doIntegrate(ctx context.Context, fromSeq uint64, leafHashes [][]byte, ls *l
 
 	newSize, newRoot, tiles, err := storage.Integrate(ctx, getTiles, fromSeq, leafHashes)
 	if err != nil {
-		slog.Error("Integrate", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Integrate", slog.Any("error", err))
 		return 0, nil, fmt.Errorf("error in Integrate: %v", err)
 	}
 	for k, v := range tiles {
@@ -396,7 +396,7 @@ func doIntegrate(ctx context.Context, fromSeq uint64, leafHashes [][]byte, ls *l
 		}
 	}
 
-	slog.Debug("New tree", slog.Uint64("size", newSize), slog.String("hash", fmt.Sprintf("%x", newRoot)))
+	slog.DebugContext(ctx, "New tree", slog.Uint64("size", newSize), slog.String("hash", fmt.Sprintf("%x", newRoot)))
 
 	return newSize, newRoot, nil
 }
@@ -443,7 +443,7 @@ func (lrs *logResourceStorage) readTile(ctx context.Context, level, index uint64
 // stored with a .xx suffix where xx is the number of "tile leaves" in hex.
 func (lrs *logResourceStorage) storeTile(ctx context.Context, level, index, logSize uint64, tile *api.HashTile) error {
 	tileSize := uint64(len(tile.Nodes))
-	slog.Debug("StoreTile", slog.Uint64("level", level), slog.String("index", fmt.Sprintf("%x", index)), slog.String("tilesize", fmt.Sprintf("%x", tileSize)))
+	slog.DebugContext(ctx, "StoreTile", slog.Uint64("level", level), slog.String("index", fmt.Sprintf("%x", index)), slog.String("tilesize", fmt.Sprintf("%x", tileSize)))
 	if tileSize == 0 || tileSize > layout.TileWidth {
 		return fmt.Errorf("tileSize %d must be > 0 and <= %d", tileSize, layout.TileWidth)
 	}
@@ -471,7 +471,7 @@ func (lrs *logResourceStorage) writeTile(ctx context.Context, level, index uint6
 		}
 		// Clean up old partial tiles by symlinking them to the new full tile.
 		for _, p := range partials {
-			slog.Debug("relink partial", slog.String("p", p), slog.String("tpath", tPath))
+			slog.DebugContext(ctx, "relink partial", slog.String("p", p), slog.String("tpath", tPath))
 			// We have to do a little dance here to get POSIX atomicity:
 			// 1. Create a new temporary symlink to the full tile
 			// 2. Rename the temporary symlink over the top of the old partial tile
@@ -532,7 +532,7 @@ func (a *appender) initialise(ctx context.Context) error {
 			return fmt.Errorf("failed to load checkpoint for log: %v", err)
 		}
 		// Create the directory structure and write out an empty checkpoint
-		slog.Info("Initializing directory for POSIX log (this should only happen ONCE per log!)", slog.String("path", a.s.cfg.Path))
+		slog.InfoContext(ctx, "Initializing directory for POSIX log (this should only happen ONCE per log!)", slog.String("path", a.s.cfg.Path))
 		if err := a.s.writeTreeState(ctx, 0, rfc6962.DefaultHasher.EmptyRoot()); err != nil {
 			return fmt.Errorf("failed to write tree-state checkpoint: %v", err)
 		}
@@ -559,7 +559,7 @@ func (s *Storage) ensureVersion(version uint16) error {
 	versionFile := filepath.Join(stateDir, "version")
 
 	if _, err := s.stat(versionFile); errors.Is(err, os.ErrNotExist) {
-		slog.Debug("No version file exists, creating")
+		slog.DebugContext(context.Background(), "No version file exists, creating")
 		data := fmt.Appendf(nil, "%d", version)
 		if err := s.createExclusive(versionFile, data); err != nil {
 			return fmt.Errorf("failed to create version file: %v", err)
@@ -638,7 +638,7 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 	}
 	defer func() {
 		if err := unlock(); err != nil {
-			slog.Warn("unlock", slog.String("publishlock", publishLock), slog.Any("error", err))
+			slog.WarnContext(ctx, "unlock", slog.String("publishlock", publishLock), slog.Any("error", err))
 		}
 	}()
 
@@ -647,20 +647,20 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 	cpExists := true
 	info, err := a.s.stat(layout.CheckpointPath)
 	if errors.Is(err, os.ErrNotExist) {
-		slog.Debug("No checkpoint exists, publishing")
+		slog.DebugContext(ctx, "No checkpoint exists, publishing")
 		cpExists = false
 	} else if err != nil {
 		return fmt.Errorf("stat(%s): %v", layout.CheckpointPath, err)
 	} else {
 		publishedAge = time.Since(info.ModTime())
 		if publishedAge < minStalenessActive {
-			slog.Debug("publishCheckpoint: skipping publish because previous checkpoint too fresh", slog.Duration("age", publishedAge), slog.Duration("minstalenessactive", minStalenessActive))
+			slog.DebugContext(ctx, "publishCheckpoint: skipping publish because previous checkpoint too fresh", slog.Duration("age", publishedAge), slog.Duration("minstalenessactive", minStalenessActive))
 			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped")))
 			return nil
 		}
 		publishedSize, err = a.publishedSize(ctx)
 		if err != nil {
-			slog.Debug("publishCheckpoint: skipping publish because unable to determine previously published size", slog.Any("error", err))
+			slog.DebugContext(ctx, "publishCheckpoint: skipping publish because unable to determine previously published size", slog.Any("error", err))
 			return err
 		}
 	}
@@ -672,7 +672,7 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 	}
 	if cpExists && size == publishedSize {
 		if minStalenessRepub == 0 || publishedAge < minStalenessRepub {
-			slog.Debug("publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
+			slog.DebugContext(ctx, "publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
 			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped_no_growth")))
 			return nil
 		}
@@ -687,7 +687,7 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 		return fmt.Errorf("createOverwrite(%s): %v", layout.CheckpointPath, err)
 	}
 
-	slog.Debug("Published latest checkpoint", slog.Uint64("size", size), slog.String("root", fmt.Sprintf("%x", root)))
+	slog.DebugContext(ctx, "Published latest checkpoint", slog.Uint64("size", size), slog.String("root", fmt.Sprintf("%x", root)))
 
 	posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
 	publishCount.Add(ctx, 1)
@@ -740,12 +740,12 @@ func (a *appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 			// checkpoint!
 			pubSize, err := a.publishedSize(ctx)
 			if err != nil {
-				slog.Warn("GarbageCollect", slog.Any("error", err))
+				slog.WarnContext(ctx, "GarbageCollect", slog.Any("error", err))
 				return
 			}
 
 			if err := a.s.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStorage.entriesPath); err != nil {
-				slog.Warn("GarbageCollect failed", slog.Any("error", err))
+				slog.WarnContext(ctx, "GarbageCollect failed", slog.Any("error", err))
 				return
 			}
 		}()
@@ -800,7 +800,7 @@ func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundle
 	}
 	defer func() {
 		if err := unlock(); err != nil {
-			slog.Warn("unlock", slog.String("gcstatelock", gcStateLock), slog.Any("error", err))
+			slog.WarnContext(ctx, "unlock", slog.String("gcstatelock", gcStateLock), slog.Any("error", err))
 		}
 	}()
 
@@ -889,7 +889,7 @@ func (s *Storage) stat(p string) (os.FileInfo, error) {
 // The provided path is interpreted relative to the log root.
 func (s *Storage) removeDirAll(p string) error {
 	p = filepath.Join(s.cfg.Path, p)
-	slog.Debug("rm", slog.String("p", p))
+	slog.DebugContext(context.Background(), "rm", slog.String("p", p))
 	if err := os.RemoveAll(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -932,11 +932,11 @@ func (m *MigrationStorage) AwaitIntegration(ctx context.Context, sourceSize uint
 		case <-t.C:
 		}
 		if err := m.buildTree(ctx, sourceSize); err != nil {
-			slog.Warn("buildTree", slog.Any("error", err))
+			slog.WarnContext(ctx, "buildTree", slog.Any("error", err))
 		}
 		s, r, err := m.s.readTreeState(ctx)
 		if err != nil {
-			slog.Warn("readTreeState", slog.Any("error", err))
+			slog.WarnContext(ctx, "readTreeState", slog.Any("error", err))
 		}
 		if s == sourceSize {
 			return r, nil
@@ -973,7 +973,7 @@ func (m *MigrationStorage) initialise(ctx context.Context) error {
 			return fmt.Errorf("failed to load checkpoint for log: %v", err)
 		}
 		// Create the directory structure and write out an empty checkpoint
-		slog.Info("Initializing directory for POSIX log (this should only happen ONCE per log!)", slog.String("path", m.s.cfg.Path))
+		slog.InfoContext(ctx, "Initializing directory for POSIX log (this should only happen ONCE per log!)", slog.String("path", m.s.cfg.Path))
 		if err := m.s.writeTreeState(ctx, 0, rfc6962.DefaultHasher.EmptyRoot()); err != nil {
 			return fmt.Errorf("failed to write tree-state checkpoint: %v", err)
 		}
@@ -1017,14 +1017,14 @@ func (m *MigrationStorage) buildTree(ctx context.Context, targetSize uint64) err
 		size = 0
 	}
 	m.curSize = size
-	slog.Debug("Building", slog.Uint64("from", m.curSize))
+	slog.DebugContext(ctx, "Building", slog.Uint64("from", m.curSize))
 
 	lh, err := m.fetchLeafHashes(ctx, size, targetSize, targetSize)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			// We just don't have the bundle yet.
 			// Bail quietly and the caller can retry.
-			slog.Debug("fetchLeafHashes", slog.Uint64("size", size), slog.Uint64("targetsize", targetSize), slog.Any("error", err))
+			slog.DebugContext(ctx, "fetchLeafHashes", slog.Uint64("size", size), slog.Uint64("targetsize", targetSize), slog.Any("error", err))
 			return nil
 		}
 		return fmt.Errorf("fetchLeafHashes(%d, %d): %v", size, targetSize, err)

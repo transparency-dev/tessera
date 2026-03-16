@@ -15,16 +15,16 @@
 package posix
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
-
-	"log/slog"
 )
 
 const (
@@ -120,7 +120,7 @@ func createEx(name string, d []byte) error {
 		}
 		defer func() {
 			if err := os.Remove(tmpName); err != nil {
-				slog.Warn("Failed to remove temporary file", slog.String("tmpname", tmpName), slog.Any("error", err))
+				slog.WarnContext(context.Background(), "Failed to remove temporary file", slog.String("tmpname", tmpName), slog.Any("error", err))
 			}
 		}()
 

@@ -73,7 +73,7 @@ func main() {
 	// Create the Tessera POSIX storage, using the directory from the --storage_dir flag
 	driver, err := posix.New(ctx, posix.Config{Path: *storageDir})
 	if err != nil {
-		slog.Error("Failed to construct storage", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to construct storage", slog.Any("error", err))
 		os.Exit(1)
 	}
 	var antispam tessera.Antispam
@@ -82,7 +82,7 @@ func main() {
 		asOpts := badger_as.AntispamOpts{}
 		antispam, err = badger_as.NewAntispam(ctx, filepath.Join(*storageDir, ".state", "antispam"), asOpts)
 		if err != nil {
-			slog.Error("Failed to create new Badger antispam storage", slog.Any("error", err))
+			slog.ErrorContext(ctx, "Failed to create new Badger antispam storage", slog.Any("error", err))
 			os.Exit(1)
 		}
 	}
@@ -94,7 +94,7 @@ func main() {
 		WithBatching(256, time.Second).
 		WithAntispam(tessera.DefaultAntispamInMemorySize, antispam))
 	if err != nil {
-		slog.Error("Failed to create new appender", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create new appender", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -112,7 +112,7 @@ func main() {
 			return
 		}
 		if _, err := fmt.Fprintf(w, "%d", idx.Index); err != nil {
-			slog.Error("/add", slog.Any("error", err))
+			slog.ErrorContext(ctx, "/add", slog.Any("error", err))
 			return
 		}
 	})
@@ -134,16 +134,16 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if err := http2.ConfigureServer(h1s, h2s); err != nil {
-		slog.Error("http2.ConfigureServer", slog.Any("error", err))
+		slog.ErrorContext(ctx, "http2.ConfigureServer", slog.Any("error", err))
 		os.Exit(1)
 	}
 
 	if err := h1s.ListenAndServe(); err != nil {
 		if err := shutdown(ctx); err != nil {
-			slog.Error("Failed to cleanly shutdown after ListenAndServe", slog.Any("error", err))
+			slog.ErrorContext(ctx, "Failed to cleanly shutdown after ListenAndServe", slog.Any("error", err))
 			os.Exit(1)
 		}
-		slog.Error("ListenAndServe", slog.Any("error", err))
+		slog.ErrorContext(ctx, "ListenAndServe", slog.Any("error", err))
 		os.Exit(1)
 	}
 }
@@ -154,12 +154,12 @@ func getSignersOrDie() (note.Signer, []note.Signer) {
 	for _, p := range additionalPrivateKeyFiles {
 		kr, err := getKeyFile(p)
 		if err != nil {
-			slog.Error("Unable to get additional private key", slog.String("file", p), slog.Any("error", err))
+			slog.ErrorContext(context.Background(), "Unable to get additional private key", slog.String("file", p), slog.Any("error", err))
 			os.Exit(1)
 		}
 		k, err := note.NewSigner(kr)
 		if err != nil {
-			slog.Error("Failed to instantiate signer", slog.String("file", p), slog.Any("error", err))
+			slog.ErrorContext(context.Background(), "Failed to instantiate signer", slog.String("file", p), slog.Any("error", err))
 			os.Exit(1)
 		}
 		a = append(a, k)
@@ -174,19 +174,19 @@ func getSignerOrDie() note.Signer {
 	if len(*privKeyFile) > 0 {
 		privKey, err = getKeyFile(*privKeyFile)
 		if err != nil {
-			slog.Error("Unable to get private key", slog.Any("error", err))
+			slog.ErrorContext(context.Background(), "Unable to get private key", slog.Any("error", err))
 			os.Exit(1)
 		}
 	} else {
 		privKey = os.Getenv("LOG_PRIVATE_KEY")
 		if len(privKey) == 0 {
-			slog.Error("Supply private key file path using --private_key or set LOG_PRIVATE_KEY environment variable")
+			slog.ErrorContext(context.Background(), "Supply private key file path using --private_key or set LOG_PRIVATE_KEY environment variable")
 			os.Exit(1)
 		}
 	}
 	s, err := note.NewSigner(privKey)
 	if err != nil {
-		slog.Error("Failed to instantiate signer", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to instantiate signer", slog.Any("error", err))
 		os.Exit(1)
 	}
 	return s

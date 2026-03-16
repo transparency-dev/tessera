@@ -83,7 +83,7 @@ func main() {
 	awsCfg := storageConfigFromFlags()
 	driver, err := aws.New(ctx, awsCfg)
 	if err != nil {
-		slog.Error("Failed to create new AWS storage", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create new AWS storage", slog.Any("error", err))
 		os.Exit(1)
 	}
 	var antispam tessera.Antispam
@@ -92,7 +92,7 @@ func main() {
 		asOpts := aws_as.AntispamOpts{} // Use defaults
 		antispam, err = aws_as.NewAntispam(ctx, antispamMysqlConfig().FormatDSN(), asOpts)
 		if err != nil {
-			slog.Error("Failed to create new AWS antispam storage", slog.Any("error", err))
+			slog.ErrorContext(ctx, "Failed to create new AWS antispam storage", slog.Any("error", err))
 			os.Exit(1)
 		}
 	}
@@ -103,7 +103,7 @@ func main() {
 		WithPushback(10*4096).
 		WithAntispam(tessera.DefaultAntispamInMemorySize, antispam))
 	if err != nil {
-		slog.Error("Failed to create new appender", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create new appender", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -139,16 +139,16 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if err := http2.ConfigureServer(h1s, h2s); err != nil {
-		slog.Error("http2.ConfigureServer", slog.Any("error", err))
+		slog.ErrorContext(ctx, "http2.ConfigureServer", slog.Any("error", err))
 		os.Exit(1)
 	}
 
 	if err := h1s.ListenAndServe(); err != nil {
 		if err := shutdown(ctx); err != nil {
-			slog.Error("Failed to cleanly shutdown after ListenAndServe", slog.Any("error", err))
+			slog.ErrorContext(ctx, "Failed to cleanly shutdown after ListenAndServe", slog.Any("error", err))
 			os.Exit(1)
 		}
-		slog.Error("ListenAndServe", slog.Any("error", err))
+		slog.ErrorContext(ctx, "ListenAndServe", slog.Any("error", err))
 		os.Exit(1)
 	}
 }
@@ -156,29 +156,30 @@ func main() {
 // storageConfigFromFlags returns an aws.Config struct populated with values
 // provided via flags.
 func storageConfigFromFlags() aws.Config {
+	ctx := context.Background()
 	if *bucket == "" {
-		slog.Error("--bucket must be set")
+		slog.ErrorContext(ctx, "--bucket must be set")
 		os.Exit(1)
 	}
 	if *dbName == "" {
-		slog.Error("--db_name must be set")
+		slog.ErrorContext(ctx, "--db_name must be set")
 		os.Exit(1)
 	}
 	if *dbHost == "" {
-		slog.Error("--db_host must be set")
+		slog.ErrorContext(ctx, "--db_host must be set")
 		os.Exit(1)
 	}
 	if *dbPort == 0 {
-		slog.Error("--db_port must be set")
+		slog.ErrorContext(ctx, "--db_port must be set")
 		os.Exit(1)
 	}
 	if *dbUser == "" {
-		slog.Error("--db_user must be set")
+		slog.ErrorContext(ctx, "--db_user must be set")
 		os.Exit(1)
 	}
 	// Empty password isn't an option with AuroraDB MySQL.
 	if *dbPassword == "" {
-		slog.Error("--db_password must be set")
+		slog.ErrorContext(ctx, "--db_password must be set")
 		os.Exit(1)
 	}
 
@@ -220,25 +221,26 @@ func storageConfigFromFlags() aws.Config {
 }
 
 func antispamMysqlConfig() *mysql.Config {
+	ctx := context.Background()
 	if *antispamDb == "" {
-		slog.Error("--antispam_db_name must be set")
+		slog.ErrorContext(ctx, "--antispam_db_name must be set")
 		os.Exit(1)
 	}
 	if *dbHost == "" {
-		slog.Error("--db_host must be set")
+		slog.ErrorContext(ctx, "--db_host must be set")
 		os.Exit(1)
 	}
 	if *dbPort == 0 {
-		slog.Error("--db_port must be set")
+		slog.ErrorContext(ctx, "--db_port must be set")
 		os.Exit(1)
 	}
 	if *dbUser == "" {
-		slog.Error("--db_user must be set")
+		slog.ErrorContext(ctx, "--db_user must be set")
 		os.Exit(1)
 	}
 	// Empty password isn't an option with AuroraDB MySQL.
 	if *dbPassword == "" {
-		slog.Error("--db_password must be set")
+		slog.ErrorContext(ctx, "--db_password must be set")
 		os.Exit(1)
 	}
 
@@ -256,7 +258,7 @@ func antispamMysqlConfig() *mysql.Config {
 func signerFromFlags() (note.Signer, []note.Signer) {
 	s, err := note.NewSigner(*signer)
 	if err != nil {
-		slog.Error("Failed to create new signer", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to create new signer", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -264,7 +266,7 @@ func signerFromFlags() (note.Signer, []note.Signer) {
 	for _, as := range additionalSigners {
 		s, err := note.NewSigner(as)
 		if err != nil {
-			slog.Error("Failed to create additional signer", slog.Any("error", err))
+			slog.ErrorContext(context.Background(), "Failed to create additional signer", slog.Any("error", err))
 			os.Exit(1)
 		}
 		a = append(a, s)

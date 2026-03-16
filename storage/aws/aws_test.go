@@ -115,7 +115,7 @@ func mustDropTables(t *testing.T, ctx context.Context) {
 func TestMySQLSequencerAssignEntries(t *testing.T) {
 	ctx := context.Background()
 	if canSkipMySQLTest(t, ctx) {
-		slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
 		t.Skip("MySQL not available, skipping test")
 	}
 	// Clean tables in case there's already something in there.
@@ -147,7 +147,7 @@ func TestMySQLSequencerAssignEntries(t *testing.T) {
 func TestMySQLSequencerPushback(t *testing.T) {
 	ctx := context.Background()
 	if canSkipMySQLTest(t, ctx) {
-		slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
 		t.Skip("MySQL not available, skipping test")
 	}
 	// Clean tables in case there's already something in there.
@@ -207,7 +207,7 @@ func TestMySQLSequencerPushback(t *testing.T) {
 func TestMySQLSequencerRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	if canSkipMySQLTest(t, ctx) {
-		slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
 		t.Skip("MySQL not available, skipping test")
 	}
 	// Clean tables in case there's already something in there.
@@ -375,7 +375,7 @@ func TestBundleRoundtrip(t *testing.T) {
 func TestPublishTree(t *testing.T) {
 	ctx := context.Background()
 	if canSkipMySQLTest(t, ctx) {
-		slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
 		t.Skip("MySQL not available, skipping test")
 	}
 
@@ -473,7 +473,7 @@ func TestPublishTree(t *testing.T) {
 func TestGarbageCollect(t *testing.T) {
 	ctx := t.Context()
 	if canSkipMySQLTest(t, ctx) {
-		slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
 		t.Skip("MySQL not available, skipping test")
 	}
 	// Clean tables in case there's already something in there.
@@ -595,7 +595,7 @@ func TestGarbageCollectOption(t *testing.T) {
 
 			ctx := t.Context()
 			if canSkipMySQLTest(t, ctx) {
-				slog.Warn("MySQL not available, skipping", slog.String("name", t.Name()))
+				slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
 				t.Skip("MySQL not available, skipping test")
 			}
 			// Clean tables in case there's already something in there.

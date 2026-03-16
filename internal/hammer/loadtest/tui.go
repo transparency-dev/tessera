@@ -73,24 +73,24 @@ func (c *tuiController) Run(ctx context.Context) {
 	c.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Rune() {
 		case '+':
-			slog.Info("Increasing the read operations per second")
+			slog.InfoContext(ctx, "Increasing the read operations per second")
 			c.hammer.readThrottle.Increase()
 		case '-':
-			slog.Info("Decreasing the read operations per second")
+			slog.InfoContext(ctx, "Decreasing the read operations per second")
 			c.hammer.readThrottle.Decrease()
 		case '>':
-			slog.Info("Increasing the write operations per second")
+			slog.InfoContext(ctx, "Increasing the write operations per second")
 			c.hammer.writeThrottle.Increase()
 		case '<':
-			slog.Info("Decreasing the write operations per second")
+			slog.InfoContext(ctx, "Decreasing the write operations per second")
 			c.hammer.writeThrottle.Decrease()
 		case 'w':
-			slog.Info("Increasing the number of workers")
+			slog.InfoContext(ctx, "Increasing the number of workers")
 			c.hammer.randomReaders.Grow(ctx)
 			c.hammer.fullReaders.Grow(ctx)
 			c.hammer.writers.Grow(ctx)
 		case 'W':
-			slog.Info("Decreasing the number of workers")
+			slog.InfoContext(ctx, "Decreasing the number of workers")
 			c.hammer.randomReaders.Shrink(ctx)
 			c.hammer.fullReaders.Shrink(ctx)
 			c.hammer.writers.Shrink(ctx)

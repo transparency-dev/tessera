@@ -101,18 +101,18 @@ func (h *Hammer) updateCheckpointLoop(ctx context.Context) {
 			size := h.tracker.Latest().Size
 			_, _, _, err := h.tracker.Update(ctx)
 			if err != nil {
-				slog.Warn("Failed to update LogStateTracker", slog.Any("error", err))
+				slog.WarnContext(ctx, "Failed to update LogStateTracker", slog.Any("error", err))
 				inconsistentErr := client.ErrInconsistency{}
 				if errors.As(err, &inconsistentErr) {
-					slog.Error(fmt.Sprintf("Last Good Checkpoint:\n%s\n\nFirst Bad Checkpoint:\n%s\n\n%v", string(inconsistentErr.SmallerRaw), string(inconsistentErr.LargerRaw), inconsistentErr), slog.Any("error", inconsistentErr))
+					slog.ErrorContext(ctx, fmt.Sprintf("Last Good Checkpoint:\n%s\n\nFirst Bad Checkpoint:\n%s\n\n%v", string(inconsistentErr.SmallerRaw), string(inconsistentErr.LargerRaw), inconsistentErr), slog.Any("error", inconsistentErr))
 					os.Exit(1)
 				}
 			}
 			newSize := h.tracker.Latest().Size
 			if newSize > size {
-				slog.Debug("Updated checkpoint", slog.Uint64("from", size), slog.Uint64("to", newSize))
+				slog.DebugContext(ctx, "Updated checkpoint", slog.Uint64("from", size), slog.Uint64("to", newSize))
 			} else {
-				slog.Debug("Checkpoint size unchanged", slog.Uint64("size", newSize))
+				slog.DebugContext(ctx, "Checkpoint size unchanged", slog.Uint64("size", newSize))
 			}
 		}
 	}

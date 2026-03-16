@@ -69,20 +69,20 @@ func TestMain(m *testing.M) {
 	flag.Parse()
 
 	if !*runIntegrationTest {
-		slog.Warn("example binary integration tests are skipped")
+		slog.WarnContext(context.Background(), "example binary integration tests are skipped")
 		return
 	}
 
 	var err error
 	noteVerifier, err = note.NewVerifier(*logPublicKey)
 	if err != nil {
-		slog.Error("Failed to create new verifier", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to create new verifier", slog.Any("error", err))
 		os.Exit(1)
 	}
 
 	logReadBaseURL, err = url.Parse(*logURL)
 	if err != nil {
-		slog.Error("failed to parse logURL", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "failed to parse logURL", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -90,7 +90,7 @@ func TestMain(m *testing.M) {
 	case "http", "https":
 		hf, err := client.NewHTTPFetcher(logReadBaseURL, nil)
 		if err != nil {
-			slog.Error("NewHTTPFetcher", slog.Any("error", err))
+			slog.ErrorContext(context.Background(), "NewHTTPFetcher", slog.Any("error", err))
 			os.Exit(1)
 		}
 		logReadCP = hf.ReadCheckpoint
@@ -102,7 +102,7 @@ func TestMain(m *testing.M) {
 		logReadTile = ff.ReadTile
 		logReadEntryBundle = ff.ReadEntryBundle
 	default:
-		slog.Error("unsupported url scheme", slog.String("scheme", logReadBaseURL.Scheme))
+		slog.ErrorContext(context.Background(), "unsupported url scheme", slog.String("scheme", logReadBaseURL.Scheme))
 		os.Exit(1)
 	}
 
@@ -214,7 +214,7 @@ func (w *entryWriter) add(ctx context.Context, entry []byte) (uint64, error) {
 	body, err := io.ReadAll(resp.Body)
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("resp.Body.Close", slog.Any("error", err))
+			slog.WarnContext(ctx, "resp.Body.Close", slog.Any("error", err))
 		}
 	}()
 	if err != nil {

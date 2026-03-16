@@ -62,13 +62,13 @@ type bundle struct {
 //
 // A call to this function will block until either the copying is done, or an error has occurred.
 func (c *copier) Copy(ctx context.Context, fromSize uint64, sourceSize uint64) error {
-	slog.Info("Starting copy", slog.Uint64("from", fromSize), slog.Uint64("to", sourceSize))
+	slog.InfoContext(ctx, "Starting copy", slog.Uint64("from", fromSize), slog.Uint64("to", sourceSize))
 
 	if fromSize > sourceSize {
 		return fmt.Errorf("from size %d > source size %d", fromSize, sourceSize)
 	}
 
-	go c.populateWork(fromSize, sourceSize)
+	go c.populateWork(ctx, fromSize, sourceSize)
 
 	// Do the copying
 	eg := errgroup.Group{}
@@ -91,8 +91,8 @@ func (c *copier) BundlesCopied() uint64 {
 
 // populateWork sends entries to the `todo` work channel.
 // Each entry corresponds to an individual entryBundle which needs to be copied.
-func (m *copier) populateWork(from, treeSize uint64) {
-	slog.Info("Spans for entry range", slog.Uint64("from", from), slog.Uint64("to", treeSize))
+func (m *copier) populateWork(ctx context.Context, from, treeSize uint64) {
+	slog.InfoContext(ctx, "Spans for entry range", slog.Uint64("from", from), slog.Uint64("to", treeSize))
 	defer close(m.todo)
 
 	for ri := range layout.Range(from, treeSize-from, treeSize) {
@@ -110,12 +110,12 @@ func (m *copier) worker(ctx context.Context) error {
 			d, err := m.getEntryBundle(ctx, b.Index, uint8(b.Partial))
 			if err != nil {
 				wErr := fmt.Errorf("failed to fetch entrybundle %d (p=%d): %v", b.Index, b.Partial, err)
-				slog.Info("Fetch error", slog.Any("error", wErr))
+				slog.InfoContext(ctx, "Fetch error", slog.Any("error", wErr))
 				return 0, wErr
 			}
 			if err := m.setEntryBundle(ctx, b.Index, b.Partial, d); err != nil {
 				wErr := fmt.Errorf("failed to store entrybundle %d (p=%d): %v", b.Index, b.Partial, err)
-				slog.Info("Store error", slog.Any("error", wErr))
+				slog.InfoContext(ctx, "Store error", slog.Any("error", wErr))
 				return 0, wErr
 			}
 			return 1, nil
@@ -123,7 +123,7 @@ func (m *copier) worker(ctx context.Context) error {
 			backoff.WithMaxTries(10),
 			backoff.WithBackOff(backoff.NewExponentialBackOff()))
 		if err != nil {
-			slog.Info("Retry error", slog.Any("error", err))
+			slog.InfoContext(ctx, "Retry error", slog.Any("error", err))
 			return err
 		}
 		m.bundlesCopied.Add(n)

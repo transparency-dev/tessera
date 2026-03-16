@@ -47,7 +47,7 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 		}
 		shutdownFuncs = nil
 		if err != nil {
-			slog.Error("OTel shutdown", slog.Any("error", err))
+			slog.ErrorContext(ctx, "OTel shutdown", slog.Any("error", err))
 		}
 	}
 
@@ -62,13 +62,13 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 		resource.WithDetectors(gcp.NewDetector()),
 	)
 	if err != nil {
-		slog.Error("Failed to detect resources", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to detect resources", slog.Any("error", err))
 		os.Exit(1)
 	}
 
 	me, err := mexporter.New()
 	if err != nil {
-		slog.Error("Failed to create metric exporter", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create metric exporter", slog.Any("error", err))
 		os.Exit(1)
 		return nil
 	}
@@ -82,7 +82,7 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 
 	te, err := texporter.New()
 	if err != nil {
-		slog.Error("Failed to create trace exporter", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create trace exporter", slog.Any("error", err))
 		os.Exit(1)
 		return nil
 	}

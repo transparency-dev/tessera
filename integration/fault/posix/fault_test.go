@@ -20,6 +20,7 @@
 package fault_test
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -249,7 +250,7 @@ func fsckLog(t *testing.T, dir string) error {
 	}
 	v, err := note.NewVerifier(testVerifier)
 	if err != nil {
-		slog.Error("Invalid verifier", slog.String("verifier", testVerifier), slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Invalid verifier", slog.String("verifier", testVerifier), slog.Any("error", err))
 		os.Exit(1)
 	}
 	f := fsck.New(v.Name(), v, src, defaultMerkleLeafHasher, fsck.Opts{N: 1})

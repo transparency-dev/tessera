@@ -89,7 +89,7 @@ func (h HTTPFetcher) fetch(ctx context.Context, p string) ([]byte, error) {
 
 	defer func() {
 		if err := r.Body.Close(); err != nil {
-			slog.Error("resp.Body.Close", slog.Any("error", err))
+			slog.ErrorContext(ctx, "resp.Body.Close", slog.Any("error", err))
 		}
 	}()
 	return io.ReadAll(r.Body)

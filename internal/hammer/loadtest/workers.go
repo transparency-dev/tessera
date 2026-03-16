@@ -86,7 +86,7 @@ func (r *LeafReader) Run(ctx context.Context) {
 		if i >= size {
 			continue
 		}
-		slog.Debug("LeafReader: getting index", slog.Uint64("i", i))
+		slog.DebugContext(ctx, "LeafReader: getting index", slog.Uint64("i", i))
 		_, err := r.getLeaf(ctx, i, size)
 		if err != nil {
 			r.errChan <- fmt.Errorf("failed to get leaf %d: %v", i, err)
@@ -100,7 +100,7 @@ func (r *LeafReader) getLeaf(ctx context.Context, i uint64, logSize uint64) ([]b
 		return nil, fmt.Errorf("requested leaf %d >= log size %d", i, logSize)
 	}
 	if cached, _ := r.c.get(i); cached != nil {
-		slog.Debug("Using cached result for index", slog.Uint64("i", i))
+		slog.DebugContext(ctx, "Using cached result for index", slog.Uint64("i", i))
 		return cached, nil
 	}
 
@@ -221,7 +221,7 @@ func (w *LogWriter) Run(ctx context.Context) {
 		case w.leafChan <- lt:
 		default:
 		}
-		slog.Debug("Wrote leaf at index", slog.Uint64("i", index))
+		slog.DebugContext(ctx, "Wrote leaf at index", slog.Uint64("i", index))
 		newLeaf = w.gen()
 	}
 }
