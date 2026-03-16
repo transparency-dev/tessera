@@ -20,8 +20,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"os"
 	"strings"
 	"sync/atomic"
+
+	"log/slog"
 
 	"github.com/transparency-dev/merkle/compact"
 	"github.com/transparency-dev/merkle/rfc6962"
@@ -30,7 +33,6 @@ import (
 	"github.com/transparency-dev/tessera/client"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/sync/errgroup"
-	"k8s.io/klog/v2"
 )
 
 // Fetcher describes a struct which knows how to retrieve tlog-tiles artifacts from a log.
@@ -88,9 +90,9 @@ func (f *Fsck) Check(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to fetch and verify checkpoint: %v", err)
 	}
-	klog.Infof("Fsck: checking log of size %d", cp.Size)
+	slog.Info("Fsck: checking log", slog.Uint64("size", cp.Size))
 
-	klog.V(1).Infof("Fsck: checkpoint:\n%s", cpRaw)
+	slog.Debug("Fsck: checkpoint", slog.Any("cpraw", cpRaw))
 
 	f.rangeTracker = newRangeTracker(cp.Size)
 
@@ -158,7 +160,7 @@ func (f *Fsck) Check(ctx context.Context) error {
 	case !bytes.Equal(gotRoot, cp.Hash):
 		return fmt.Errorf("calculated root %x, but checkpoint claims %x", gotRoot, cp.Hash)
 	default:
-		klog.Infof("Successfully fsck'd log with size %d and root %s (%x)", cp.Size, base64.StdEncoding.EncodeToString(gotRoot), gotRoot)
+		slog.Info("Successfully fsck'd log", slog.Uint64("size", cp.Size), slog.String("rootb64", base64.StdEncoding.EncodeToString(gotRoot)), slog.String("roothex", fmt.Sprintf("%x", gotRoot)))
 	}
 
 	return nil
@@ -284,13 +286,15 @@ func (f *fsckTree) visit(id compact.NodeID, h []byte) {
 		f.pendingTiles[k] = t
 	}
 	if hIdx != uint64(len(t.Nodes)) {
-		klog.Exitf("LOGIC ERROR: got tile (l: %d, idx: %d) node index %d, for tile with %d nodes", tLevel, tIdx, hIdx, len(t.Nodes))
+		slog.Error("LOGIC ERROR", slog.Any("tlevel", tLevel), slog.Uint64("tidx", tIdx), slog.Uint64("hidx", hIdx), slog.Int("nodes", len(t.Nodes)))
+		os.Exit(1)
 	}
 	t.Nodes = append(t.Nodes, h)
 	if len(t.Nodes) == layout.EntryBundleWidth {
 		c, err := t.MarshalText()
 		if err != nil {
-			klog.Exitf("Failed to marshal tile: %v", err)
+			slog.Error("Failed to marshal tile", slog.Any("error", err))
+			os.Exit(1)
 		}
 		f.expectedResources <- resource{
 			level:   uint64(tLevel),
@@ -308,7 +312,8 @@ func (f *fsckTree) flushPartialTiles() {
 	for k, t := range f.pendingTiles {
 		c, err := t.MarshalText()
 		if err != nil {
-			klog.Exitf("Failed to marshal tile: %v", err)
+			slog.Error("Failed to marshal tile", slog.Any("error", err))
+			os.Exit(1)
 		}
 		f.expectedResources <- resource{
 			level:   uint64(k.Level),
@@ -346,7 +351,7 @@ func (f *fsckTree) resourceCheckWorker(ctx context.Context) func() error {
 				return fmt.Errorf("%s: log has:\n%x\nexpected:\n%x", p, data, r.content)
 			}
 			f.rangeTracker.Update(int(r.level), r.index, OK)
-			klog.V(2).Infof("%s: %s ok", id, p)
+			slog.Debug("OK", slog.String("id", id), slog.String("p", p))
 		}
 		return nil
 	}

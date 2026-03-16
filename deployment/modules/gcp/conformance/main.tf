@@ -77,8 +77,6 @@ resource "google_cloud_run_v2_service" "default" {
       image = var.server_docker_image
       name  = "conformance"
       args = [
-        "--logtostderr",
-        "--v=1",
         "--bucket=${module.gcs.log_bucket.id}",
         "--spanner=${local.spanner_db_full}",
         "--listen=:8080",

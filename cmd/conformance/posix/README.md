@@ -20,7 +20,6 @@ Then, start the personality:
 go run ./cmd/conformance/posix \
   --storage_dir=${LOG_DIR} \
   --listen=:2025 \
-  --v=2
 ```
 
 ## Add entries to the log

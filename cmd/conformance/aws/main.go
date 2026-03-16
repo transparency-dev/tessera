@@ -22,7 +22,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
+
+	"log/slog"
 
 	aaws "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -34,7 +37,6 @@ import (
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -54,6 +56,7 @@ var (
 	signer            = flag.String("signer", "", "Note signer to use to sign checkpoints")
 	publishInterval   = flag.Duration("publish_interval", 3*time.Second, "How frequently to publish updated checkpoints")
 	traceFraction     = flag.Float64("trace_fraction", 0, "Fraction of open-telemetry span traces to sample")
+	slogLevel         = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is 0 (INFO). See https://pkg.go.dev/log/slog#Level for other levels.")
 	additionalSigners = []string{}
 
 	antispamEnable = flag.Bool("antispam", false, "EXPERIMENTAL: Set to true to enable persistent antispam storage")
@@ -68,9 +71,9 @@ func init() {
 }
 
 func main() {
-	klog.InitFlags(nil)
 	flag.Parse()
 	ctx := context.Background()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 
 	shutdownOTel := initOTel(ctx, *traceFraction)
 	defer shutdownOTel(ctx)
@@ -80,7 +83,8 @@ func main() {
 	awsCfg := storageConfigFromFlags()
 	driver, err := aws.New(ctx, awsCfg)
 	if err != nil {
-		klog.Exitf("Failed to create new AWS storage: %v", err)
+		slog.Error("Failed to create new AWS storage", slog.Any("error", err))
+		os.Exit(1)
 	}
 	var antispam tessera.Antispam
 	// Persistent antispam is currently experimental, so there's no documentation yet!
@@ -88,7 +92,8 @@ func main() {
 		asOpts := aws_as.AntispamOpts{} // Use defaults
 		antispam, err = aws_as.NewAntispam(ctx, antispamMysqlConfig().FormatDSN(), asOpts)
 		if err != nil {
-			klog.Exitf("Failed to create new AWS antispam storage: %v", err)
+			slog.Error("Failed to create new AWS antispam storage", slog.Any("error", err))
+			os.Exit(1)
 		}
 	}
 	appender, shutdown, _, err := tessera.NewAppender(ctx, driver, tessera.NewAppendOptions().
@@ -98,7 +103,8 @@ func main() {
 		WithPushback(10*4096).
 		WithAntispam(tessera.DefaultAntispamInMemorySize, antispam))
 	if err != nil {
-		klog.Exit(err)
+		slog.Error("Failed to create new appender", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	// Expose a HTTP handler for the conformance test writes.
@@ -133,14 +139,17 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if err := http2.ConfigureServer(h1s, h2s); err != nil {
-		klog.Exitf("http2.ConfigureServer: %v", err)
+		slog.Error("http2.ConfigureServer", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	if err := h1s.ListenAndServe(); err != nil {
 		if err := shutdown(ctx); err != nil {
-			klog.Exit(err)
+			slog.Error("Failed to cleanly shutdown after ListenAndServe", slog.Any("error", err))
+			os.Exit(1)
 		}
-		klog.Exitf("ListenAndServe: %v", err)
+		slog.Error("ListenAndServe", slog.Any("error", err))
+		os.Exit(1)
 	}
 }
 
@@ -148,23 +157,29 @@ func main() {
 // provided via flags.
 func storageConfigFromFlags() aws.Config {
 	if *bucket == "" {
-		klog.Exit("--bucket must be set")
+		slog.Error("--bucket must be set")
+		os.Exit(1)
 	}
 	if *dbName == "" {
-		klog.Exit("--db_name must be set")
+		slog.Error("--db_name must be set")
+		os.Exit(1)
 	}
 	if *dbHost == "" {
-		klog.Exit("--db_host must be set")
+		slog.Error("--db_host must be set")
+		os.Exit(1)
 	}
 	if *dbPort == 0 {
-		klog.Exit("--db_port must be set")
+		slog.Error("--db_port must be set")
+		os.Exit(1)
 	}
 	if *dbUser == "" {
-		klog.Exit("--db_user must be set")
+		slog.Error("--db_user must be set")
+		os.Exit(1)
 	}
 	// Empty password isn't an option with AuroraDB MySQL.
 	if *dbPassword == "" {
-		klog.Exit("--db_password must be set")
+		slog.Error("--db_password must be set")
+		os.Exit(1)
 	}
 
 	c := mysql.Config{
@@ -206,20 +221,25 @@ func storageConfigFromFlags() aws.Config {
 
 func antispamMysqlConfig() *mysql.Config {
 	if *antispamDb == "" {
-		klog.Exit("--antispam_db_name must be set")
+		slog.Error("--antispam_db_name must be set")
+		os.Exit(1)
 	}
 	if *dbHost == "" {
-		klog.Exit("--db_host must be set")
+		slog.Error("--db_host must be set")
+		os.Exit(1)
 	}
 	if *dbPort == 0 {
-		klog.Exit("--db_port must be set")
+		slog.Error("--db_port must be set")
+		os.Exit(1)
 	}
 	if *dbUser == "" {
-		klog.Exit("--db_user must be set")
+		slog.Error("--db_user must be set")
+		os.Exit(1)
 	}
 	// Empty password isn't an option with AuroraDB MySQL.
 	if *dbPassword == "" {
-		klog.Exit("--db_password must be set")
+		slog.Error("--db_password must be set")
+		os.Exit(1)
 	}
 
 	return &mysql.Config{
@@ -236,14 +256,16 @@ func antispamMysqlConfig() *mysql.Config {
 func signerFromFlags() (note.Signer, []note.Signer) {
 	s, err := note.NewSigner(*signer)
 	if err != nil {
-		klog.Exitf("Failed to create new signer: %v", err)
+		slog.Error("Failed to create new signer", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	var a []note.Signer
 	for _, as := range additionalSigners {
 		s, err := note.NewSigner(as)
 		if err != nil {
-			klog.Exitf("Failed to create additional signer: %v", err)
+			slog.Error("Failed to create additional signer", slog.Any("error", err))
+			os.Exit(1)
 		}
 		a = append(a, s)
 	}

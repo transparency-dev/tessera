@@ -22,14 +22,16 @@ import (
 	"flag"
 	"fmt"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
+
+	"log/slog"
 
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/storage/gcp"
 	gcp_as "github.com/transparency-dev/tessera/storage/gcp/antispam"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -39,40 +41,47 @@ var (
 	sourceURL          = flag.String("source_url", "", "Base URL for the source log.")
 	numWorkers         = flag.Uint("num_workers", 30, "Number of migration worker goroutines.")
 	persistentAntispam = flag.Bool("antispam", false, "EXPERIMENTAL: Set to true to enable GCP-based persistent antispam storage")
+	slogLevel          = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is 0 (INFO). See https://pkg.go.dev/log/slog#Level for other levels.")
 )
 
 func main() {
-	klog.InitFlags(nil)
 	flag.Parse()
 	ctx := context.Background()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 
 	srcURL, err := url.Parse(*sourceURL)
 	if err != nil {
-		klog.Exitf("Invalid --source_url %q: %v", *sourceURL, err)
+		slog.Error("Invalid --source_url", slog.String("param", *sourceURL), slog.Any("error", err))
+		os.Exit(1)
 	}
 	src, err := client.NewHTTPFetcher(srcURL, nil)
 	if err != nil {
-		klog.Exitf("Failed to create HTTP fetcher: %v", err)
+		slog.Error("Failed to create HTTP fetcher", slog.Any("error", err))
+		os.Exit(1)
 	}
 	sourceCP, err := src.ReadCheckpoint(ctx)
 	if err != nil {
-		klog.Exitf("fetch initial source checkpoint: %v", err)
+		slog.Error("fetch initial source checkpoint", slog.Any("error", err))
+		os.Exit(1)
 	}
 	bits := strings.Split(string(sourceCP), "\n")
 	sourceSize, err := strconv.ParseUint(bits[1], 10, 64)
 	if err != nil {
-		klog.Exitf("invalid CP size %q: %v", bits[1], err)
+		slog.Error("invalid CP size", slog.String("size", bits[1]), slog.Any("error", err))
+		os.Exit(1)
 	}
 	sourceRoot, err := base64.StdEncoding.DecodeString(bits[2])
 	if err != nil {
-		klog.Exitf("invalid checkpoint roothash %q: %v", bits[2], err)
+		slog.Error("invalid checkpoint roothash", slog.String("hash", bits[2]), slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	// Create our Tessera storage backend:
 	gcpCfg := storageConfigFromFlags()
 	driver, err := gcp.New(ctx, gcpCfg)
 	if err != nil {
-		klog.Exitf("Failed to create new GCP storage driver: %v", err)
+		slog.Error("Failed to create new GCP storage driver", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	opts := tessera.NewMigrationOptions()
@@ -85,18 +94,21 @@ func main() {
 		}
 		antispam, err = gcp_as.NewAntispam(ctx, fmt.Sprintf("%s-antispam", *spanner), asOpts)
 		if err != nil {
-			klog.Exitf("Failed to create new GCP antispam storage: %v", err)
+			slog.Error("Failed to create new GCP antispam storage", slog.Any("error", err))
+			os.Exit(1)
 		}
 		opts.WithAntispam(antispam)
 	}
 
 	m, err := tessera.NewMigrationTarget(ctx, driver, opts)
 	if err != nil {
-		klog.Exitf("Failed to create MigrationTarget: %v", err)
+		slog.Error("Failed to create MigrationTarget", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	if err := m.Migrate(context.Background(), *numWorkers, sourceSize, sourceRoot, src.ReadEntryBundle); err != nil {
-		klog.Exitf("Migrate failed: %v", err)
+		slog.Error("Migrate failed", slog.Any("error", err))
+		os.Exit(1)
 	}
 }
 
@@ -104,10 +116,12 @@ func main() {
 // provided via flags.
 func storageConfigFromFlags() gcp.Config {
 	if *bucket == "" {
-		klog.Exit("--bucket must be set")
+		slog.Error("--bucket must be set")
+		os.Exit(1)
 	}
 	if *spanner == "" {
-		klog.Exit("--spanner must be set")
+		slog.Error("--spanner must be set")
+		os.Exit(1)
 	}
 	return gcp.Config{
 		Bucket:  *bucket,

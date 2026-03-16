@@ -19,8 +19,9 @@ import (
 	"errors"
 	"time"
 
+	"log/slog"
+
 	movingaverage "github.com/RobinUS2/golang-moving-average"
-	"k8s.io/klog/v2"
 )
 
 func NewHammerAnalyser(treeSizeFn func() uint64) *HammerAnalyser {
@@ -117,11 +118,11 @@ func (a *HammerAnalyser) errorLoop(ctx context.Context) {
 			return
 		case <-tick.C:
 			if pbCount > 0 {
-				klog.Warningf("%d requests received pushback from log", pbCount)
+				slog.Warn("received pushback from log", slog.Int("requests", pbCount))
 				pbCount = 0
 			}
 			if lastErrCount > 0 {
-				klog.Warningf("(%d x) %s", lastErrCount, lastErr)
+				slog.Warn("errors", slog.Int("count", lastErrCount), slog.String("lasterror", lastErr))
 				lastErrCount = 0
 			}
 		case err := <-a.ErrChan:
@@ -131,7 +132,7 @@ func (a *HammerAnalyser) errorLoop(ctx context.Context) {
 			}
 			es := err.Error()
 			if es != lastErr && lastErrCount > 0 {
-				klog.Warningf("(%d x) %s", lastErrCount, lastErr)
+				slog.Warn("errors", slog.Int("count", lastErrCount), slog.String("lasterror", lastErr))
 				lastErr = es
 				lastErrCount = 0
 				continue

@@ -161,7 +161,7 @@ resource "aws_ecs_task_definition" "conformance" {
       "--db_host=${module.storage.log_rds_db.endpoint}",
       "--antispam=${var.antispam}",
       "--antispam_db_name=${var.antispam_db_name}",
-      "-v=2"
+      "--slog_level=-4"
     ],
     "logConfiguration" : {
       "logDriver" : "awslogs",
@@ -266,9 +266,8 @@ resource "aws_ecs_task_definition" "hammer" {
       "--log_public_key=${var.verifier}",
       "--log_url=https://${module.storage.log_bucket.bucket_regional_domain_name}",
       "--write_log_url=http://${aws_service_discovery_service.conformance_discovery.name}.${aws_service_discovery_private_dns_namespace.internal.name}:${local.port}",
-      "-v=3",
+      "--slog_level=-4",
       "--show_ui=false",
-      "--logtostderr",
       "--num_writers=1100",
       "--max_write_ops=1500",
       "--leaf_min_size=1024",

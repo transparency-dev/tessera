@@ -17,11 +17,13 @@ package loadtest
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/transparency-dev/tessera/client"
 
-	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 type HammerOpts struct {
@@ -99,17 +101,18 @@ func (h *Hammer) updateCheckpointLoop(ctx context.Context) {
 			size := h.tracker.Latest().Size
 			_, _, _, err := h.tracker.Update(ctx)
 			if err != nil {
-				klog.Warning(err)
+				slog.Warn("Failed to update LogStateTracker", slog.Any("error", err))
 				inconsistentErr := client.ErrInconsistency{}
 				if errors.As(err, &inconsistentErr) {
-					klog.Fatalf("Last Good Checkpoint:\n%s\n\nFirst Bad Checkpoint:\n%s\n\n%v", string(inconsistentErr.SmallerRaw), string(inconsistentErr.LargerRaw), inconsistentErr)
+					slog.Error(fmt.Sprintf("Last Good Checkpoint:\n%s\n\nFirst Bad Checkpoint:\n%s\n\n%v", string(inconsistentErr.SmallerRaw), string(inconsistentErr.LargerRaw), inconsistentErr), slog.Any("error", inconsistentErr))
+					os.Exit(1)
 				}
 			}
 			newSize := h.tracker.Latest().Size
 			if newSize > size {
-				klog.V(1).Infof("Updated checkpoint from %d to %d", size, newSize)
+				slog.Debug("Updated checkpoint", slog.Uint64("from", size), slog.Uint64("to", newSize))
 			} else {
-				klog.V(2).Infof("Checkpoint size unchanged: %d", newSize)
+				slog.Debug("Checkpoint size unchanged", slog.Uint64("size", newSize))
 			}
 		}
 	}

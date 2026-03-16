@@ -38,7 +38,7 @@ import (
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/net/http2"
 
-	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 func init() {
@@ -77,7 +77,6 @@ var (
 )
 
 func main() {
-	klog.InitFlags(nil)
 	flag.Parse()
 
 	hc = &http.Client{
@@ -109,7 +108,8 @@ func main() {
 
 	logSigV, err := note.NewVerifier(*logPubKey)
 	if err != nil {
-		klog.Exitf("failed to create verifier: %v", err)
+		slog.Error("failed to create verifier", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	r := mustCreateReaders(logURL)
@@ -122,12 +122,14 @@ func main() {
 	cons := client.UnilateralConsensus(r.ReadCheckpoint)
 	tracker, err := client.NewLogStateTracker(ctx, r.ReadTile, cpRaw, logSigV, logSigV.Name(), cons)
 	if err != nil {
-		klog.Exitf("Failed to create LogStateTracker: %v", err)
+		slog.Error("Failed to create LogStateTracker", slog.Any("error", err))
+		os.Exit(1)
 	}
 	// Fetch initial state of log
 	_, _, _, err = tracker.Update(ctx)
 	if err != nil {
-		klog.Exitf("Failed to get initial state of the log: %v", err)
+		slog.Error("Failed to get initial state of the log", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	ha := loadtest.NewHammerAnalyser(func() uint64 { return tracker.Latest().Size })
@@ -148,7 +150,7 @@ func main() {
 		go func() {
 			startTime := time.Now()
 			goal := tracker.Latest().Size + uint64(*leafWriteGoal)
-			klog.Infof("Will exit once tree size is at least %d", goal)
+			slog.Info("Waiting for target tree size", slog.Uint64("size", goal))
 			tick := time.NewTicker(1 * time.Second)
 			for {
 				select {
@@ -157,7 +159,7 @@ func main() {
 				case <-tick.C:
 					if tracker.Latest().Size >= goal {
 						elapsed := time.Since(startTime)
-						klog.Infof("Reached tree size goal of %d after %s; exiting", goal, elapsed)
+						slog.Info("Reached tree size goal; exiting", slog.Uint64("size", goal), slog.Duration("elapsed", elapsed))
 						cancel()
 						return
 					}
@@ -167,13 +169,13 @@ func main() {
 	}
 	if *maxRunTime > 0 {
 		go func() {
-			klog.Infof("Will fail after %s", *maxRunTime)
+			slog.Info("Configured max runtime", slog.Duration("duration", *maxRunTime))
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				case <-time.After(*maxRunTime):
-					klog.Infof("Max runtime reached; exiting")
+					slog.Info("Max runtime reached; exiting")
 					exitCode = 1
 					cancel()
 					return
@@ -241,14 +243,16 @@ func mustCreateReaders(us []string) loadtest.LogReader {
 		}
 		rURL, err := url.Parse(u)
 		if err != nil {
-			klog.Exitf("Invalid log reader URL %q: %v", u, err)
+			slog.Error("Invalid log reader URL", slog.String("u", u), slog.Any("error", err))
+			os.Exit(1)
 		}
 
 		switch rURL.Scheme {
 		case "http", "https":
 			c, err := client.NewHTTPFetcher(rURL, hc)
 			if err != nil {
-				klog.Exitf("Failed to create HTTP fetcher for %q: %v", u, err)
+				slog.Error("Failed to create HTTP fetcher", slog.String("u", u), slog.Any("error", err))
+				os.Exit(1)
 			}
 			if *bearerToken != "" {
 				c.SetAuthorizationHeader(fmt.Sprintf("Bearer %s", *bearerToken))
@@ -257,7 +261,8 @@ func mustCreateReaders(us []string) loadtest.LogReader {
 		case "file":
 			r = append(r, client.FileFetcher{Root: rURL.Path})
 		default:
-			klog.Exitf("Unsupported scheme %s on log URL", rURL.Scheme)
+			slog.Error("Unsupported scheme on log URL", slog.String("scheme", rURL.Scheme))
+			os.Exit(1)
 		}
 	}
 	return loadtest.NewRoundRobinReader(r)
@@ -272,7 +277,8 @@ func mustCreateWriters(us []string) loadtest.LeafWriter {
 		u += "add"
 		wURL, err := url.Parse(u)
 		if err != nil {
-			klog.Exitf("Invalid log writer URL %q: %v", u, err)
+			slog.Error("Invalid log writer URL", slog.String("u", u), slog.Any("error", err))
+			os.Exit(1)
 		}
 		w = append(w, httpWriter(wURL, hc, *bearerTokenWrite))
 	}
@@ -281,7 +287,7 @@ func mustCreateWriters(us []string) loadtest.LeafWriter {
 
 func httpWriter(u *url.URL, hc *http.Client, bearerToken string) loadtest.LeafWriter {
 	cTrace := &httptrace.ClientTrace{
-		GotConn: func(info httptrace.GotConnInfo) { klog.Infof("connection established %#v", info) },
+		GotConn: func(info httptrace.GotConnInfo) { slog.Info("connection established %#v") },
 	}
 	return func(ctx context.Context, newLeaf []byte) (uint64, error) {
 		req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(newLeaf))
@@ -292,7 +298,7 @@ func httpWriter(u *url.URL, hc *http.Client, bearerToken string) loadtest.LeafWr
 			req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", bearerToken))
 		}
 		reqCtx := req.Context()
-		if klog.V(2).Enabled() {
+		if slog.Default().Enabled(ctx, slog.LevelDebug) {
 			reqCtx = httptrace.WithClientTrace(req.Context(), cTrace)
 		}
 		resp, err := hc.Do(req.WithContext(reqCtx))

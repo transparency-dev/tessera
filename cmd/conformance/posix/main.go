@@ -32,10 +32,11 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
+	"log/slog"
+
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/storage/posix"
 	badger_as "github.com/transparency-dev/tessera/storage/posix/antispam"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -44,6 +45,7 @@ var (
 	privKeyFile               = flag.String("private_key", "", "Location of private key file. If unset, uses the contents of the LOG_PRIVATE_KEY environment variable.")
 	persistentAntispam        = flag.Bool("antispam", false, "EXPERIMENTAL: Set to true to enable Badger-based persistent antispam storage")
 	additionalPrivateKeyFiles = []string{}
+	slogLevel                 = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is 0 (INFO). See https://pkg.go.dev/log/slog#Level for other levels.")
 )
 
 func init() {
@@ -61,9 +63,9 @@ func addCacheHeaders(value string, fs http.Handler) http.HandlerFunc {
 }
 
 func main() {
-	klog.InitFlags(nil)
 	flag.Parse()
 	ctx := context.Background()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 
 	// Gather the info needed for reading/writing checkpoints
 	s, a := getSignersOrDie()
@@ -71,7 +73,8 @@ func main() {
 	// Create the Tessera POSIX storage, using the directory from the --storage_dir flag
 	driver, err := posix.New(ctx, posix.Config{Path: *storageDir})
 	if err != nil {
-		klog.Exitf("Failed to construct storage: %v", err)
+		slog.Error("Failed to construct storage", slog.Any("error", err))
+		os.Exit(1)
 	}
 	var antispam tessera.Antispam
 	// Persistent antispam is currently experimental, so there's no terraform or documentation yet!
@@ -79,7 +82,8 @@ func main() {
 		asOpts := badger_as.AntispamOpts{}
 		antispam, err = badger_as.NewAntispam(ctx, filepath.Join(*storageDir, ".state", "antispam"), asOpts)
 		if err != nil {
-			klog.Exitf("Failed to create new Badger antispam storage: %v", err)
+			slog.Error("Failed to create new Badger antispam storage", slog.Any("error", err))
+			os.Exit(1)
 		}
 	}
 
@@ -90,7 +94,8 @@ func main() {
 		WithBatching(256, time.Second).
 		WithAntispam(tessera.DefaultAntispamInMemorySize, antispam))
 	if err != nil {
-		klog.Exit(err)
+		slog.Error("Failed to create new appender", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	// Define a handler for /add that accepts POST requests and adds the POST body to the log
@@ -107,7 +112,7 @@ func main() {
 			return
 		}
 		if _, err := fmt.Fprintf(w, "%d", idx.Index); err != nil {
-			klog.Errorf("/add: %v", err)
+			slog.Error("/add", slog.Any("error", err))
 			return
 		}
 	})
@@ -118,8 +123,7 @@ func main() {
 	http.Handle("GET /tile/", addCacheHeaders("max-age=31536000, immutable", fs))
 	http.Handle("GET /entries/", fs)
 
-	// TODO(mhutchinson): Change the listen flag to just a port, or fix up this address formatting
-	klog.Infof("Environment variables useful for accessing this log:\n"+
+	fmt.Printf("Environment variables useful for accessing this log:\n"+
 		"export WRITE_URL=http://localhost%s/ \n"+
 		"export READ_URL=http://localhost%s/ \n", *listen, *listen)
 	// Run the HTTP server with the single handler and block until this is terminated
@@ -130,14 +134,17 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if err := http2.ConfigureServer(h1s, h2s); err != nil {
-		klog.Exitf("http2.ConfigureServer: %v", err)
+		slog.Error("http2.ConfigureServer", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	if err := h1s.ListenAndServe(); err != nil {
 		if err := shutdown(ctx); err != nil {
-			klog.Exit(err)
+			slog.Error("Failed to cleanly shutdown after ListenAndServe", slog.Any("error", err))
+			os.Exit(1)
 		}
-		klog.Exitf("ListenAndServe: %v", err)
+		slog.Error("ListenAndServe", slog.Any("error", err))
+		os.Exit(1)
 	}
 }
 
@@ -147,11 +154,13 @@ func getSignersOrDie() (note.Signer, []note.Signer) {
 	for _, p := range additionalPrivateKeyFiles {
 		kr, err := getKeyFile(p)
 		if err != nil {
-			klog.Exitf("Unable to get additional private key from %q: %v", p, err)
+			slog.Error("Unable to get additional private key", slog.String("file", p), slog.Any("error", err))
+			os.Exit(1)
 		}
 		k, err := note.NewSigner(kr)
 		if err != nil {
-			klog.Exitf("Failed to instantiate signer from %q: %v", p, err)
+			slog.Error("Failed to instantiate signer", slog.String("file", p), slog.Any("error", err))
+			os.Exit(1)
 		}
 		a = append(a, k)
 	}
@@ -165,17 +174,20 @@ func getSignerOrDie() note.Signer {
 	if len(*privKeyFile) > 0 {
 		privKey, err = getKeyFile(*privKeyFile)
 		if err != nil {
-			klog.Exitf("Unable to get private key: %q", err)
+			slog.Error("Unable to get private key", slog.Any("error", err))
+			os.Exit(1)
 		}
 	} else {
 		privKey = os.Getenv("LOG_PRIVATE_KEY")
 		if len(privKey) == 0 {
-			klog.Exit("Supply private key file path using --private_key or set LOG_PRIVATE_KEY environment variable")
+			slog.Error("Supply private key file path using --private_key or set LOG_PRIVATE_KEY environment variable")
+			os.Exit(1)
 		}
 	}
 	s, err := note.NewSigner(privKey)
 	if err != nil {
-		klog.Exitf("Failed to instantiate signer: %q", err)
+		slog.Error("Failed to instantiate signer", slog.Any("error", err))
+		os.Exit(1)
 	}
 	return s
 }
