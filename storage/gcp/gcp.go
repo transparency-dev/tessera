@@ -380,7 +380,7 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 			}
 			return nil
 		}); err != nil {
-			slog.ErrorContext(ctx, "publishCheckpoint failed", "error", err)
+			slog.ErrorContext(ctx, "publishCheckpoint failed", slog.Any("error", err))
 		}
 	}
 }

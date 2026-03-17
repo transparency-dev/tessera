@@ -1,0 +1,18 @@
+version: "2"
+
+linters:
+  enable:
+    - depguard
+    - sloglint
+  settings:
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: "k8s.io/klog/v2"
+              desc: "klog is forbidden, use log/slog instead"
+            - pkg: "k8s.io/klog"
+              desc: "klog is forbidden, use log/slog instead"
+    sloglint:
+      attr-only: true
+      context: all
