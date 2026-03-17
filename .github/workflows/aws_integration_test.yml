@@ -44,7 +44,7 @@ jobs:
       ## Authenticate with ECR to push the conformance and hammer images.
       - name: Login to Amazon ECR
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
+        uses: aws-actions/amazon-ecr-login@c962da2960ed15f492addc26fffa274485265950 # v2.0.2
 
       ## Build the conformance image and push it to ECR. This will be used
       ## later on by Terragrunt.
