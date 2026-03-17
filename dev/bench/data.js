@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773739292726,
+  "lastUpdate": 1773750246022,
   "repoUrl": "https://github.com/transparency-dev/tessera",
   "entries": {
     "Benchmark": [
@@ -65424,6 +65424,198 @@ window.BENCHMARK_DATA = {
             "value": 14373,
             "unit": "allocs/op",
             "extra": "1840 times\n4 procs"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mhutchinson@gmail.com",
+            "name": "Martin Hutchinson",
+            "username": "mhutchinson"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "10c5ad5d6c4520429e4d45d39e08f806cf5a4643",
+          "message": "Update linter for slog (#907)\n\nThis enforces that we always use attributes and context. This turned up a callsite that wasn't using attributes, which is now fixed.\n\nThis sets up the linter settings in a proper file, instead of relying on flag-passing. This should give more consistency and configuration options.",
+          "timestamp": "2026-03-17T12:23:18Z",
+          "tree_id": "6766902d90ed5681f1a20882120e6b04967f22af",
+          "url": "https://github.com/transparency-dev/tessera/commit/10c5ad5d6c4520429e4d45d39e08f806cf5a4643"
+        },
+        "date": 1773750244363,
+        "tool": "go",
+        "benches": [
+          {
+            "name": "BenchmarkDedup (github.com/transparency-dev/tessera)",
+            "value": 3901112,
+            "unit": "ns/op\t  893730 B/op\t   18720 allocs/op",
+            "extra": "306 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedup (github.com/transparency-dev/tessera) - ns/op",
+            "value": 3901112,
+            "unit": "ns/op",
+            "extra": "306 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedup (github.com/transparency-dev/tessera) - B/op",
+            "value": 893730,
+            "unit": "B/op",
+            "extra": "306 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedup (github.com/transparency-dev/tessera) - allocs/op",
+            "value": 18720,
+            "unit": "allocs/op",
+            "extra": "306 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait (github.com/transparency-dev/tessera)",
+            "value": 1482678,
+            "unit": "ns/op\t    1187 B/op\t      19 allocs/op",
+            "extra": "796 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait (github.com/transparency-dev/tessera) - ns/op",
+            "value": 1482678,
+            "unit": "ns/op",
+            "extra": "796 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait (github.com/transparency-dev/tessera) - B/op",
+            "value": 1187,
+            "unit": "B/op",
+            "extra": "796 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait (github.com/transparency-dev/tessera) - allocs/op",
+            "value": 19,
+            "unit": "allocs/op",
+            "extra": "796 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction (github.com/transparency-dev/tessera)",
+            "value": 236844,
+            "unit": "ns/op\t    3697 B/op\t      46 allocs/op",
+            "extra": "5059 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction (github.com/transparency-dev/tessera) - ns/op",
+            "value": 236844,
+            "unit": "ns/op",
+            "extra": "5059 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction (github.com/transparency-dev/tessera) - B/op",
+            "value": 3697,
+            "unit": "B/op",
+            "extra": "5059 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction (github.com/transparency-dev/tessera) - allocs/op",
+            "value": 46,
+            "unit": "allocs/op",
+            "extra": "5059 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText (github.com/transparency-dev/tessera/api)",
+            "value": 7708,
+            "unit": "ns/op\t    6528 B/op\t       1 allocs/op",
+            "extra": "197488 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText (github.com/transparency-dev/tessera/api) - ns/op",
+            "value": 7708,
+            "unit": "ns/op",
+            "extra": "197488 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText (github.com/transparency-dev/tessera/api) - B/op",
+            "value": 6528,
+            "unit": "B/op",
+            "extra": "197488 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText (github.com/transparency-dev/tessera/api) - allocs/op",
+            "value": 1,
+            "unit": "allocs/op",
+            "extra": "197488 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe (github.com/transparency-dev/tessera/internal/parse)",
+            "value": 232.8,
+            "unit": "ns/op\t     224 B/op\t       5 allocs/op",
+            "extra": "4897286 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe (github.com/transparency-dev/tessera/internal/parse) - ns/op",
+            "value": 232.8,
+            "unit": "ns/op",
+            "extra": "4897286 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe (github.com/transparency-dev/tessera/internal/parse) - B/op",
+            "value": 224,
+            "unit": "B/op",
+            "extra": "4897286 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe (github.com/transparency-dev/tessera/internal/parse) - allocs/op",
+            "value": 5,
+            "unit": "allocs/op",
+            "extra": "4897286 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate (github.com/transparency-dev/tessera/storage/internal)",
+            "value": 311385,
+            "unit": "ns/op\t  275551 B/op\t    3086 allocs/op",
+            "extra": "4281 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate (github.com/transparency-dev/tessera/storage/internal) - ns/op",
+            "value": 311385,
+            "unit": "ns/op",
+            "extra": "4281 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate (github.com/transparency-dev/tessera/storage/internal) - B/op",
+            "value": 275551,
+            "unit": "B/op",
+            "extra": "4281 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate (github.com/transparency-dev/tessera/storage/internal) - allocs/op",
+            "value": 3086,
+            "unit": "allocs/op",
+            "extra": "4281 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue (github.com/transparency-dev/tessera/storage/internal)",
+            "value": 688524,
+            "unit": "ns/op\t  503005 B/op\t   14373 allocs/op",
+            "extra": "1807 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue (github.com/transparency-dev/tessera/storage/internal) - ns/op",
+            "value": 688524,
+            "unit": "ns/op",
+            "extra": "1807 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue (github.com/transparency-dev/tessera/storage/internal) - B/op",
+            "value": 503005,
+            "unit": "B/op",
+            "extra": "1807 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue (github.com/transparency-dev/tessera/storage/internal) - allocs/op",
+            "value": 14373,
+            "unit": "allocs/op",
+            "extra": "1807 times\n4 procs"
           }
         ]
       }
