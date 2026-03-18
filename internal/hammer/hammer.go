@@ -72,12 +72,14 @@ var (
 
 	httpTimeout = flag.Duration("http_timeout", 30*time.Second, "Timeout for HTTP requests")
 	forceHTTP2  = flag.Bool("force_http2", false, "Use HTTP/2 connections *only*")
+	slogLevel   = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is 0 (INFO). See https://pkg.go.dev/log/slog#Level for other levels.")
 
 	hc *http.Client
 )
 
 func main() {
 	flag.Parse()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 
 	hc = &http.Client{
 		Transport: &http.Transport{
