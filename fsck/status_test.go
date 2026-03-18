@@ -171,6 +171,7 @@ func TestUpdate(t *testing.T) {
 			for i, want := range test.wantRanges {
 				if p == nil {
 					t.Fatalf("got %d entry ranges, want %d", i-1, len(test.wantRanges))
+					return // To make the linter happy
 				}
 				got := p.Value.(*Range)
 				if !reflect.DeepEqual(*got, want) {
