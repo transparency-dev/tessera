@@ -38,7 +38,7 @@ func PartialOrFullResource(ctx context.Context, p uint8, f func(context.Context,
 		}
 		return sRaw, nil
 	case err != nil:
-		return sRaw, fmt.Errorf("failed to fetch resource: %v", err)
+		return sRaw, fmt.Errorf("failed to fetch resource: %w", err)
 	default:
 		return sRaw, nil
 	}

@@ -116,18 +116,27 @@ type FileFetcher struct {
 	Root string
 }
 
-func (f FileFetcher) ReadCheckpoint(_ context.Context) ([]byte, error) {
+func (f FileFetcher) ReadCheckpoint(ctx context.Context) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return os.ReadFile(path.Join(f.Root, layout.CheckpointPath))
 }
 
 func (f FileFetcher) ReadTile(ctx context.Context, l, i uint64, p uint8) ([]byte, error) {
 	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return os.ReadFile(path.Join(f.Root, layout.TilePath(l, i, p)))
 	})
 }
 
 func (f FileFetcher) ReadEntryBundle(ctx context.Context, i uint64, p uint8) ([]byte, error) {
 	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return os.ReadFile(path.Join(f.Root, layout.EntriesPath(i, p)))
 	})
 }
