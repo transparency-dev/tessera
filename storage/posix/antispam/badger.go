@@ -425,17 +425,17 @@ func (f *follower) EntriesProcessed(ctx context.Context) (uint64, error) {
 type slogger struct{}
 
 func (s slogger) Errorf(m string, a ...any) {
-	slog.Error(fmt.Sprintf("BadgerDB: %s", fmt.Sprintf(m, a...)))
+	slog.ErrorContext(context.Background(), fmt.Sprintf("BadgerDB: %s", fmt.Sprintf(m, a...)))
 }
 
 func (s slogger) Warningf(m string, a ...any) {
-	slog.Warn(fmt.Sprintf("BadgerDB: %s", fmt.Sprintf(m, a...)))
+	slog.WarnContext(context.Background(), fmt.Sprintf("BadgerDB: %s", fmt.Sprintf(m, a...)))
 }
 
 func (s slogger) Infof(m string, a ...any) {
-	slog.Info(fmt.Sprintf("BadgerDB: %s", fmt.Sprintf(m, a...)))
+	slog.InfoContext(context.Background(), fmt.Sprintf("BadgerDB: %s", fmt.Sprintf(m, a...)))
 }
 
 func (s slogger) Debugf(m string, a ...any) {
-	slog.Debug(fmt.Sprintf("BadgerDB: %s", fmt.Sprintf(m, a...)))
+	slog.DebugContext(context.Background(), fmt.Sprintf("BadgerDB: %s", fmt.Sprintf(m, a...)))
 }
