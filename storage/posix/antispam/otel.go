@@ -54,10 +54,10 @@ var (
 	gcDurationBuckets = []float64{10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000}
 )
 
-func generateBatchBuckets(max int, multiplier int) []float64 {
+func generateBatchBuckets(max int) []float64 {
 	bases := []float64{1, 2, 5}
 	buckets := []float64{}
-	for multiplier := 1.0; ; multiplier *=  {
+	for multiplier := 1.0; ; multiplier *= 10 {
 		for _, b := range bases {
 			v := b * multiplier
 			if v >= float64(max) {
@@ -124,7 +124,7 @@ func init() {
 		"tessera.antispam.badger.follow_txn.entries.count",
 		metric.WithDescription("Number of entries processed by BadgerDB antispam Follow transactions"),
 		metric.WithUnit("{entry}"),
-		metric.WithExplicitBucketBoundaries(generateBatchBuckets(int(DefaultMaxBatchSize)...))
+		metric.WithExplicitBucketBoundaries(generateBatchBuckets(int(DefaultMaxBatchSize))...))
 	if err != nil {
 		slog.ErrorContext(context.Background(), "Failed to create tessera.antispam.badger.follow_txn.entries.count metric", slog.Any("error", err))
 		os.Exit(1)
