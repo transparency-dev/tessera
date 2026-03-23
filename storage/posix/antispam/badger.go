@@ -108,7 +108,7 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 			case <-ticker.C:
 			}
 
-		gcSuccessCount = 0
+			gcSuccessCount = 0
 		again:
 			start := time.Now()
 			err := db.RunValueLogGC(0.7)
