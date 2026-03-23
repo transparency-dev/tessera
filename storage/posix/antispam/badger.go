@@ -97,8 +97,8 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 	}
 
 	go func() {
-		// gcSuccessCount tracks the number of GC runs which returned `success` consecutively.
-		var gcSuccessCount int64
+		// runsInTick tracks the number of GC runs per tick.
+		var runsInTick int64
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 		for {
@@ -108,13 +108,15 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 			case <-ticker.C:
 			}
 
-			gcSuccessCount = 0
+			runsInTick = 0
 		again:
 			start := time.Now()
+			runsInTick++
 			err := db.RunValueLogGC(0.7)
 			status := "success"
 			if err != nil {
-				gcConsecutiveSuccessCount.Record(ctx, gcSuccessCount)
+				// We're done, export the number of runs we did.
+				gcRunsPerTick.Record(ctx, runsInTick)
 				if errors.Is(err, badger.ErrNoRewrite) {
 					status = "no_rewrite"
 				} else {
@@ -125,7 +127,6 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 			gcCounter.Add(ctx, 1, attr)
 			gcDuration.Record(ctx, float64(time.Since(start).Milliseconds()), attr)
 			if err == nil {
-				gcSuccessCount++
 				goto again
 			}
 		}

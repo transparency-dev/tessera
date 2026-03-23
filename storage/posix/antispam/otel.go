@@ -40,7 +40,7 @@ var (
 
 var (
 	gcCounter                 metric.Int64Counter
-	gcConsecutiveSuccessCount metric.Int64Histogram
+	gcRunsPerTick             metric.Int64Histogram
 	gcDuration                metric.Float64Histogram
 	lookupCounter             metric.Int64Counter
 	lookupDuration            metric.Float64Histogram
@@ -81,13 +81,13 @@ func init() {
 		os.Exit(1)
 	}
 
-	gcConsecutiveSuccessCount, err = meter.Int64Histogram(
-		"tessera.antispam.badger.gc.consecutive_success_count",
-		metric.WithDescription("Number of consecutive successful GC runs"),
+	gcRunsPerTick, err = meter.Int64Histogram(
+		"tessera.antispam.badger.gc.runs_per_tick",
+		metric.WithDescription("Number of GC runs per tick"),
 		metric.WithUnit("{run}"),
 		metric.WithExplicitBucketBoundaries(generateBatchBuckets(500)...))
 	if err != nil {
-		slog.ErrorContext(context.Background(), "Failed to create tessera.antispam.badger.gc.consecutive_success_count metric", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to create tessera.antispam.badger.gc.runs_per_tick metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
