@@ -68,9 +68,6 @@ type AntispamOpts struct {
 	// When the antispam follower is at least this many entries behind the size of the locally integrated tree,
 	// the antispam decorator will return tessera.ErrPushback for every Add request.
 	PushbackThreshold uint
-
-	// nrwBeforeSuccess tracks the umber of GC runs which returned `no_rewrite` before `success`.
-	nrwBeforeSuccess atomic.Uint64
 }
 
 // NewAntispam returns an antispam driver which uses Badger to maintain a mapping between
@@ -100,6 +97,8 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 	}
 
 	go func() {
+		// nrwBeforeSuccess tracks the number of GC runs which returned `no_rewrite` before `success`.
+		nrwBeforeSuccess := atomic.Uint64{}
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 		for {
@@ -117,13 +116,13 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 				if errors.Is(err, badger.ErrNoRewrite) {
 					status = "no_rewrite"
 					gcNrwBeforeSuccessCounter.Add(ctx, 1)
-					r.nrwBeforeSuccess.Add(1)
+					nrwBeforeSuccess.Add(1)
 				} else {
 					status = "failure"
 				}
 			}
 			if status == "success" {
-				gcNrwBeforeSuccessCounter.Add(ctx, -int64(r.nrwBeforeSuccess.Swap(0)))
+				gcNrwBeforeSuccessCounter.Add(ctx, -int64(nrwBeforeSuccess.Swap(0)))
 			}
 			attr := metric.WithAttributes(gcStatusKey.String(status))
 			gcCounter.Add(ctx, 1, attr)
