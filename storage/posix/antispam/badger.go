@@ -119,7 +119,7 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 			}
 			attr := metric.WithAttributes(gcStatusKey.String(status))
 			gcCounter.Add(ctx, 1, attr)
-			gcDuration.Record(ctx, float64(time.Since(start).Microseconds())/1000.0, attr)
+			gcDuration.Record(ctx, float64(time.Since(start).Milliseconds()), attr)
 			if err == nil {
 				goto again
 			}
@@ -162,6 +162,7 @@ func (d *AntispamStorage) index(ctx context.Context, h []byte) (*uint64, error) 
 				return nil
 			})
 		})
+		// Microseconds / 1000.0 and not milliseconds to record sub-millisecond durations.
 		lookupDuration.Record(ctx, float64(time.Since(start).Microseconds())/1000.0, metric.WithAttributes(hitKey.Bool(hit)))
 		lookupCounter.Add(ctx, 1, metric.WithAttributes(hitKey.Bool(hit)))
 		return idx, err
@@ -373,6 +374,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 						return fmt.Errorf("failed to update follower state: %v", err)
 					}
 
+		// Microseconds / 1000.0 and not milliseconds to record sub-millisecond durations.
 					followTxnDuration.Record(ctx, float64(time.Since(batchStart).Microseconds())/1000.0)
 					followTxnEntriesCounter.Record(ctx, int64(numAdded))
 
