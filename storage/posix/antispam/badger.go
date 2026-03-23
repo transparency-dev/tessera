@@ -85,8 +85,9 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 		opts.PushbackThreshold = DefaultPushbackThreshold
 	}
 
+	bOpts := badger.DefaultOptions(badgerPath).WithLogger(&slogger{})
 	// Open the Badger database located at badgerPath, it will be created if it doesn't exist.
-	db, err := badger.Open(badger.DefaultOptions(badgerPath))
+	db, err := badger.Open(bOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open badger: %v", err)
 	}
@@ -419,4 +420,22 @@ func (f *follower) EntriesProcessed(ctx context.Context) (uint64, error) {
 	})
 
 	return nextIdx, err
+}
+
+type slogger struct{}
+
+func (s slogger) Errorf(m string, a ...any) {
+	slog.ErrorContext(context.Background(), fmt.Sprintf("BadgerDB: %s", fmt.Sprintf(m, a...)))
+}
+
+func (s slogger) Warningf(m string, a ...any) {
+	slog.WarnContext(context.Background(), fmt.Sprintf("BadgerDB: %s", fmt.Sprintf(m, a...)))
+}
+
+func (s slogger) Infof(m string, a ...any) {
+	slog.InfoContext(context.Background(), fmt.Sprintf("BadgerDB: %s", fmt.Sprintf(m, a...)))
+}
+
+func (s slogger) Debugf(m string, a ...any) {
+	slog.DebugContext(context.Background(), fmt.Sprintf("BadgerDB: %s", fmt.Sprintf(m, a...)))
 }
