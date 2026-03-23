@@ -33,6 +33,7 @@ import (
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/internal/otel"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -96,6 +97,8 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 	}
 
 	go func() {
+		// runsInTick tracks the number of GC runs per tick.
+		var runsInTick int64
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 		for {
@@ -105,8 +108,24 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 			case <-ticker.C:
 			}
 
+			runsInTick = 0
 		again:
+			start := time.Now()
+			runsInTick++
 			err := db.RunValueLogGC(0.7)
+			status := "success"
+			if err != nil {
+				// We're done, export the number of runs we did.
+				gcRunsPerTick.Record(ctx, runsInTick)
+				if errors.Is(err, badger.ErrNoRewrite) {
+					status = "no_rewrite"
+				} else {
+					status = "failure"
+				}
+			}
+			attr := metric.WithAttributes(gcStatusKey.String(status))
+			gcCounter.Add(ctx, 1, attr)
+			gcDuration.Record(ctx, float64(time.Since(start).Milliseconds()), attr)
 			if err == nil {
 				goto again
 			}
@@ -126,17 +145,14 @@ type AntispamStorage struct {
 	// currently integrated tree size.
 	// When pushBack is true, the decorator will start returning ErrPushback to all calls.
 	pushBack atomic.Bool
-
-	numLookups atomic.Uint64
-	numWrites  atomic.Uint64
-	numHits    atomic.Uint64
 }
 
 // index returns the index (if any) previously associated with the provided hash
 func (d *AntispamStorage) index(ctx context.Context, h []byte) (*uint64, error) {
 	return otel.Trace(ctx, "tessera.antispam.badger.index", tracer, func(ctx context.Context, span trace.Span) (*uint64, error) {
-		d.numLookups.Add(1)
+		start := time.Now()
 		var idx *uint64
+		var hit bool
 		err := d.db.View(func(txn *badger.Txn) error {
 			item, err := txn.Get(h)
 			if err == badger.ErrKeyNotFound {
@@ -144,7 +160,7 @@ func (d *AntispamStorage) index(ctx context.Context, h []byte) (*uint64, error) 
 				return nil
 			}
 			span.AddEvent("tessera.hit")
-			d.numHits.Add(1)
+			hit = true
 
 			return item.Value(func(v []byte) error {
 				i := binary.BigEndian.Uint64(v)
@@ -152,6 +168,9 @@ func (d *AntispamStorage) index(ctx context.Context, h []byte) (*uint64, error) 
 				return nil
 			})
 		})
+		// Microseconds / 1000.0 and not milliseconds to record sub-millisecond durations.
+		lookupDuration.Record(ctx, float64(time.Since(start).Microseconds())/1000.0, metric.WithAttributes(hitKey.Bool(hit)))
+		lookupCounter.Add(ctx, 1, metric.WithAttributes(hitKey.Bool(hit)))
 		return idx, err
 	})
 }
@@ -240,7 +259,8 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 		for moreWork := true; moreWork; {
 
 			err := f.as.db.Update(func(txn *badger.Txn) error {
-				return otel.TraceErr(ctx, "tessera.antispam.badger.FollowTxn", tracer, func(ctx context.Context, span trace.Span) error {
+				return otel.TraceErr(ctx, "tessera.antispam.badger.follow_txn", tracer, func(ctx context.Context, span trace.Span) error {
+					batchStart := time.Now()
 					ctx, cancel := context.WithTimeout(ctx, defaultBatchTimeout)
 					defer cancel()
 
@@ -352,7 +372,6 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 					}
 
 					numAdded := uint64(len(curEntries))
-					f.as.numWrites.Add(numAdded)
 
 					// and update the follower state
 					b := make([]byte, 8)
@@ -360,6 +379,10 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 					if err := txn.Set(nextKey, b); err != nil {
 						return fmt.Errorf("failed to update follower state: %v", err)
 					}
+
+		// Microseconds / 1000.0 and not milliseconds to record sub-millisecond durations.
+					followTxnDuration.Record(ctx, float64(time.Since(batchStart).Microseconds())/1000.0)
+					followTxnEntriesCounter.Record(ctx, int64(numAdded))
 
 					return ctx.Err()
 				})
