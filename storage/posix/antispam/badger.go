@@ -97,8 +97,8 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 	}
 
 	go func() {
-		// nrwPerSuccess tracks the number of GC runs which returned `no_rewrite` before `success`.
-		nrwPerSuccess := int64(0)
+		// gcSuccessCount tracks the number of GC runs which returned `success` consecutively.
+		var gcSuccessCount int64
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 		for {
@@ -108,26 +108,24 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 			case <-ticker.C:
 			}
 
+		gcSuccessCount = 0
 		again:
 			start := time.Now()
 			err := db.RunValueLogGC(0.7)
 			status := "success"
 			if err != nil {
+				gcConsecutiveSuccessCount.Record(ctx, gcSuccessCount)
 				if errors.Is(err, badger.ErrNoRewrite) {
 					status = "no_rewrite"
-					nrwPerSuccess++
 				} else {
 					status = "failure"
 				}
-			}
-			if status == "success" {
-				gcNrwPerSuccess.Record(ctx, nrwPerSuccess)
-				nrwPerSuccess = 0
 			}
 			attr := metric.WithAttributes(gcStatusKey.String(status))
 			gcCounter.Add(ctx, 1, attr)
 			gcDuration.Record(ctx, float64(time.Since(start).Milliseconds()), attr)
 			if err == nil {
+				gcSuccessCount++
 				goto again
 			}
 		}
