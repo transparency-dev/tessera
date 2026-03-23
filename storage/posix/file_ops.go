@@ -89,8 +89,9 @@ func mkdirAll(name string, perm os.FileMode) error {
 		return syncDir(dir, func() error {
 			// We'll see ErrNotExist if the final entry in the requested path doesn't exist,
 			// so we simply attempt to create it in here.
-			if err := os.Mkdir(name, perm); err != nil {
-				return fmt.Errorf("%q: %v", name, err)
+			// 
+			// Ignore ErrExist as that just means someone else raced us and got there first.
+			if err := os.Mkdir(name, perm); err != nil && !errors.Is(err, os.ErrExist) {
 			}
 			return nil
 		})
