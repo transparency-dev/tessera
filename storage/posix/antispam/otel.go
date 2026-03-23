@@ -39,12 +39,13 @@ var (
 )
 
 var (
-	gcCounter               metric.Int64Counter
-	gcDuration              metric.Float64Histogram
-	lookupCounter           metric.Int64Counter
-	lookupDuration          metric.Float64Histogram
-	followTxnEntriesCounter metric.Int64Histogram
-	followTxnDuration       metric.Float64Histogram
+	gcCounter                 metric.Int64Counter
+	gcNrwBeforeSuccessCounter metric.Int64UpDownCounter
+	gcDuration                metric.Float64Histogram
+	lookupCounter             metric.Int64Counter
+	lookupDuration            metric.Float64Histogram
+	followTxnEntriesCounter   metric.Int64Histogram
+	followTxnDuration         metric.Float64Histogram
 
 	// Histogram buckets for operations (latency in ms)
 	histogramBuckets = []float64{0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200, 1400, 1600, 1800, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000}
@@ -85,6 +86,15 @@ func init() {
 		os.Exit(1)
 	}
 
+	gcNrwBeforeSuccessCounter, err = meter.Int64UpDownCounter(
+		"tessera.antispam.badger.gc.consecutive_no_rewrite.count",
+		metric.WithDescription("Number of BadgerDB Garbage Collection runs which returned `no_rewrite` before `success`"),
+		metric.WithUnit("{run}"))
+	if err != nil {
+		slog.ErrorContext(context.Background(), "Failed to create tessera.antispam.badger.gc.consecutive_no_rewrite.count metric", slog.Any("error", err))
+		os.Exit(1)
+	}
+
 	gcDuration, err = meter.Float64Histogram(
 		"tessera.antispam.badger.gc.duration",
 		metric.WithDescription("Duration of BadgerDB Garbage Collection runs"),
@@ -115,12 +125,12 @@ func init() {
 	}
 
 	followTxnEntriesCounter, err = meter.Int64Histogram(
-		"tessera.antispam.badger.FollowTxn.entries.count",
+		"tessera.antispam.badger.follow_txn.entries.count",
 		metric.WithDescription("Number of entries processed by BadgerDB antispam Follow transactions"),
 		metric.WithUnit("{entry}"),
 		metric.WithExplicitBucketBoundaries(batchEntriesBuckets...))
 	if err != nil {
-		slog.ErrorContext(context.Background(), "Failed to create tessera.antispam.badger.FollowTxn.entries.count metric", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to create tessera.antispam.badger.follow_txn.entries.count metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 

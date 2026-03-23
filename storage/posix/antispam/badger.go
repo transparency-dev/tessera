@@ -68,6 +68,9 @@ type AntispamOpts struct {
 	// When the antispam follower is at least this many entries behind the size of the locally integrated tree,
 	// the antispam decorator will return tessera.ErrPushback for every Add request.
 	PushbackThreshold uint
+
+	// nrwBeforeSuccess tracks the umber of GC runs which returned `no_rewrite` before `success`.
+	nrwBeforeSuccess atomic.Uint64
 }
 
 // NewAntispam returns an antispam driver which uses Badger to maintain a mapping between
@@ -113,9 +116,14 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 			if err != nil {
 				if errors.Is(err, badger.ErrNoRewrite) {
 					status = "no_rewrite"
+					gcNrwBeforeSuccessCounter.Add(ctx, 1)
+					r.nrwBeforeSuccess.Add(1)
 				} else {
 					status = "failure"
 				}
+			}
+			if status == "success" {
+				gcNrwBeforeSuccessCounter.Add(ctx, -int64(r.nrwBeforeSuccess.Swap(0)))
 			}
 			attr := metric.WithAttributes(gcStatusKey.String(status))
 			gcCounter.Add(ctx, 1, attr)
@@ -253,7 +261,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 		for moreWork := true; moreWork; {
 
 			err := f.as.db.Update(func(txn *badger.Txn) error {
-				return otel.TraceErr(ctx, "tessera.antispam.badger.FollowTxn", tracer, func(ctx context.Context, span trace.Span) error {
+				return otel.TraceErr(ctx, "tessera.antispam.badger.follow_txn", tracer, func(ctx context.Context, span trace.Span) error {
 					batchStart := time.Now()
 					ctx, cancel := context.WithTimeout(ctx, defaultBatchTimeout)
 					defer cancel()
