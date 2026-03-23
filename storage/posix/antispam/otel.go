@@ -52,11 +52,28 @@ var (
 	// GC buckets for longer running operations.
 	gcDurationBuckets = []float64{10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000}
 
-	// Buckets for the number of entries per batch (max 1500).
-	batchEntriesBuckets = []float64{1, 5, 10, 50, 100, 200, 500, 1000, 1500}
+	// Buckets for the number of entries per batch. Dynamically generated based on DefaultMaxBatchSize.
+	batchEntriesBuckets []float64
 )
 
+func generateBatchBuckets(max int) []float64 {
+	bases := []float64{1, 2, 5}
+	buckets := []float64{}
+	for multiplier := 1.0; ; multiplier *= 10 {
+		for _, b := range bases {
+			v := b * multiplier
+			if v >= float64(max) {
+				buckets = append(buckets, float64(max))
+				return buckets
+			}
+			buckets = append(buckets, v)
+		}
+	}
+}
+
 func init() {
+	batchEntriesBuckets = generateBatchBuckets(int(DefaultMaxBatchSize))
+
 	var err error
 
 	gcCounter, err = meter.Int64Counter(
