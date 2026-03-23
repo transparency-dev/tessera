@@ -92,11 +92,12 @@ func mkdirAll(name string, perm os.FileMode) error {
 			// 
 			// Ignore ErrExist as that just means someone else raced us and got there first.
 			if err := os.Mkdir(name, perm); err != nil && !errors.Is(err, os.ErrExist) {
+				return fmt.Errorf("%q: %w", name, err)
 			}
 			return nil
 		})
 	case err != nil:
-		return fmt.Errorf("lstat %q: %v", name, err)
+		return fmt.Errorf("lstat %q: %w", name, err)
 	case !di.IsDir():
 		return fmt.Errorf("%s is not a directory", name)
 	default:
@@ -117,7 +118,7 @@ func createEx(name string, d []byte) error {
 	return syncDir(dir, func() error {
 		tmpName, err := createTemp(name, d)
 		if err != nil {
-			return fmt.Errorf("failed to create temp file: %v", err)
+			return fmt.Errorf("failed to create temp file: %w", err)
 		}
 		defer func() {
 			if err := os.Remove(tmpName); err != nil {
@@ -148,7 +149,7 @@ func overwrite(name string, d []byte) error {
 
 		tmpName, err := createTemp(name, d)
 		if err != nil {
-			return fmt.Errorf("failed to create temp file: %v", err)
+			return fmt.Errorf("failed to create temp file: %w", err)
 		}
 
 		if err := os.Rename(tmpName, name); err != nil {
@@ -190,7 +191,7 @@ func createTemp(prefix string, d []byte) (name string, err error) {
 	}()
 
 	if n, err := f.Write(d); err != nil {
-		return "", fmt.Errorf("failed to write to temporary file %q: %v", name, err)
+		return "", fmt.Errorf("failed to write to temporary file %q: %w", name, err)
 	} else if l := len(d); n < l {
 		return "", fmt.Errorf("short write on %q, %d < %d", name, n, l)
 	}
