@@ -40,7 +40,7 @@ var (
 
 var (
 	gcCounter                 metric.Int64Counter
-	gcNrwBeforeSuccessCounter metric.Int64UpDownCounter
+	gcNrwPerSuccess           metric.Int64Histogram
 	gcDuration                metric.Float64Histogram
 	lookupCounter             metric.Int64Counter
 	lookupDuration            metric.Float64Histogram
@@ -52,15 +52,12 @@ var (
 
 	// GC buckets for longer running operations.
 	gcDurationBuckets = []float64{10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000}
-
-	// Buckets for the number of entries per batch. Dynamically generated based on DefaultMaxBatchSize.
-	batchEntriesBuckets []float64
 )
 
-func generateBatchBuckets(max int) []float64 {
+func generateBatchBuckets(max int, multiplier int) []float64 {
 	bases := []float64{1, 2, 5}
 	buckets := []float64{}
-	for multiplier := 1.0; ; multiplier *= 10 {
+	for multiplier := 1.0; ; multiplier *=  {
 		for _, b := range bases {
 			v := b * multiplier
 			if v >= float64(max) {
@@ -73,8 +70,6 @@ func generateBatchBuckets(max int) []float64 {
 }
 
 func init() {
-	batchEntriesBuckets = generateBatchBuckets(int(DefaultMaxBatchSize))
-
 	var err error
 
 	gcCounter, err = meter.Int64Counter(
@@ -86,12 +81,13 @@ func init() {
 		os.Exit(1)
 	}
 
-	gcNrwBeforeSuccessCounter, err = meter.Int64UpDownCounter(
-		"tessera.antispam.badger.gc.consecutive_no_rewrite.count",
-		metric.WithDescription("Number of BadgerDB Garbage Collection runs which returned `no_rewrite` before `success`"),
-		metric.WithUnit("{run}"))
+	gcNrwPerSuccess, err = meter.Int64Histogram(
+		"tessera.antispam.badger.gc.nrw_per_success",
+		metric.WithDescription("Number of consecutive no_rewrite GC runs before a successful rewrite"),
+		metric.WithUnit("{run}"),
+		metric.WithExplicitBucketBoundaries(generateBatchBuckets(500)...))
 	if err != nil {
-		slog.ErrorContext(context.Background(), "Failed to create tessera.antispam.badger.gc.consecutive_no_rewrite.count metric", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to create tessera.antispam.badger.gc.nrw_per_success metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -128,7 +124,7 @@ func init() {
 		"tessera.antispam.badger.follow_txn.entries.count",
 		metric.WithDescription("Number of entries processed by BadgerDB antispam Follow transactions"),
 		metric.WithUnit("{entry}"),
-		metric.WithExplicitBucketBoundaries(batchEntriesBuckets...))
+		metric.WithExplicitBucketBoundaries(generateBatchBuckets(int(DefaultMaxBatchSize)...))
 	if err != nil {
 		slog.ErrorContext(context.Background(), "Failed to create tessera.antispam.badger.follow_txn.entries.count metric", slog.Any("error", err))
 		os.Exit(1)
