@@ -60,11 +60,11 @@ See the table below for details.
 
 ### Storage drivers
 
-| Driver                  | Appender | Migration | Antispam | Garbage Collection | Notes                                         |
-| ----------------------- | :------: | :-------: | :------: | :----------------: | --------------------------------------------- |
-| Amazon Web Services     |    ✅    |     ⚠️    |    ✅    |          ✅        |                                               |
-| Google Cloud Platform   |    ✅    |     ⚠️    |    ✅    |          ✅        |                                               |
-| POSIX filesystem        |    ✅    |     ⚠️    |    ✅    |          ✅        |                                               |
+| Driver                  | Appender | Migration | Antispam | Garbage Collection |
+| ----------------------- | :------: | :-------: | :------: | :----------------: |
+| Amazon Web Services     |    ✅    |     ⚠️    |    ✅    |          ✅        |
+| Google Cloud Platform   |    ✅    |     ⚠️    |    ✅    |          ✅        |
+| POSIX filesystem        |    ✅    |     ⚠️    |    ✅    |          ✅        |
 
 
 > [!Note]
@@ -74,7 +74,7 @@ Users of GCP, AWS, and POSIX are welcome to try the relevant [Getting Started](#
 
 ## Roadmap
 
-Production ready around mid 2025.
+Tessera is generally available and production ready. The following items are planned for future releases:
 
 |  #  | Step                                                      | Status |
 | :-: | --------------------------------------------------------- | :----: |
@@ -87,12 +87,10 @@ Production ready around mid 2025.
 |  7  | Witness support                                           |   ✅   |
 |  8  | Monitoring and metrics                                    |   ✅   |
 |  9  | Production ready                                          |   ✅   |
-|  10 | Mirrored logs (#576)                                      |   ⚠️   |
-|  11 | Preordered logs (#575)                                    |   ❌   |
-|  12 | Trillian v1 to Tessera migration (#577)                   |   ❌   |
+|  10 | Mirrored logs ([#576][])                                  |   ⚠️   |
+|  11 | Preordered logs ([#575][])                                |   ❌   |
+|  12 | Trillian v1 to Tessera migration ([#577][])               |   ❌   |
 |  N  | Fancy features (to be expanded upon later)                |   ❌   |
-
-The current API is unlikely to change in any significant way, however the API is subject to minor breaking changes until we tag 1.0.
 
 ### What’s happening to Trillian v1?
 
@@ -426,7 +424,7 @@ This requires the full stack to be instantiated, including:
  - any DB instances
  - a personality binary for each log
 
-#589 tracks adding more elegant support for sharing resources for sharded logs.
+[#589](https://github.com/transparency-dev/tessera/issues/589) tracks adding more elegant support for sharing resources for sharded logs.
 Please upvote that issue if you would like us to prioritize it.
 
 ## Contributing
@@ -450,3 +448,6 @@ transparency ecosystems over the years.
 [tlog-tiles API]: https://c2sp.org/tlog-tiles
 [Static CT API]: https://c2sp.org/static-ct-api
 [Trillian v1]: https://github.com/google/trillian
+[#575]: https://github.com/transparency-dev/tessera/issues/575
+[#576]: https://github.com/transparency-dev/tessera/issues/576
+[#577]: https://github.com/transparency-dev/tessera/issues/577
