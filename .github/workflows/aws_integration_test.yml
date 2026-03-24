@@ -44,7 +44,7 @@ jobs:
       ## Authenticate with ECR to push the conformance and hammer images.
       - name: Login to Amazon ECR
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@c962da2960ed15f492addc26fffa274485265950 # v2.0.2
+        uses: aws-actions/amazon-ecr-login@261fc3d4806db1fa66a15cc11113c456db8870a7 # v2.1.0
 
       ## Build the conformance image and push it to ECR. This will be used
       ## later on by Terragrunt.
@@ -76,7 +76,7 @@ jobs:
       ## This might happen if a previous integration test workflow has failed.
       - name: Terragrunt destroy pre conformance test
         id: terragrunt-destroy-pre
-        uses: gruntwork-io/terragrunt-action@5e86476ca61eaf74adb9c0525745f29f921f2199 # v3.1.0
+        uses: gruntwork-io/terragrunt-action@53dbdc2c3d43e82bf3bae10b734a968196442bec # v3.2.0
         with:
           tofu_version: ${{ env.TOFU_VERSION }}
           tg_version: ${{ env.TG_VERSION }}
@@ -113,7 +113,7 @@ jobs:
       #  consider keeping it around between tests / using Aurora Serverless
       - name: Terragrunt apply
         id: terragrunt-apply
-        uses: gruntwork-io/terragrunt-action@5e86476ca61eaf74adb9c0525745f29f921f2199 # v3.1.0
+        uses: gruntwork-io/terragrunt-action@53dbdc2c3d43e82bf3bae10b734a968196442bec # v3.2.0
         with:
           tofu_version: ${{ env.TOFU_VERSION }}
           tg_version: ${{ env.TG_VERSION }}
@@ -150,7 +150,7 @@ jobs:
 
       - name: Terragrunt destroy post conformance test
         id: terragrunt-destroy-post
-        uses: gruntwork-io/terragrunt-action@5e86476ca61eaf74adb9c0525745f29f921f2199 # v3.1.0
+        uses: gruntwork-io/terragrunt-action@53dbdc2c3d43e82bf3bae10b734a968196442bec # v3.2.0
         with:
           tofu_version: ${{ env.TOFU_VERSION }}
           tg_version: ${{ env.TG_VERSION }}
