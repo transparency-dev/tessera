@@ -27,10 +27,13 @@ import (
 const name = "github.com/transparency-dev/tessera/storage/posix"
 
 var (
-	meter = otel.Meter(name)
+	meter  = otel.Meter(name)
+	tracer = otel.Tracer(name)
 
-	errorTypeKey = attribute.Key("error.type")
-	opNameKey    = attribute.Key("op_name")
+	errorTypeKey  = attribute.Key("error.type")
+	filenameKey   = attribute.Key("file.name")
+	numEntriesKey = attribute.Key("tessera.numEntries")
+	opNameKey     = attribute.Key("op_name")
 )
 
 var (
