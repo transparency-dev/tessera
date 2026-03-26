@@ -22,8 +22,8 @@ import (
 )
 
 // TraceErr executes logic that returns only an error and traces it, recording any errors on the span.
-func TraceErr(ctx context.Context, name string, tracer trace.Tracer, fn func(context.Context, trace.Span) error) error {
-	ctx, span := tracer.Start(ctx, name)
+func TraceErr(ctx context.Context, name string, tracer trace.Tracer, fn func(context.Context, trace.Span) error, sOpts ...trace.SpanStartOption) error {
+	ctx, span := tracer.Start(ctx, name, sOpts...)
 	defer span.End()
 
 	err := fn(ctx, span)
@@ -35,8 +35,8 @@ func TraceErr(ctx context.Context, name string, tracer trace.Tracer, fn func(con
 }
 
 // Trace executes logic that returns (T, error) and traces it, recording any errors on the span.
-func Trace[T any](ctx context.Context, name string, tracer trace.Tracer, fn func(context.Context, trace.Span) (T, error)) (T, error) {
-	ctx, span := tracer.Start(ctx, name)
+func Trace[T any](ctx context.Context, name string, tracer trace.Tracer, fn func(context.Context, trace.Span) (T, error), sOpts ...trace.SpanStartOption) (T, error) {
+	ctx, span := tracer.Start(ctx, name, sOpts...)
 	defer span.End()
 
 	res, err := fn(ctx, span)
@@ -48,8 +48,8 @@ func Trace[T any](ctx context.Context, name string, tracer trace.Tracer, fn func
 }
 
 // Trace2 executes logic that returns (T1, T2, error) and traces it, recording any errors on the span.
-func Trace2[T1, T2 any](ctx context.Context, name string, tracer trace.Tracer, fn func(context.Context, trace.Span) (T1, T2, error)) (T1, T2, error) {
-	ctx, span := tracer.Start(ctx, name)
+func Trace2[T1, T2 any](ctx context.Context, name string, tracer trace.Tracer, fn func(context.Context, trace.Span) (T1, T2, error), sOpts ...trace.SpanStartOption) (T1, T2, error) {
+	ctx, span := tracer.Start(ctx, name, sOpts...)
 	defer span.End()
 
 	res1, res2, err := fn(ctx, span)
@@ -61,8 +61,8 @@ func Trace2[T1, T2 any](ctx context.Context, name string, tracer trace.Tracer, f
 }
 
 // Trace3 executes logic that returns (T1, T2, T3, error) and traces it, recording any errors on the span.
-func Trace3[T1, T2, T3 any](ctx context.Context, name string, tracer trace.Tracer, fn func(context.Context, trace.Span) (T1, T2, T3, error)) (T1, T2, T3, error) {
-	ctx, span := tracer.Start(ctx, name)
+func Trace3[T1, T2, T3 any](ctx context.Context, name string, tracer trace.Tracer, fn func(context.Context, trace.Span) (T1, T2, T3, error), sOpts ...trace.SpanStartOption) (T1, T2, T3, error) {
+	ctx, span := tracer.Start(ctx, name, sOpts...)
 	defer span.End()
 
 	res1, res2, res3, err := fn(ctx, span)
@@ -74,8 +74,8 @@ func Trace3[T1, T2, T3 any](ctx context.Context, name string, tracer trace.Trace
 }
 
 // Trace4 executes logic that returns (T1, T2, T3, T4, error) and traces it, recording any errors on the span.
-func Trace4[T1, T2, T3, T4 any](ctx context.Context, name string, tracer trace.Tracer, fn func(context.Context, trace.Span) (T1, T2, T3, T4, error)) (T1, T2, T3, T4, error) {
-	ctx, span := tracer.Start(ctx, name)
+func Trace4[T1, T2, T3, T4 any](ctx context.Context, name string, tracer trace.Tracer, fn func(context.Context, trace.Span) (T1, T2, T3, T4, error), sOpts ...trace.SpanStartOption) (T1, T2, T3, T4, error) {
+	ctx, span := tracer.Start(ctx, name, sOpts...)
 	defer span.End()
 
 	res1, res2, res3, res4, err := fn(ctx, span)

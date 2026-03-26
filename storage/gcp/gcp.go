@@ -333,8 +333,6 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 		}
 
 		if err := otel.TraceErr(ctx, "tessera.storage.gcp.integrateEntriesJob", tracer, func(ctx context.Context, span trace.Span) error {
-			span.SetAttributes(otel.PeriodicKey.Bool(true))
-
 			ctx, cancel := context.WithTimeout(ctx, defaultIntegrationTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
@@ -349,7 +347,7 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 				}
 			}
 			return nil
-		}); err != nil {
+		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
 			slog.ErrorContext(ctx, "integrateEntriesJob failed", slog.Any("error", err))
 		}
 	}
@@ -370,7 +368,6 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 		case <-t.C:
 		}
 		if err := otel.TraceErr(ctx, "tessera.storage.gcp.publishCheckpointJob", tracer, func(ctx context.Context, span trace.Span) error {
-			span.SetAttributes(otel.PeriodicKey.Bool(true))
 
 			ctx, cancel := context.WithTimeout(ctx, defaultPublicationTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
@@ -379,7 +376,7 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 				return fmt.Errorf("publishCheckpoint failed: %v", err)
 			}
 			return nil
-		}); err != nil {
+		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
 			slog.ErrorContext(ctx, "publishCheckpoint failed", slog.Any("error", err))
 		}
 	}
@@ -402,8 +399,6 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 		case <-t.C:
 		}
 		if err := otel.TraceErr(ctx, "tessera.storage.gcp.garbageCollectJob", tracer, func(ctx context.Context, span trace.Span) error {
-			span.SetAttributes(otel.PeriodicKey.Bool(true))
-
 			ctx, cancel := context.WithTimeout(ctx, defaultGCTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
@@ -423,7 +418,7 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 				return fmt.Errorf("garbageCollect failed: %v", err)
 			}
 			return nil
-		}); err != nil {
+		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
 			slog.WarnContext(ctx, "garbageCollectTask failed", slog.Any("error", err))
 		}
 	}
@@ -822,7 +817,6 @@ func (s *spannerCoordinator) checkDataCompatibility(ctx context.Context) error {
 // index assigned to the first entry in the batch.
 func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tessera.Entry) error {
 	return otel.TraceErr(ctx, "tessera.storage.gcp.assignEntries", tracer, func(ctx context.Context, span trace.Span) error {
-		span.SetAttributes(otel.PeriodicKey.Bool(true))
 		span.SetAttributes(numEntriesKey.Int(len(entries)))
 
 		span.AddEvent("Reading IntCoord:seq")
@@ -919,7 +913,7 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 		}
 
 		return nil
-	})
+		}, trace.WithAttributes(otel.PeriodicKey.Bool(true)))
 }
 
 // addSeqMutation returns a mutation to the Seq table for the given sequence number and entries.
