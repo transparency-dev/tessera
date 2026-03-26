@@ -37,9 +37,11 @@ import (
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/internal/fetcher"
 	"github.com/transparency-dev/tessera/internal/migrate"
+	"github.com/transparency-dev/tessera/internal/otel"
 	"github.com/transparency-dev/tessera/internal/parse"
 	storage "github.com/transparency-dev/tessera/storage/internal"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -174,13 +176,16 @@ func (a *appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 		case <-a.cpUpdated:
 		case <-t.C:
 		}
-		func() {
+		if err := otel.TraceErr(ctx, "tessera.storage.posix.publishCheckpointJob", tracer, func(ctx context.Context, span trace.Span) error {
 			ctx, cancel := context.WithTimeout(ctx, defaultPublicationTimeout)
 			defer cancel()
 			if err := a.publishCheckpoint(ctx, pubInterval, republishInterval); err != nil {
-				slog.WarnContext(ctx, "publishCheckpoint failed", slog.Any("error", err))
+				return err
 			}
-		}()
+			return nil
+		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
+			slog.WarnContext(ctx, "publishCheckpoint failed", slog.Any("error", err))
+		}
 	}
 }
 
@@ -193,29 +198,39 @@ func (a *appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 // (*any* `Close` operation on this file (even if it's a different FD) from
 // this PID, or overwriting of the file by *any* process breaks the lock.)
 func (s *Storage) lockFile(ctx context.Context, p string) (func() error, error) {
-	now := time.Now()
+	return otel.Trace(ctx, "tessera.storage.posix.lockFile", tracer, func(ctx context.Context, span trace.Span) (func() error, error) {
+		span.SetAttributes(filenameKey.String(p))
+		now := time.Now()
 
-	p = filepath.Join(s.cfg.Path, stateDir, p)
-	f, err := os.OpenFile(p, syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC, filePerm)
-	if err != nil {
-		return nil, err
-	}
-
-	flockT := syscall.Flock_t{
-		Type:   syscall.F_WRLCK,
-		Whence: io.SeekStart,
-		Start:  0,
-		Len:    0,
-	}
-	// Keep trying until we manage to get an answer without being interrupted.
-	for {
-		if err := syscall.FcntlFlock(f.Fd(), syscall.F_SETLKW, &flockT); err != syscall.EINTR {
-			if err == nil {
-				posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String(fmt.Sprintf("lock-%s", p))))
-			}
-			return f.Close, err
+		span.AddEvent("Open file")
+		p = filepath.Join(s.cfg.Path, stateDir, p)
+		f, err := os.OpenFile(p, syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC, filePerm)
+		if err != nil {
+			return nil, err
 		}
-	}
+
+		flockT := syscall.Flock_t{
+			Type:   syscall.F_WRLCK,
+			Whence: io.SeekStart,
+			Start:  0,
+			Len:    0,
+		}
+		// Keep trying until we manage to get an answer without being interrupted.
+		span.AddEvent("Lock attempt")
+		for {
+			if err := syscall.FcntlFlock(f.Fd(), syscall.F_SETLKW, &flockT); err != syscall.EINTR {
+				if err == nil {
+					span.AddEvent("Lock taken")
+					posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String(fmt.Sprintf("lock-%s", p))))
+				}
+				c := func() error {
+					span.AddEvent("Lock released")
+					return f.Close()
+				}
+				return c, err
+			}
+		}
+	})
 
 }
 
@@ -239,34 +254,44 @@ func (a *appender) Add(ctx context.Context, e *tessera.Entry) tessera.IndexFutur
 	return a.queue.Add(ctx, e)
 }
 
-func (l *logResourceStorage) ReadCheckpoint(_ context.Context) ([]byte, error) {
-	r, err := os.ReadFile(filepath.Join(l.s.cfg.Path, layout.CheckpointPath))
-	if errors.Is(err, fs.ErrNotExist) {
-		return r, os.ErrNotExist
-	}
-	return r, err
+func (l *logResourceStorage) ReadCheckpoint(ctx context.Context) ([]byte, error) {
+	return otel.Trace(ctx, "tessera.storage.posix.ReadCheckpoint", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		r, err := os.ReadFile(filepath.Join(l.s.cfg.Path, layout.CheckpointPath))
+		if errors.Is(err, fs.ErrNotExist) {
+			return r, os.ErrNotExist
+		}
+		return r, err
+	})
 }
 
 // ReadEntryBundle retrieves the Nth entries bundle for a log of the given size.
 func (l *logResourceStorage) ReadEntryBundle(ctx context.Context, index uint64, p uint8) ([]byte, error) {
-	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
-		return os.ReadFile(filepath.Join(l.s.cfg.Path, l.entriesPath(index, p)))
+	return otel.Trace(ctx, "tessera.storage.posix.EntryBundle", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
+			return os.ReadFile(filepath.Join(l.s.cfg.Path, l.entriesPath(index, p)))
+		})
 	})
 }
 
 func (l *logResourceStorage) ReadTile(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
-	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
-		return os.ReadFile(filepath.Join(l.s.cfg.Path, layout.TilePath(level, index, p)))
+	return otel.Trace(ctx, "tessera.storage.posix.ReadTile", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
+			return os.ReadFile(filepath.Join(l.s.cfg.Path, layout.TilePath(level, index, p)))
+		})
 	})
 }
 
 func (l *logResourceStorage) IntegratedSize(ctx context.Context) (uint64, error) {
-	size, _, err := l.s.readTreeState(ctx)
-	return size, err
+	return otel.Trace(ctx, "tessera.storage.posix.IntegratedSize", tracer, func(ctx context.Context, span trace.Span) (uint64, error) {
+		size, _, err := l.s.readTreeState(ctx)
+		return size, err
+	})
 }
 
 func (l *logResourceStorage) NextIndex(ctx context.Context) (uint64, error) {
-	return l.IntegratedSize(ctx)
+	return otel.Trace(ctx, "tessera.storage.posix.NextIndex", tracer, func(ctx context.Context, span trace.Span) (uint64, error) {
+		return l.IntegratedSize(ctx)
+	})
 }
 
 // sequenceBatch writes the entries from the provided batch into the entry bundle files of the log.
@@ -276,165 +301,175 @@ func (l *logResourceStorage) NextIndex(ctx context.Context) (uint64, error) {
 // We try to minimise the number of partially complete entry bundles by writing entries in chunks rather
 // than one-by-one.
 func (a *appender) sequenceBatch(ctx context.Context, entries []*tessera.Entry) error {
-	// Double locking:
-	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
-	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
-	a.s.mu.Lock()
-	unlock, err := a.s.lockFile(ctx, treeStateLock)
-	if err != nil {
-		panic(err)
-	}
-	defer func() {
-		if err := unlock(); err != nil {
+	return otel.TraceErr(ctx, "tessera.storage.posix.assignEntries", tracer, func(ctx context.Context, span trace.Span) error {
+		span.SetAttributes(numEntriesKey.Int(len(entries)))
+
+		// Double locking:
+		// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
+		// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
+		a.s.mu.Lock()
+		unlock, err := a.s.lockFile(ctx, treeStateLock)
+		if err != nil {
 			panic(err)
 		}
-		a.s.mu.Unlock()
-	}()
+		defer func() {
+			if err := unlock(); err != nil {
+				panic(err)
+			}
+			a.s.mu.Unlock()
+		}()
 
-	size, _, err := a.s.readTreeState(ctx)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		size = 0
-	}
-	a.curSize = size
-	slog.DebugContext(ctx, "Sequencing", slog.Uint64("from", a.curSize))
-
-	if len(entries) == 0 {
-		return nil
-	}
-	currTile := &bytes.Buffer{}
-	seq := a.curSize
-	bundleIndex, entriesInBundle := seq/layout.EntryBundleWidth, seq%layout.EntryBundleWidth
-	if entriesInBundle > 0 {
-		// If the latest bundle is partial, we need to read the data it contains in for our newer, larger, bundle.
-		part, err := a.logStorage.ReadEntryBundle(ctx, bundleIndex, uint8(a.curSize%layout.EntryBundleWidth))
+		size, _, err := a.s.readTreeState(ctx)
 		if err != nil {
-			return err
-		}
-		if _, err := currTile.Write(part); err != nil {
-			return fmt.Errorf("failed to write partial bundle into buffer: %v", err)
-		}
-	}
-	writeBundle := func(bundleIndex uint64, partialSize uint8) error {
-		return a.logStorage.writeBundle(ctx, bundleIndex, partialSize, currTile.Bytes())
-	}
-
-	leafHashes := make([][]byte, 0, len(entries))
-	// Add new entries to the bundle
-	for i, e := range entries {
-		bundleData := e.MarshalBundleData(seq + uint64(i))
-		if _, err := currTile.Write(bundleData); err != nil {
-			return fmt.Errorf("failed to write entry %d to currTile: %v", i, err)
-		}
-		leafHashes = append(leafHashes, e.LeafHash())
-
-		entriesInBundle++
-		if entriesInBundle == layout.EntryBundleWidth {
-			//  This bundle is full, so we need to write it out...
-			// ... and prepare the next entry bundle for any remaining entries in the batch
-			if err := writeBundle(bundleIndex, 0); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
-			bundleIndex++
-			entriesInBundle = 0
-			currTile = &bytes.Buffer{}
+			size = 0
 		}
-	}
-	// If we have a partial bundle remaining once we've added all the entries from the batch,
-	// this needs writing out too.
-	if entriesInBundle > 0 {
-		// This check should be redundant since this is [currently] checked above, but an overflow around the uint8 below could
-		// potentially be bad news if that check was broken/defeated as we'd be writing invalid bundle data, so do a belt-and-braces
-		// check and bail if need be.
-		if entriesInBundle > layout.EntryBundleWidth {
-			return fmt.Errorf("logic error: entriesInBundle(%d) > max bundle size %d", entriesInBundle, layout.EntryBundleWidth)
+		a.curSize = size
+		slog.DebugContext(ctx, "Sequencing", slog.Uint64("from", a.curSize))
+
+		if len(entries) == 0 {
+			return nil
 		}
-		if err := writeBundle(bundleIndex, uint8(entriesInBundle)); err != nil {
+		currTile := &bytes.Buffer{}
+		seq := a.curSize
+		bundleIndex, entriesInBundle := seq/layout.EntryBundleWidth, seq%layout.EntryBundleWidth
+		if entriesInBundle > 0 {
+			// If the latest bundle is partial, we need to read the data it contains in for our newer, larger, bundle.
+			part, err := a.logStorage.ReadEntryBundle(ctx, bundleIndex, uint8(a.curSize%layout.EntryBundleWidth))
+			if err != nil {
+				return err
+			}
+			if _, err := currTile.Write(part); err != nil {
+				return fmt.Errorf("failed to write partial bundle into buffer: %v", err)
+			}
+		}
+		writeBundle := func(bundleIndex uint64, partialSize uint8) error {
+			return a.logStorage.writeBundle(ctx, bundleIndex, partialSize, currTile.Bytes())
+		}
+
+		leafHashes := make([][]byte, 0, len(entries))
+		// Add new entries to the bundle
+		for i, e := range entries {
+			bundleData := e.MarshalBundleData(seq + uint64(i))
+			if _, err := currTile.Write(bundleData); err != nil {
+				return fmt.Errorf("failed to write entry %d to currTile: %v", i, err)
+			}
+			leafHashes = append(leafHashes, e.LeafHash())
+
+			entriesInBundle++
+			if entriesInBundle == layout.EntryBundleWidth {
+				//  This bundle is full, so we need to write it out...
+				// ... and prepare the next entry bundle for any remaining entries in the batch
+				if err := writeBundle(bundleIndex, 0); err != nil {
+					return err
+				}
+				bundleIndex++
+				entriesInBundle = 0
+				currTile = &bytes.Buffer{}
+			}
+		}
+		// If we have a partial bundle remaining once we've added all the entries from the batch,
+		// this needs writing out too.
+		if entriesInBundle > 0 {
+			// This check should be redundant since this is [currently] checked above, but an overflow around the uint8 below could
+			// potentially be bad news if that check was broken/defeated as we'd be writing invalid bundle data, so do a belt-and-braces
+			// check and bail if need be.
+			if entriesInBundle > layout.EntryBundleWidth {
+				return fmt.Errorf("logic error: entriesInBundle(%d) > max bundle size %d", entriesInBundle, layout.EntryBundleWidth)
+			}
+			if err := writeBundle(bundleIndex, uint8(entriesInBundle)); err != nil {
+				return err
+			}
+		}
+
+		// For simplicity, in-line the integration of these new entries into the Merkle structure too.
+		// If this is broken out into an async process, we'll need to update the implementation of NextIndex, too.
+		newSize, newRoot, err := doIntegrate(ctx, seq, leafHashes, a.logStorage)
+		if err != nil {
+			slog.ErrorContext(ctx, "Integrate failed", slog.Any("error", err))
 			return err
 		}
-	}
-
-	// For simplicity, in-line the integration of these new entries into the Merkle structure too.
-	// If this is broken out into an async process, we'll need to update the implementation of NextIndex, too.
-	newSize, newRoot, err := doIntegrate(ctx, seq, leafHashes, a.logStorage)
-	if err != nil {
-		slog.ErrorContext(ctx, "Integrate failed", slog.Any("error", err))
-		return err
-	}
-	if err := a.s.writeTreeState(ctx, newSize, newRoot); err != nil {
-		return fmt.Errorf("failed to write new tree state: %v", err)
-	}
-	// Notify that we know for sure there's a new checkpoint, but don't block if there's already
-	// an outstanding notification in the channel.
-	select {
-	case a.cpUpdated <- struct{}{}:
-	default:
-	}
-	return nil
+		if err := a.s.writeTreeState(ctx, newSize, newRoot); err != nil {
+			return fmt.Errorf("failed to write new tree state: %v", err)
+		}
+		// Notify that we know for sure there's a new checkpoint, but don't block if there's already
+		// an outstanding notification in the channel.
+		select {
+		case a.cpUpdated <- struct{}{}:
+		default:
+		}
+		return nil
+	}, trace.WithAttributes(otel.PeriodicKey.Bool(true)))
 }
 
 // doIntegrate handles integrating new leaf hashes into the log, and returns the new state.
 func doIntegrate(ctx context.Context, fromSeq uint64, leafHashes [][]byte, ls *logResourceStorage) (uint64, []byte, error) {
-	getTiles := func(ctx context.Context, tileIDs []storage.TileID, treeSize uint64) ([]*api.HashTile, error) {
-		n, err := ls.readTiles(ctx, tileIDs, treeSize)
+	return otel.Trace2(ctx, "tessera.storage.posix.integrate", tracer, func(ctx context.Context, span trace.Span) (uint64, []byte, error) {
+		getTiles := func(ctx context.Context, tileIDs []storage.TileID, treeSize uint64) ([]*api.HashTile, error) {
+			n, err := ls.readTiles(ctx, tileIDs, treeSize)
+			if err != nil {
+				return nil, fmt.Errorf("getTiles: %w", err)
+			}
+			return n, nil
+		}
+
+		newSize, newRoot, tiles, err := storage.Integrate(ctx, getTiles, fromSeq, leafHashes)
 		if err != nil {
-			return nil, fmt.Errorf("getTiles: %w", err)
+			slog.ErrorContext(ctx, "Integrate", slog.Any("error", err))
+			return 0, nil, fmt.Errorf("error in Integrate: %v", err)
 		}
-		return n, nil
-	}
-
-	newSize, newRoot, tiles, err := storage.Integrate(ctx, getTiles, fromSeq, leafHashes)
-	if err != nil {
-		slog.ErrorContext(ctx, "Integrate", slog.Any("error", err))
-		return 0, nil, fmt.Errorf("error in Integrate: %v", err)
-	}
-	for k, v := range tiles {
-		if err := ls.storeTile(ctx, uint64(k.Level), k.Index, newSize, v); err != nil {
-			return 0, nil, fmt.Errorf("failed to set tile(%v): %v", k, err)
+		for k, v := range tiles {
+			if err := ls.storeTile(ctx, uint64(k.Level), k.Index, newSize, v); err != nil {
+				return 0, nil, fmt.Errorf("failed to set tile(%v): %v", k, err)
+			}
 		}
-	}
 
-	slog.DebugContext(ctx, "New tree", slog.Uint64("size", newSize), slog.String("hash", fmt.Sprintf("%x", newRoot)))
+		slog.DebugContext(ctx, "New tree", slog.Uint64("size", newSize), slog.String("hash", fmt.Sprintf("%x", newRoot)))
 
-	return newSize, newRoot, nil
+		return newSize, newRoot, nil
+	}, trace.WithAttributes(otel.PeriodicKey.Bool(true)))
 }
 
 func (lrs *logResourceStorage) readTiles(ctx context.Context, tileIDs []storage.TileID, treeSize uint64) ([]*api.HashTile, error) {
-	r := make([]*api.HashTile, 0, len(tileIDs))
-	for _, id := range tileIDs {
-		t, err := lrs.readTile(ctx, id.Level, id.Index, layout.PartialTileSize(id.Level, id.Index, treeSize))
-		if err != nil {
-			return nil, err
+	return otel.Trace(ctx, "tessera.storage.posix.readTiles", tracer, func(ctx context.Context, span trace.Span) ([]*api.HashTile, error) {
+		r := make([]*api.HashTile, 0, len(tileIDs))
+		for _, id := range tileIDs {
+			t, err := lrs.readTile(ctx, id.Level, id.Index, layout.PartialTileSize(id.Level, id.Index, treeSize))
+			if err != nil {
+				return nil, err
+			}
+			r = append(r, t)
 		}
-		r = append(r, t)
-	}
-	return r, nil
+		return r, nil
+	})
 }
 
 // readTile returns the parsed tile at the given tile-level and tile-index.
 // If no complete tile exists at that location, it will attempt to find a
 // partial tile for the given tree size at that location.
 func (lrs *logResourceStorage) readTile(ctx context.Context, level, index uint64, p uint8) (*api.HashTile, error) {
-	now := time.Now()
+	return otel.Trace(ctx, "tessera.storage.posix.readTile", tracer, func(ctx context.Context, span trace.Span) (*api.HashTile, error) {
+		now := time.Now()
 
-	t, err := lrs.ReadTile(ctx, level, index, p)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			// We'll signal to higher levels that it wasn't found by returning a nil for this tile.
-			return nil, nil
+		t, err := lrs.ReadTile(ctx, level, index, p)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				// We'll signal to higher levels that it wasn't found by returning a nil for this tile.
+				return nil, nil
+			}
+			return nil, err
 		}
-		return nil, err
-	}
 
-	var tile api.HashTile
-	if err := tile.UnmarshalText(t); err != nil {
-		return nil, fmt.Errorf("failed to parse tile: %w", err)
-	}
+		var tile api.HashTile
+		if err := tile.UnmarshalText(t); err != nil {
+			return nil, fmt.Errorf("failed to parse tile: %w", err)
+		}
 
-	posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("readTile")))
-	return &tile, nil
+		posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("readTile")))
+		return &tile, nil
+	})
 }
 
 // storeTile writes a tile out to disk.
@@ -442,63 +477,69 @@ func (lrs *logResourceStorage) readTile(ctx context.Context, level, index uint64
 // index parameters, partially populated (i.e. right-hand edge) tiles are
 // stored with a .xx suffix where xx is the number of "tile leaves" in hex.
 func (lrs *logResourceStorage) storeTile(ctx context.Context, level, index, logSize uint64, tile *api.HashTile) error {
-	tileSize := uint64(len(tile.Nodes))
-	slog.DebugContext(ctx, "StoreTile", slog.Uint64("level", level), slog.String("index", fmt.Sprintf("%x", index)), slog.String("tilesize", fmt.Sprintf("%x", tileSize)))
-	if tileSize == 0 || tileSize > layout.TileWidth {
-		return fmt.Errorf("tileSize %d must be > 0 and <= %d", tileSize, layout.TileWidth)
-	}
-	t, err := tile.MarshalText()
-	if err != nil {
-		return fmt.Errorf("failed to marshal tile: %w", err)
-	}
+	return otel.TraceErr(ctx, "tessera.storage.posix.storeTile", tracer, func(ctx context.Context, span trace.Span) error {
+		tileSize := uint64(len(tile.Nodes))
+		slog.DebugContext(ctx, "StoreTile", slog.Uint64("level", level), slog.String("index", fmt.Sprintf("%x", index)), slog.String("tilesize", fmt.Sprintf("%x", tileSize)))
+		if tileSize == 0 || tileSize > layout.TileWidth {
+			return fmt.Errorf("tileSize %d must be > 0 and <= %d", tileSize, layout.TileWidth)
+		}
+		t, err := tile.MarshalText()
+		if err != nil {
+			return fmt.Errorf("failed to marshal tile: %w", err)
+		}
 
-	return lrs.writeTile(ctx, level, index, layout.PartialTileSize(level, index, logSize), t)
+		return lrs.writeTile(ctx, level, index, layout.PartialTileSize(level, index, logSize), t)
+	})
 }
 
 func (lrs *logResourceStorage) writeTile(ctx context.Context, level, index uint64, partial uint8, t []byte) error {
-	now := time.Now()
+	return otel.TraceErr(ctx, "tessera.storage.posix.writeTile", tracer, func(ctx context.Context, span trace.Span) error {
+		now := time.Now()
 
-	tPath := layout.TilePath(level, index, partial)
+		tPath := layout.TilePath(level, index, partial)
 
-	if err := lrs.s.createOverwrite(tPath, t); err != nil {
-		return err
-	}
-
-	if partial == 0 {
-		partials, err := filepath.Glob(fmt.Sprintf("%s.p/*", tPath))
-		if err != nil {
-			return fmt.Errorf("failed to list partial tiles for clean up; %w", err)
+		if err := lrs.s.createOverwrite(tPath, t); err != nil {
+			return err
 		}
-		// Clean up old partial tiles by symlinking them to the new full tile.
-		for _, p := range partials {
-			slog.DebugContext(ctx, "relink partial", slog.String("p", p), slog.String("tpath", tPath))
-			// We have to do a little dance here to get POSIX atomicity:
-			// 1. Create a new temporary symlink to the full tile
-			// 2. Rename the temporary symlink over the top of the old partial tile
-			tmp := fmt.Sprintf("%s.link", tPath)
-			_ = os.Remove(tmp)
-			if err := os.Symlink(tPath, tmp); err != nil {
-				return fmt.Errorf("failed to create temp link to full tile: %w", err)
+
+		if partial == 0 {
+			partials, err := filepath.Glob(fmt.Sprintf("%s.p/*", tPath))
+			if err != nil {
+				return fmt.Errorf("failed to list partial tiles for clean up; %w", err)
 			}
-			if err := os.Rename(tmp, p); err != nil {
-				return fmt.Errorf("failed to rename temp link over partial tile: %w", err)
+			// Clean up old partial tiles by symlinking them to the new full tile.
+			for _, p := range partials {
+				slog.DebugContext(ctx, "relink partial", slog.String("p", p), slog.String("tpath", tPath))
+				// We have to do a little dance here to get POSIX atomicity:
+				// 1. Create a new temporary symlink to the full tile
+				// 2. Rename the temporary symlink over the top of the old partial tile
+				tmp := fmt.Sprintf("%s.link", tPath)
+				_ = os.Remove(tmp)
+				if err := os.Symlink(tPath, tmp); err != nil {
+					return fmt.Errorf("failed to create temp link to full tile: %w", err)
+				}
+				if err := os.Rename(tmp, p); err != nil {
+					return fmt.Errorf("failed to rename temp link over partial tile: %w", err)
+				}
 			}
 		}
-	}
 
-	posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("writeTile")))
-	return nil
+		posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("writeTile")))
+		return nil
+	})
 }
 
 // writeBundle takes care of writing out the serialised entry bundle file.
-func (lrs *logResourceStorage) writeBundle(_ context.Context, index uint64, partial uint8, bundle []byte) error {
-	bf := lrs.entriesPath(index, partial)
-	if err := lrs.s.createOverwrite(bf, bundle); err != nil {
-		if !errors.Is(err, os.ErrExist) {
-			return err
+func (lrs *logResourceStorage) writeBundle(ctx context.Context, index uint64, partial uint8, bundle []byte) error {
+	return otel.TraceErr(ctx, "tessera.storage.posix.writeBundle", tracer, func(ctx context.Context, span trace.Span) error {
+		bf := lrs.entriesPath(index, partial)
+		if err := lrs.s.createOverwrite(bf, bundle); err != nil {
+			if !errors.Is(err, os.ErrExist) {
+				return err
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // initialise ensures that the storage location is valid by loading the checkpoint from this location, or
@@ -585,114 +626,120 @@ func (s *Storage) ensureVersion(version uint16) error {
 
 // writeTreeState stores the current tree size and root hash on disk.
 func (s *Storage) writeTreeState(ctx context.Context, size uint64, root []byte) error {
-	now := time.Now()
+	return otel.TraceErr(ctx, "tessera.storage.posix.writeTreeState", tracer, func(ctx context.Context, span trace.Span) error {
+		now := time.Now()
 
-	raw, err := json.Marshal(treeState{Size: size, Root: root})
-	if err != nil {
-		return fmt.Errorf("error in Marshal: %v", err)
-	}
+		raw, err := json.Marshal(treeState{Size: size, Root: root})
+		if err != nil {
+			return fmt.Errorf("error in Marshal: %v", err)
+		}
 
-	if err := s.createOverwrite(filepath.Join(stateDir, treeStateFile), raw); err != nil {
-		return fmt.Errorf("failed to create/overwrite private tree state file: %w", err)
-	}
+		if err := s.createOverwrite(filepath.Join(stateDir, treeStateFile), raw); err != nil {
+			return fmt.Errorf("failed to create/overwrite private tree state file: %w", err)
+		}
 
-	posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("writeTreeState")))
-	return nil
+		posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("writeTreeState")))
+		return nil
+	})
 }
 
 // readTreeState reads and returns the currently stored tree state.
 func (s *Storage) readTreeState(ctx context.Context) (uint64, []byte, error) {
-	now := time.Now()
+	return otel.Trace2(ctx, "tessera.storage.posix.readTreeState", tracer, func(ctx context.Context, span trace.Span) (uint64, []byte, error) {
+		now := time.Now()
 
-	p := filepath.Join(s.cfg.Path, stateDir, treeStateFile)
-	raw, err := os.ReadFile(p)
-	if err != nil {
-		return 0, nil, fmt.Errorf("error in ReadFile(%q): %w", p, err)
-	}
-	ts := &treeState{}
-	if err := json.Unmarshal(raw, ts); err != nil {
-		return 0, nil, fmt.Errorf("error in Unmarshal: %v", err)
-	}
+		p := filepath.Join(s.cfg.Path, stateDir, treeStateFile)
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			return 0, nil, fmt.Errorf("error in ReadFile(%q): %w", p, err)
+		}
+		ts := &treeState{}
+		if err := json.Unmarshal(raw, ts); err != nil {
+			return 0, nil, fmt.Errorf("error in Unmarshal: %v", err)
+		}
 
-	posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("readTreeState")))
-	return ts.Size, ts.Root, nil
+		posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("readTreeState")))
+		return ts.Size, ts.Root, nil
+	})
 }
 
 // publishCheckpoint checks whether the currently published checkpoint (if any) is more than
 // minStaleness old, and, if so, creates and published a fresh checkpoint from the current
 // stored tree state.
 func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, minStalenessRepub time.Duration) (errR error) {
-	now := time.Now()
-	defer func() {
-		// Detect any errors and update metrics accordingly.
-		// Non-error cases are explicitly handled in the body of the function below.
-		if errR != nil {
-			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
-		}
-	}()
+	return otel.TraceErr(ctx, "tessera.storage.posix.publishCheckpoint", tracer, func(ctx context.Context, span trace.Span) error {
+		now := time.Now()
+		defer func() {
+			// Detect any errors and update metrics accordingly.
+			// Non-error cases are explicitly handled in the body of the function below.
+			if errR != nil {
+				publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
+			}
+		}()
 
-	// Lock the destination "published" checkpoint location:
-	unlock, err := a.s.lockFile(ctx, publishLock)
-	if err != nil {
-		return fmt.Errorf("lockFile(%s): %v", publishLock, err)
-	}
-	defer func() {
-		if err := unlock(); err != nil {
-			slog.WarnContext(ctx, "unlock", slog.String("publishlock", publishLock), slog.Any("error", err))
-		}
-	}()
-
-	var publishedAge time.Duration
-	var publishedSize uint64
-	cpExists := true
-	info, err := a.s.stat(layout.CheckpointPath)
-	if errors.Is(err, os.ErrNotExist) {
-		slog.DebugContext(ctx, "No checkpoint exists, publishing")
-		cpExists = false
-	} else if err != nil {
-		return fmt.Errorf("stat(%s): %v", layout.CheckpointPath, err)
-	} else {
-		publishedAge = time.Since(info.ModTime())
-		if publishedAge < minStalenessActive {
-			slog.DebugContext(ctx, "publishCheckpoint: skipping publish because previous checkpoint too fresh", slog.Duration("age", publishedAge), slog.Duration("minstalenessactive", minStalenessActive))
-			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped")))
-			return nil
-		}
-		publishedSize, err = a.publishedSize(ctx)
+		// Lock the destination "published" checkpoint location:
+		unlock, err := a.s.lockFile(ctx, publishLock)
 		if err != nil {
-			slog.DebugContext(ctx, "publishCheckpoint: skipping publish because unable to determine previously published size", slog.Any("error", err))
-			return err
+			return fmt.Errorf("lockFile(%s): %v", publishLock, err)
 		}
-	}
+		defer func() {
+			if err := unlock(); err != nil {
+				slog.WarnContext(ctx, "unlock", slog.String("publishlock", publishLock), slog.Any("error", err))
+			}
+		}()
 
-	size, root, err := a.s.readTreeState(ctx)
-	if err != nil {
-		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
-		return fmt.Errorf("readTreeState: %v", err)
-	}
-	if cpExists && size == publishedSize {
-		if minStalenessRepub == 0 || publishedAge < minStalenessRepub {
-			slog.DebugContext(ctx, "publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
-			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped_no_growth")))
-			return nil
+		var publishedAge time.Duration
+		var publishedSize uint64
+		cpExists := true
+		info, err := a.s.stat(layout.CheckpointPath)
+		if errors.Is(err, os.ErrNotExist) {
+			slog.DebugContext(ctx, "No checkpoint exists, publishing")
+			cpExists = false
+		} else if err != nil {
+			return fmt.Errorf("stat(%s): %v", layout.CheckpointPath, err)
+		} else {
+			publishedAge = time.Since(info.ModTime())
+			if publishedAge < minStalenessActive {
+				slog.DebugContext(ctx, "publishCheckpoint: skipping publish because previous checkpoint too fresh", slog.Duration("age", publishedAge), slog.Duration("minstalenessactive", minStalenessActive))
+				publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped")))
+				return nil
+			}
+			publishedSize, err = a.publishedSize(ctx)
+			if err != nil {
+				slog.DebugContext(ctx, "publishCheckpoint: skipping publish because unable to determine previously published size", slog.Any("error", err))
+				return err
+			}
 		}
-	}
 
-	cpRaw, err := a.newCP(ctx, size, root)
-	if err != nil {
-		return fmt.Errorf("newCP: %v", err)
-	}
+		size, root, err := a.s.readTreeState(ctx)
+		if err != nil {
+			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
+			return fmt.Errorf("readTreeState: %v", err)
+		}
+		if cpExists && size == publishedSize {
+			if minStalenessRepub == 0 || publishedAge < minStalenessRepub {
+				slog.DebugContext(ctx, "publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
+				publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped_no_growth")))
+				return nil
+			}
+		}
 
-	if err := a.s.createOverwrite(layout.CheckpointPath, cpRaw); err != nil {
-		return fmt.Errorf("createOverwrite(%s): %v", layout.CheckpointPath, err)
-	}
+		cpRaw, err := a.newCP(ctx, size, root)
+		if err != nil {
+			return fmt.Errorf("newCP: %v", err)
+		}
 
-	slog.DebugContext(ctx, "Published latest checkpoint", slog.Uint64("size", size), slog.String("root", fmt.Sprintf("%x", root)))
+		if err := a.s.createOverwrite(layout.CheckpointPath, cpRaw); err != nil {
+			return fmt.Errorf("createOverwrite(%s): %v", layout.CheckpointPath, err)
+		}
 
-	posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
-	publishCount.Add(ctx, 1)
+		slog.DebugContext(ctx, "Published latest checkpoint", slog.Uint64("size", size), slog.String("root", fmt.Sprintf("%x", root)))
 
-	return nil
+		posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
+		publishCount.Add(ctx, 1)
+
+		return nil
+	})
 }
 
 // publishedSize returns the size of tree that the currently published checkpoint, if any, commits to.
@@ -731,7 +778,7 @@ func (a *appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 		case <-t.C:
 		}
 
-		func() {
+		if err := otel.TraceErr(ctx, "tessera.storage.posix.garbageCollectJob", tracer, func(ctx context.Context, span trace.Span) error {
 			ctx, cancel := context.WithTimeout(ctx, defaultGCTimeout)
 			defer cancel()
 
@@ -740,15 +787,13 @@ func (a *appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 			// checkpoint!
 			pubSize, err := a.publishedSize(ctx)
 			if err != nil {
-				slog.WarnContext(ctx, "GarbageCollect", slog.Any("error", err))
-				return
+				return err
 			}
 
-			if err := a.s.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStorage.entriesPath); err != nil {
-				slog.WarnContext(ctx, "GarbageCollect failed", slog.Any("error", err))
-				return
-			}
-		}()
+			return a.s.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStorage.entriesPath)
+		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
+			slog.WarnContext(ctx, "GarbageCollect failed", slog.Any("error", err))
+		}
 	}
 }
 
@@ -888,12 +933,14 @@ func (s *Storage) stat(p string) (os.FileInfo, error) {
 // removeDirAll removes the named directory and anything it contains.
 // The provided path is interpreted relative to the log root.
 func (s *Storage) removeDirAll(p string) error {
-	p = filepath.Join(s.cfg.Path, p)
-	slog.DebugContext(context.Background(), "rm", slog.String("p", p))
-	if err := os.RemoveAll(p); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
+	return otel.TraceErr(context.Background(), "tessera.storage.posix.removeDirAll", tracer, func(ctx context.Context, span trace.Span) error {
+		p = filepath.Join(s.cfg.Path, p)
+		slog.DebugContext(context.Background(), "rm", slog.String("p", p))
+		if err := os.RemoveAll(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	})
 }
 
 // MigrationWriter creates a new POSIX storage for the MigrationTarget lifecycle mode.

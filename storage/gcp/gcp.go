@@ -913,7 +913,7 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 		}
 
 		return nil
-		}, trace.WithAttributes(otel.PeriodicKey.Bool(true)))
+	}, trace.WithAttributes(otel.PeriodicKey.Bool(true)))
 }
 
 // addSeqMutation returns a mutation to the Seq table for the given sequence number and entries.

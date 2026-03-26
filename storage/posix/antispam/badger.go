@@ -121,27 +121,30 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 			case <-ticker.C:
 			}
 
-			runsInTick = 0
-		again:
-			start := time.Now()
-			runsInTick++
-			err := db.RunValueLogGC(0.7)
-			status := "success"
-			if err != nil {
-				// We're done, export the number of runs we did.
-				gcRunsPerTick.Record(ctx, runsInTick)
-				if errors.Is(err, badger.ErrNoRewrite) {
-					status = "no_rewrite"
-				} else {
-					status = "failure"
+			_ = otel.TraceErr(ctx, "tessera.antispam.badger.garbage_collect", tracer, func(ctx context.Context, span trace.Span) error {
+				runsInTick = 0
+
+				var err error
+				for err == nil {
+					start := time.Now()
+					runsInTick++
+					err = db.RunValueLogGC(0.7)
+					status := "success"
+					if err != nil {
+						// We're done, export the number of runs we did.
+						gcRunsPerTick.Record(ctx, runsInTick)
+						if errors.Is(err, badger.ErrNoRewrite) {
+							status = "no_rewrite"
+						} else {
+							status = "failure"
+						}
+					}
+					attr := metric.WithAttributes(gcStatusKey.String(status))
+					gcCounter.Add(ctx, 1, attr)
+					gcDuration.Record(ctx, float64(time.Since(start).Milliseconds()), attr)
 				}
-			}
-			attr := metric.WithAttributes(gcStatusKey.String(status))
-			gcCounter.Add(ctx, 1, attr)
-			gcDuration.Record(ctx, float64(time.Since(start).Milliseconds()), attr)
-			if err == nil {
-				goto again
-			}
+				return nil
+			}, trace.WithAttributes(otel.PeriodicKey.Bool(true)))
 		}
 	}()
 
