@@ -33,6 +33,7 @@ var (
 
 var (
 	errorTypeKey  = attribute.Key("error.type")
+	numEntriesKey = attribute.Key("tessera.numEntries")
 	objectPathKey = attribute.Key("tessera.objectPath")
 	opNameKey     = attribute.Key("op_name")
 

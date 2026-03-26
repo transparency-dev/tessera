@@ -285,8 +285,6 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 		}
 
 		if err := otel.TraceErr(ctx, "tessera.storage.aws.integrateEntriesJob", tracer, func(ctx context.Context, span trace.Span) error {
-			span.SetAttributes(otel.PeriodicKey.Bool(true))
-
 			ctx, cancel := context.WithTimeout(ctx, defaultIntegrationTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
@@ -298,7 +296,7 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 			default:
 			}
 			return nil
-		}); err != nil {
+		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
 			slog.ErrorContext(ctx, "integrateEntries", slog.Any("error", err))
 		}
 	}
@@ -319,8 +317,6 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 		case <-t.C:
 		}
 		if err := otel.TraceErr(ctx, "tessera.storage.aws.publishCheckpointJob", tracer, func(ctx context.Context, span trace.Span) error {
-			span.SetAttributes(otel.PeriodicKey.Bool(true))
-
 			ctx, cancel := context.WithTimeout(ctx, defaultPublicationTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
@@ -328,7 +324,7 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 				return fmt.Errorf("publishCheckpoint failed: %v", err)
 			}
 			return nil
-		}); err != nil {
+		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
 			slog.ErrorContext(ctx, "Failed to execute checkpoint publisher job", slog.Any("error", err))
 		}
 	}
@@ -351,8 +347,6 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 		case <-t.C:
 		}
 		if err := otel.TraceErr(ctx, "tessera.storage.aws.garbageCollectJob", tracer, func(ctx context.Context, span trace.Span) error {
-			span.SetAttributes(otel.PeriodicKey.Bool(true))
-
 			ctx, cancel := context.WithTimeout(ctx, defaultGCTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
@@ -372,7 +366,7 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 				return fmt.Errorf("garbageCollect failed: %v", err)
 			}
 			return nil
-		}); err != nil {
+		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
 			slog.WarnContext(ctx, "Failed to execute garbage Collector job", slog.Any("error", err))
 		}
 	}
@@ -1043,76 +1037,80 @@ func (s *mySQLSequencer) initDB(ctx context.Context) error {
 // This is achieved by storing the passed-in entries in the Seq table in MySQL, keyed by the
 // index assigned to the first entry in the batch.
 func (s *mySQLSequencer) assignEntries(ctx context.Context, entries []*tessera.Entry) error {
-	// First grab the treeSize in a non-locking read-only fashion (we don't want to block/collide with integration).
-	// We'll use this value to determine whether we need to apply back-pressure.
-	var treeSize uint64
-	row := s.dbPool.QueryRowContext(ctx, "SELECT seq FROM IntCoord WHERE id = ?", 0)
-	if err := row.Scan(&treeSize); err == sql.ErrNoRows {
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("failed to read integration coordination info: %v", err)
-	}
+	return otel.TraceErr(ctx, "tessera.storage.gcp.assignEntries", tracer, func(ctx context.Context, span trace.Span) error {
+		span.SetAttributes(numEntriesKey.Int(len(entries)))
+		// First grab the treeSize in a non-locking read-only fashion (we don't want to block/collide with integration).
+		// We'll use this value to determine whether we need to apply back-pressure.
+		var treeSize uint64
+		row := s.dbPool.QueryRowContext(ctx, "SELECT seq FROM IntCoord WHERE id = ?", 0)
+		if err := row.Scan(&treeSize); err == sql.ErrNoRows {
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("failed to read integration coordination info: %v", err)
+		}
 
-	// Now move on with sequencing in a single transaction
-	tx, err := s.dbPool.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin Tx: %v", err)
-	}
-	defer func() {
-		if tx != nil {
-			if err := tx.Rollback(); err != nil {
-				slog.ErrorContext(ctx, "failed to rollback Tx", slog.Any("error", err))
+		// Now move on with sequencing in a single transaction
+		tx, err := s.dbPool.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("failed to begin Tx: %v", err)
+		}
+		defer func() {
+			if tx != nil {
+				if err := tx.Rollback(); err != nil {
+					slog.ErrorContext(ctx, "failed to rollback Tx", slog.Any("error", err))
+				}
+			}
+		}()
+
+		// First we need to grab the next available sequence number from the SeqCoord table.
+		var next, id uint64
+		r := tx.QueryRowContext(ctx, "SELECT id, next FROM SeqCoord WHERE id = ? FOR UPDATE", 0)
+		if err := r.Scan(&id, &next); err != nil {
+			return fmt.Errorf("failed to read seqcoord: %v", err)
+		}
+
+		// Check whether there are too many outstanding entries and we should apply
+		// back-pressure.
+		if outstanding := next - treeSize; outstanding > s.maxOutstanding {
+			return tessera.ErrPushbackIntegration
+		}
+
+		sequencedEntries := make([]storage.SequencedEntry, len(entries))
+		// Assign provisional sequence numbers to entries.
+		// We need to do this here in order to support serialisations which include the log position.
+		for i, e := range entries {
+			sequencedEntries[i] = storage.SequencedEntry{
+				BundleData: e.MarshalBundleData(next + uint64(i)),
+				LeafHash:   e.LeafHash(),
 			}
 		}
-	}()
 
-	// First we need to grab the next available sequence number from the SeqCoord table.
-	var next, id uint64
-	r := tx.QueryRowContext(ctx, "SELECT id, next FROM SeqCoord WHERE id = ? FOR UPDATE", 0)
-	if err := r.Scan(&id, &next); err != nil {
-		return fmt.Errorf("failed to read seqcoord: %v", err)
-	}
-
-	// Check whether there are too many outstanding entries and we should apply
-	// back-pressure.
-	if outstanding := next - treeSize; outstanding > s.maxOutstanding {
-		return tessera.ErrPushbackIntegration
-	}
-
-	sequencedEntries := make([]storage.SequencedEntry, len(entries))
-	// Assign provisional sequence numbers to entries.
-	// We need to do this here in order to support serialisations which include the log position.
-	for i, e := range entries {
-		sequencedEntries[i] = storage.SequencedEntry{
-			BundleData: e.MarshalBundleData(next + uint64(i)),
-			LeafHash:   e.LeafHash(),
+		// Flatten the entries into a single slice of bytes which we can store in the Seq.v column.
+		b := &bytes.Buffer{}
+		e := gob.NewEncoder(b)
+		if err := e.Encode(sequencedEntries); err != nil {
+			return fmt.Errorf("failed to serialise batch: %v", err)
 		}
-	}
+		data := b.Bytes()
+		num := uint64(len(entries))
 
-	// Flatten the entries into a single slice of bytes which we can store in the Seq.v column.
-	b := &bytes.Buffer{}
-	e := gob.NewEncoder(b)
-	if err := e.Encode(sequencedEntries); err != nil {
-		return fmt.Errorf("failed to serialise batch: %v", err)
-	}
-	data := b.Bytes()
-	num := uint64(len(entries))
+		// Insert our newly sequenced batch of entries into Seq,
+		if _, err := tx.ExecContext(ctx, "INSERT INTO Seq(id, seq, v) VALUES(?, ?, ?)", 0, next, data); err != nil {
+			return fmt.Errorf("insert into seq: %v", err)
+		}
+		// and update the next-available sequence number row in SeqCoord.
+		if _, err := tx.ExecContext(ctx, "UPDATE SeqCoord SET next = ? WHERE ID = ?", next+num, 0); err != nil {
+			return fmt.Errorf("update seqcoord: %v", err)
+		}
 
-	// Insert our newly sequenced batch of entries into Seq,
-	if _, err := tx.ExecContext(ctx, "INSERT INTO Seq(id, seq, v) VALUES(?, ?, ?)", 0, next, data); err != nil {
-		return fmt.Errorf("insert into seq: %v", err)
-	}
-	// and update the next-available sequence number row in SeqCoord.
-	if _, err := tx.ExecContext(ctx, "UPDATE SeqCoord SET next = ? WHERE ID = ?", next+num, 0); err != nil {
-		return fmt.Errorf("update seqcoord: %v", err)
-	}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit Tx: %v", err)
+		}
+		tx = nil
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit Tx: %v", err)
-	}
-	tx = nil
+		return nil
 
-	return nil
+	}, trace.WithAttributes(otel.PeriodicKey.Bool(true)))
 }
 
 // consumeEntries calls f with previously sequenced entries.

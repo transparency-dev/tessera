@@ -117,7 +117,6 @@ func (a *PublicationAwaiter) pollLoop(ctx context.Context, readCheckpoint func(c
 	)
 	for done := false; !done; {
 		done, _ = otel.Trace(ctx, "tessera.awaiter.pollLoopIteration", tracer, func(ctx context.Context, span trace.Span) (bool, error) {
-			span.SetAttributes(otel.PeriodicKey.Bool(true))
 
 			ctxDone := false
 
@@ -156,6 +155,6 @@ func (a *PublicationAwaiter) pollLoop(ctx context.Context, readCheckpoint func(c
 			a.c.L.Unlock()
 			span.AddEvent("Unlocked")
 			return ctxDone, nil
-		})
+		}, trace.WithAttributes(otel.PeriodicKey.Bool(true)))
 	}
 }
