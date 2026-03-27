@@ -382,32 +382,11 @@ func (n *nodeCache) GetNode(ctx context.Context, id compact.NodeID) ([]byte, err
 		}
 		// Otherwise look in fetched tiles:
 		tileLevel, tileIndex, nodeLevel, nodeIndex := layout.NodeCoordsToTileAddress(uint64(id.Level), uint64(id.Index))
-		ti, err, _ := n.g.Do(fmt.Sprintf("%d/%d", tileLevel, tileIndex), func() (any, error) {
-			tKey := tileKey{tileLevel, tileIndex}
-			// Check cache
-			if t, ok := n.tiles.Get(tKey); ok {
-				return t, nil
-			}
-
-			span.AddEvent("cache miss")
-			p := layout.PartialTileSize(tileLevel, tileIndex, n.logSize)
-			tileRaw, err := n.getTile(ctx, tileLevel, tileIndex, p)
-			if err != nil {
-				return api.HashTile{}, fmt.Errorf("failed to fetch tile: %v", err)
-			}
-
-			var tile api.HashTile
-			if err := tile.UnmarshalText(tileRaw); err != nil {
-				return api.HashTile{}, fmt.Errorf("failed to parse tile: %v", err)
-			}
-
-			n.tiles.Add(tKey, tile)
-			return tile, nil
-		})
+		p := layout.PartialTileSize(tileLevel, tileIndex, n.logSize)
+		t, err := n.fetchTile(ctx, tileLevel, tileIndex, p)
 		if err != nil {
 			return nil, err
 		}
-		t := ti.(api.HashTile)
 
 		// We've got the tile, now we need to look up (or calculate) the node inside of it
 		numLeaves := 1 << nodeLevel
@@ -444,4 +423,32 @@ func (n *nodeCache) GetNodes(ctx context.Context, nIDs []compact.NodeID) ([][]by
 		return nil, err
 	}
 	return hashes, nil
+}
+
+func (n *nodeCache) fetchTile(ctx context.Context, tileLevel, tileIndex uint64, p uint8) (api.HashTile, error) {
+	ti, err, _ := n.g.Do(fmt.Sprintf("%d/%d", tileLevel, tileIndex), func() (any, error) {
+		return otel.Trace(ctx, "tessera.client.nodecache.fetchTile", tracer, func(ctx context.Context, span trace.Span) (api.HashTile, error) {
+			tKey := tileKey{tileLevel, tileIndex}
+			// Check cache
+			if t, ok := n.tiles.Get(tKey); ok {
+				return t, nil
+			}
+
+			span.AddEvent("cache miss")
+			tileRaw, err := n.getTile(ctx, tileLevel, tileIndex, p)
+			if err != nil {
+				return api.HashTile{}, fmt.Errorf("failed to fetch tile: %v", err)
+			}
+
+			var tile api.HashTile
+			if err := tile.UnmarshalText(tileRaw); err != nil {
+				return api.HashTile{}, fmt.Errorf("failed to parse tile: %v", err)
+			}
+
+			n.tiles.Add(tKey, tile)
+			return tile, nil
+		})
+	})
+	t := ti.(api.HashTile)
+	return t, err
 }
