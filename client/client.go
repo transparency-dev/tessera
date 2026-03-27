@@ -372,34 +372,17 @@ func (n *nodeCache) GetNode(ctx context.Context, id compact.NodeID) ([]byte, err
 		// node cache. We only want to do this once per tile, so use singleflight keyed by the _tile_ ID
 		// to make that happen.
 		tileLevel, tileIndex, _, _ := layout.NodeCoordsToTileAddress(uint64(id.Level), uint64(id.Index))
-		_, err, _ := n.g.Do(fmt.Sprintf("%d/%d", tileLevel, tileIndex), func() (any, error) {
+		k := fmt.Sprintf("%d/%d", tileLevel, tileIndex)
+		defer n.g.Forget(k)
+		_, err, _ := n.g.Do(k, func() (any, error) {
+			if n.nodes.Contains(id) {
+				return struct{}{}, nil
+			}
 			span.AddEvent("cache miss")
 
 			p := layout.PartialTileSize(tileLevel, tileIndex, n.logSize)
-			tile, err := n.fetchTile(ctx, tileLevel, tileIndex, p)
-			if err != nil {
+			if err := n.fetchTileAndPopulateCache(ctx, tileLevel, tileIndex, p); err != nil {
 				return struct{}{}, err
-			}
-
-			// visitFn is a visitor callback which populates the nodes cache.
-			// Used by the calls to compact range below.
-			visitFn := func(intID compact.NodeID, h []byte) {
-				// Figure out the "global" nodeID for the node intID in the requested tile.
-				i := compact.NodeID{
-					Level: uint(tileLevel*layout.TileHeight) + intID.Level,
-					Index: (tileIndex*layout.TileWidth)>>intID.Level + intID.Index,
-				}
-				_ = n.nodes.Add(i, h)
-			}
-			rf := compact.RangeFactory{Hash: hasher.HashChildren}
-			r := rf.NewEmptyRange(0)
-			for _, l := range tile.Nodes {
-				if err := r.Append(l, visitFn); err != nil {
-					return struct{}{}, fmt.Errorf("failed to Append: %v", err)
-				}
-			}
-			if _, err := r.GetRootHash(visitFn); err != nil {
-				return struct{}{}, fmt.Errorf("failed to visit all nodes: %v", err)
 			}
 
 			return struct{}{}, nil
@@ -434,18 +417,39 @@ func (n *nodeCache) GetNodes(ctx context.Context, nIDs []compact.NodeID) ([][]by
 	return hashes, nil
 }
 
-// fetchTile fetches and parses the specified tile from storage.
-func (n *nodeCache) fetchTile(ctx context.Context, tileLevel, tileIndex uint64, p uint8) (api.HashTile, error) {
-	return otel.Trace(ctx, "tessera.client.nodecache.fetchTile", tracer, func(ctx context.Context, span trace.Span) (api.HashTile, error) {
+// fetchTileAndPopulateCache fetches and parses the specified tile from storage, populating the nodes it contains into the node cache.
+func (n *nodeCache) fetchTileAndPopulateCache(ctx context.Context, tileLevel, tileIndex uint64, p uint8) error {
+	return otel.TraceErr(ctx, "tessera.client.nodecache.fetchTileAndPopulateCache", tracer, func(ctx context.Context, span trace.Span) error {
 		tileRaw, err := n.getTile(ctx, tileLevel, tileIndex, p)
 		if err != nil {
-			return api.HashTile{}, fmt.Errorf("failed to fetch tile: %v", err)
+			return fmt.Errorf("failed to fetch tile: %v", err)
 		}
 
 		var tile api.HashTile
 		if err := tile.UnmarshalText(tileRaw); err != nil {
-			return api.HashTile{}, fmt.Errorf("failed to parse tile: %v", err)
+			return fmt.Errorf("failed to parse tile: %v", err)
 		}
-		return tile, nil
+
+		// visitFn is a visitor callback which populates the nodes cache.
+		// Used by the calls to compact range below.
+		visitFn := func(intID compact.NodeID, h []byte) {
+			// Figure out the "global" nodeID for the node intID in the requested tile.
+			i := compact.NodeID{
+				Level: uint(tileLevel*layout.TileHeight) + intID.Level,
+				Index: (tileIndex*layout.TileWidth)>>intID.Level + intID.Index,
+			}
+			_ = n.nodes.Add(i, h)
+		}
+		rf := compact.RangeFactory{Hash: hasher.HashChildren}
+		r := rf.NewEmptyRange(0)
+		for _, l := range tile.Nodes {
+			if err := r.Append(l, visitFn); err != nil {
+				return fmt.Errorf("failed to Append: %v", err)
+			}
+		}
+		if _, err := r.GetRootHash(visitFn); err != nil {
+			return fmt.Errorf("failed to visit all nodes: %v", err)
+		}
+		return nil
 	})
 }
