@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"sync"
 
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/transparency-dev/formats/log"
 	"github.com/transparency-dev/merkle/compact"
 	"github.com/transparency-dev/merkle/proof"
@@ -32,6 +33,8 @@ import (
 	"github.com/transparency-dev/tessera/internal/otel"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/mod/sumdb/note"
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
@@ -125,15 +128,7 @@ func FetchRangeNodes(ctx context.Context, s uint64, f TileFetcherFunc) ([][]byte
 		nc := newNodeCache(f, s)
 		nIDs := make([]compact.NodeID, 0, compact.RangeSize(0, s))
 		nIDs = compact.RangeNodes(0, s, nIDs)
-		hashes := make([][]byte, 0, len(nIDs))
-		for _, n := range nIDs {
-			h, err := nc.GetNode(ctx, n)
-			if err != nil {
-				return nil, err
-			}
-			hashes = append(hashes, h)
-		}
-		return hashes, nil
+		return nc.GetNodes(ctx, nIDs)
 	})
 }
 
@@ -180,7 +175,7 @@ func GetEntryBundle(ctx context.Context, f EntryBundleFetcherFunc, i, logSize ui
 // at a given tree size.
 type ProofBuilder struct {
 	treeSize  uint64
-	nodeCache nodeCache
+	nodeCache *nodeCache
 }
 
 // NewProofBuilder creates a new ProofBuilder object for a given tree size.
@@ -225,18 +220,12 @@ func (pb *ProofBuilder) ConsistencyProof(ctx context.Context, smaller, larger ui
 	})
 }
 
-// fetchNodes retrieves the specified proof nodes via pb's nodeCache.
+// fetchNodesAndRehash retrieves the specified proof nodes via pb's nodeCache, rehashing them if necessary.
 func (pb *ProofBuilder) fetchNodes(ctx context.Context, nodes proof.Nodes) ([][]byte, error) {
-	hashes := make([][]byte, 0, len(nodes.IDs))
-	// TODO(al) parallelise this.
-	for _, id := range nodes.IDs {
-		h, err := pb.nodeCache.GetNode(ctx, id)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get node (%v): %v", id, err)
-		}
-		hashes = append(hashes, h)
+	hashes, err := pb.nodeCache.GetNodes(ctx, nodes.IDs)
+	if err != nil {
+		return nil, err
 	}
-	var err error
 	if hashes, err = nodes.Rehash(hashes, hasher.HashChildren); err != nil {
 		return nil, fmt.Errorf("failed to rehash proof: %v", err)
 	}
@@ -352,28 +341,31 @@ type tileKey struct {
 
 // nodeCache hides the tiles abstraction away, and improves
 // performance by caching tiles it's seen.
-// Not threadsafe, and intended to be only used throughout the course
-// of a single request.
+// Threadsafe.
 type nodeCache struct {
 	logSize   uint64
-	ephemeral map[compact.NodeID][]byte
-	tiles     map[tileKey]api.HashTile
+	ephemeral sync.Map
+	tiles     *lru.Cache[tileKey, api.HashTile]
 	getTile   TileFetcherFunc
+	g         singleflight.Group
 }
 
 // newNodeCache creates a new nodeCache instance for a given log size.
-func newNodeCache(f TileFetcherFunc, logSize uint64) nodeCache {
-	return nodeCache{
-		logSize:   logSize,
-		ephemeral: make(map[compact.NodeID][]byte),
-		tiles:     make(map[tileKey]api.HashTile),
-		getTile:   f,
+func newNodeCache(f TileFetcherFunc, logSize uint64) *nodeCache {
+	c, err := lru.New[tileKey, api.HashTile](1024)
+	if err != nil {
+		panic(fmt.Errorf("lru.New: %v", err))
+	}
+	return &nodeCache{
+		logSize: logSize,
+		tiles:   c,
+		getTile: f,
 	}
 }
 
 // SetEphemeralNode stored a derived "ephemeral" tree node.
 func (n *nodeCache) SetEphemeralNode(id compact.NodeID, h []byte) {
-	n.ephemeral[id] = h
+	n.ephemeral.Store(id, h)
 }
 
 // GetNode returns the internal log tree node hash for the specified node ID.
@@ -385,27 +377,38 @@ func (n *nodeCache) GetNode(ctx context.Context, id compact.NodeID) ([]byte, err
 		span.SetAttributes(indexKey.Int64(otel.Clamp64(id.Index)), levelKey.Int64(int64(id.Level)))
 
 		// First check for ephemeral nodes:
-		if e := n.ephemeral[id]; len(e) != 0 {
-			return e, nil
+		if e, ok := n.ephemeral.Load(id); ok {
+			return e.([]byte), nil
 		}
 		// Otherwise look in fetched tiles:
 		tileLevel, tileIndex, nodeLevel, nodeIndex := layout.NodeCoordsToTileAddress(uint64(id.Level), uint64(id.Index))
-		tKey := tileKey{tileLevel, tileIndex}
-		t, ok := n.tiles[tKey]
-		if !ok {
+		ti, err, _ := n.g.Do(fmt.Sprintf("%d/%d", tileLevel, tileIndex), func() (any, error) {
+			tKey := tileKey{tileLevel, tileIndex}
+			// Check cache
+			if t, ok := n.tiles.Get(tKey); ok {
+				return t, nil
+			}
+
 			span.AddEvent("cache miss")
 			p := layout.PartialTileSize(tileLevel, tileIndex, n.logSize)
 			tileRaw, err := n.getTile(ctx, tileLevel, tileIndex, p)
 			if err != nil {
-				return nil, fmt.Errorf("failed to fetch tile: %v", err)
+				return api.HashTile{}, fmt.Errorf("failed to fetch tile: %v", err)
 			}
+
 			var tile api.HashTile
 			if err := tile.UnmarshalText(tileRaw); err != nil {
-				return nil, fmt.Errorf("failed to parse tile: %v", err)
+				return api.HashTile{}, fmt.Errorf("failed to parse tile: %v", err)
 			}
-			t = tile
-			n.tiles[tKey] = tile
+
+			n.tiles.Add(tKey, tile)
+			return tile, nil
+		})
+		if err != nil {
+			return nil, err
 		}
+		t := ti.(api.HashTile)
+
 		// We've got the tile, now we need to look up (or calculate) the node inside of it
 		numLeaves := 1 << nodeLevel
 		firstLeaf := int(nodeIndex) * numLeaves
@@ -422,4 +425,23 @@ func (n *nodeCache) GetNode(ctx context.Context, id compact.NodeID) ([]byte, err
 		}
 		return r.GetRootHash(nil)
 	})
+}
+
+func (n *nodeCache) GetNodes(ctx context.Context, nIDs []compact.NodeID) ([][]byte, error) {
+	hashes := make([][]byte, len(nIDs))
+	g, ctx := errgroup.WithContext(ctx)
+	for i, id := range nIDs {
+		g.Go(func() error {
+			h, err := n.GetNode(ctx, id)
+			if err != nil {
+				return err
+			}
+			hashes[i] = h
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	return hashes, nil
 }
