@@ -334,7 +334,7 @@ func TestNodeFetcherAddressing(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewProofBuilder: %v", err)
 			}
-			_, err = pb.fetchNodesAndRehash(t.Context(), proof.Nodes{IDs: []compact.NodeID{compact.NewNodeID(test.nodeLevel, test.nodeIdx)}})
+			_, err = pb.materialiseProof(t.Context(), proof.Nodes{IDs: []compact.NodeID{compact.NewNodeID(test.nodeLevel, test.nodeIdx)}})
 			if err != nil {
 				t.Fatalf("fetchNodes: %v", err)
 			}
