@@ -32,12 +32,12 @@ var (
 )
 
 var (
-	errorTypeKey  = attribute.Key("error.type")
-	treeSizeKey   = attribute.Key("tessera.treeSize")
-	fromSizeKey   = attribute.Key("tessera.fromSize")
-	numEntriesKey = attribute.Key("tessera.numEntries")
-	objectPathKey = attribute.Key("tessera.objectPath")
-	opNameKey     = attribute.Key("op_name")
+	outcomeTypeKey = attribute.Key("tessera.publishCheckpoint.outcome")
+	treeSizeKey    = attribute.Key("tessera.treeSize")
+	fromSizeKey    = attribute.Key("tessera.fromSize")
+	numEntriesKey  = attribute.Key("tessera.numEntries")
+	objectPathKey  = attribute.Key("tessera.objectPath")
+	opNameKey      = attribute.Key("op_name")
 
 	publishCount           metric.Int64Counter
 	opsHistogram           metric.Int64Histogram

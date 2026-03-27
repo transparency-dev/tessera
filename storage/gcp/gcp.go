@@ -1088,14 +1088,14 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 	}
 
 	return otel.TraceErr(ctx, "tessera.storage.gcp.publishCheckpoint", tracer, func(ctx context.Context, span trace.Span) error {
-		// outcomeAttrs is used to track any attributes which need to be attached to metrics based on the outcome of the attempt to publish.
-		var outcomeAttrs []attribute.KeyValue
+		// outcomeAttr records the outcome of the checkpoint publication attempt for metrics and traces.
+		var outcomeAttr attribute.KeyValue
 		start := time.Now()
 
 		span.AddEvent("Starting ReadWriteTransaction")
 		if _, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 			// Reset outcome attributes from any prior transaction attempts.
-			outcomeAttrs = []attribute.KeyValue{}
+			outcomeAttr = outcomeTypeKey.String("success")
 
 			span.AddEvent("Reading PubCoord")
 			pRow, err := txn.ReadRowWithOptions(ctx, "PubCoord", spanner.Key{0}, []string{"publishedAt", "size"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
@@ -1110,13 +1110,14 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 
 			if lastSize.Valid && int64(currentSize) < lastSize.Int64 {
 				// Our view is stale, abort.
+				outcomeAttr = outcomeTypeKey.String("aborted")
 				return nil
 			}
 
 			cpAge := time.Since(pubAt)
 			if cpAge < minStaleActive {
 				slog.DebugContext(ctx, "publishCheckpoint: last checkpoint published too recently, not publishing new checkpoint", slog.Duration("cpAge", cpAge), slog.Duration("minStaleActive", minStaleActive))
-				outcomeAttrs = append(outcomeAttrs, errorTypeKey.String("skipped"))
+				outcomeAttr = outcomeTypeKey.String("skipped")
 				return nil
 			}
 
@@ -1132,7 +1133,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 
 			if !shouldPublish {
 				slog.DebugContext(ctx, "publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
-				outcomeAttrs = append(outcomeAttrs, errorTypeKey.String("skipped_no_growth"))
+				outcomeAttr = outcomeTypeKey.String("skipped_no_growth")
 				return nil
 			}
 
@@ -1149,11 +1150,13 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 
 			return nil
 		}, spanner.TransactionOptions{TransactionTag: "tessera.op=publishCheckpoint"}); err != nil {
-			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
+			span.SetAttributes(outcomeTypeKey.String("error"))
+			publishCount.Add(ctx, 1, metric.WithAttributes(outcomeTypeKey.String("error")))
 			return err
 		}
 		opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
-		publishCount.Add(ctx, 1, metric.WithAttributes(outcomeAttrs...))
+		span.SetAttributes(outcomeAttr)
+		publishCount.Add(ctx, 1, metric.WithAttributes(outcomeAttr))
 		return nil
 	})
 }
