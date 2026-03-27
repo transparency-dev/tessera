@@ -350,3 +350,84 @@ func TestNodeFetcherAddressing(t *testing.T) {
 		})
 	}
 }
+
+func BenchmarkProofBuilder(b *testing.B) {
+	ctx := context.Background()
+	const treeSize = 1_000_000
+	dummyHash := sha256.Sum256([]byte("dummy"))
+
+	// Pre-generate a full tile to avoid marshaling in the loop.
+	fullTile := &api.HashTile{
+		Nodes: make([][]byte, 256),
+	}
+	for i := range fullTile.Nodes {
+		fullTile.Nodes[i] = dummyHash[:]
+	}
+	fullTileBytes, err := fullTile.MarshalText()
+	if err != nil {
+		b.Fatalf("failed to marshal full tile: %v", err)
+	}
+
+	// We'll ignore partial tiles for simplicity in this benchmark as they are rare in a 1M tree
+	// except for the very last tiles of each level.
+	f := func(_ context.Context, _, _ uint64, p uint8) ([]byte, error) {
+		if p == 0 {
+			return fullTileBytes, nil
+		}
+		// Handle partial tiles just in case, though they might not be hit often.
+		partialTile := &api.HashTile{
+			Nodes: make([][]byte, p),
+		}
+		for i := range partialTile.Nodes {
+			partialTile.Nodes[i] = dummyHash[:]
+		}
+		return partialTile.MarshalText()
+	}
+
+	b.Run("InclusionProof", func(b *testing.B) {
+		b.Run("WarmCache", func(b *testing.B) {
+			pb, _ := NewProofBuilder(ctx, treeSize, f)
+			// Warm up the cache with some proofs.
+			for i := uint64(0); i < 100; i++ {
+				_, _ = pb.InclusionProof(ctx, i)
+			}
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = pb.InclusionProof(ctx, uint64(i%treeSize))
+			}
+		})
+
+		b.Run("ColdCache", func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				pb, _ := NewProofBuilder(ctx, treeSize, f)
+				b.StartTimer()
+				_, _ = pb.InclusionProof(ctx, uint64(i%treeSize))
+			}
+		})
+	})
+
+	b.Run("ConsistencyProof", func(b *testing.B) {
+		b.Run("WarmCache", func(b *testing.B) {
+			pb, _ := NewProofBuilder(ctx, treeSize, f)
+			// Warm up.
+			for i := uint64(0); i < 100; i++ {
+				_, _ = pb.ConsistencyProof(ctx, i, i+1)
+			}
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				// Benchmark consistency proof from a smaller size to the full tree size.
+				_, _ = pb.ConsistencyProof(ctx, uint64(i%treeSize), treeSize)
+			}
+		})
+
+		b.Run("ColdCache", func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				pb, _ := NewProofBuilder(ctx, treeSize, f)
+				b.StartTimer()
+				_, _ = pb.ConsistencyProof(ctx, uint64(i%treeSize), treeSize)
+			}
+		})
+	})
+}
