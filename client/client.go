@@ -333,79 +333,88 @@ func (lst *LogStateTracker) Latest() log.Checkpoint {
 	return lst.latestConsistent
 }
 
-// tileKey is used as a key in nodeCache's tile map.
-type tileKey struct {
-	tileLevel uint64
-	tileIndex uint64
-}
-
 // nodeCache hides the tiles abstraction away, and improves
 // performance by caching tiles it's seen.
 // Threadsafe.
 type nodeCache struct {
-	logSize   uint64
-	ephemeral sync.Map
-	tiles     *lru.Cache[tileKey, api.HashTile]
-	getTile   TileFetcherFunc
-	g         singleflight.Group
+	logSize uint64
+	nodes   *lru.Cache[compact.NodeID, []byte]
+	getTile TileFetcherFunc
+	g       singleflight.Group
 }
 
 // newNodeCache creates a new nodeCache instance for a given log size.
 func newNodeCache(f TileFetcherFunc, logSize uint64) *nodeCache {
-	c, err := lru.New[tileKey, api.HashTile](1024)
+	c, err := lru.New[compact.NodeID, []byte](64 << 10)
 	if err != nil {
 		panic(fmt.Errorf("lru.New: %v", err))
 	}
 	return &nodeCache{
 		logSize: logSize,
-		tiles:   c,
+		nodes:   c,
 		getTile: f,
 	}
 }
 
-// SetEphemeralNode stored a derived "ephemeral" tree node.
-func (n *nodeCache) SetEphemeralNode(id compact.NodeID, h []byte) {
-	n.ephemeral.Store(id, h)
-}
-
 // GetNode returns the internal log tree node hash for the specified node ID.
-// A previously set ephemeral node will be returned if id matches, otherwise
-// the tile containing the requested node will be fetched and cached, and the
-// node hash returned.
+// The tile containing the node will be fetched if necessary.
 func (n *nodeCache) GetNode(ctx context.Context, id compact.NodeID) ([]byte, error) {
 	return otel.Trace(ctx, "tessera.client.nodecache.GetNode", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
 		span.SetAttributes(indexKey.Int64(otel.Clamp64(id.Index)), levelKey.Int64(int64(id.Level)))
 
-		// First check for ephemeral nodes:
-		if e, ok := n.ephemeral.Load(id); ok {
-			return e.([]byte), nil
-		}
-		// Otherwise look in fetched tiles:
-		tileLevel, tileIndex, nodeLevel, nodeIndex := layout.NodeCoordsToTileAddress(uint64(id.Level), uint64(id.Index))
-		p := layout.PartialTileSize(tileLevel, tileIndex, n.logSize)
-		t, err := n.fetchTile(ctx, tileLevel, tileIndex, p)
-		if err != nil {
-			return nil, err
+		// Check if we've already cached this node, return it directly if so, otherwise we'll need to fetch it.
+		if e, ok := n.nodes.Get(id); ok {
+			return e, nil
 		}
 
-		// We've got the tile, now we need to look up (or calculate) the node inside of it
-		numLeaves := 1 << nodeLevel
-		firstLeaf := int(nodeIndex) * numLeaves
-		lastLeaf := firstLeaf + numLeaves
-		if lastLeaf > len(t.Nodes) {
-			return nil, fmt.Errorf("require leaf nodes [%d, %d) but only got %d leaves", firstLeaf, lastLeaf, len(t.Nodes))
-		}
-		rf := compact.RangeFactory{Hash: hasher.HashChildren}
-		r := rf.NewEmptyRange(0)
-		for _, l := range t.Nodes[firstLeaf:lastLeaf] {
-			if err := r.Append(l, nil); err != nil {
-				return nil, fmt.Errorf("failed to Append: %v", err)
+		// We now need to fetch the tile and use the contents to populate the cache.
+		// We'll fetch/parse the tile, and then reconsistute all the internal nodes into the
+		// node cache. We only want to do this once per tile, so use singleflight keyed by the _tile_ ID
+		// to make that happen.
+		tileLevel, tileIndex, _, _ := layout.NodeCoordsToTileAddress(uint64(id.Level), uint64(id.Index))
+		_, err, _ := n.g.Do(fmt.Sprintf("%d/%d", tileLevel, tileIndex), func() (any, error) {
+			span.AddEvent("cache miss")
+
+			p := layout.PartialTileSize(tileLevel, tileIndex, n.logSize)
+			tile, err := n.fetchTile(ctx, tileLevel, tileIndex, p)
+			if err != nil {
+				return struct{}{}, err
 			}
+
+			// visitFn is a visitor callback which populates the nodes cache.
+			// Used by the calls to compact range below.
+			visitFn := func(intID compact.NodeID, h []byte) {
+				// Figure out the "global" nodeID for the node intID in the requested tile.
+				i := compact.NodeID{
+					Level: uint(tileLevel*layout.TileHeight) + intID.Level,
+					Index: (tileIndex*layout.TileWidth)>>intID.Level + intID.Index,
+				}
+				_ = n.nodes.Add(i, h)
+			}
+			rf := compact.RangeFactory{Hash: hasher.HashChildren}
+			r := rf.NewEmptyRange(0)
+			for _, l := range tile.Nodes {
+				if err := r.Append(l, visitFn); err != nil {
+					return struct{}{}, fmt.Errorf("failed to Append: %v", err)
+				}
+			}
+			if _, err := r.GetRootHash(visitFn); err != nil {
+				return struct{}{}, fmt.Errorf("failed to visit all nodes: %v", err)
+			}
+
+			return struct{}{}, nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch and populate node cache: %v", err)
 		}
-		return r.GetRootHash(nil)
+		if e, ok := n.nodes.Get(id); ok {
+			return e, nil
+		}
+		return nil, fmt.Errorf("internal error: missing node %+v", id)
 	})
 }
 
+// GetNodes returns the tree hashes at the provided locations.
 func (n *nodeCache) GetNodes(ctx context.Context, nIDs []compact.NodeID) ([][]byte, error) {
 	hashes := make([][]byte, len(nIDs))
 	g, ctx := errgroup.WithContext(ctx)
@@ -425,30 +434,18 @@ func (n *nodeCache) GetNodes(ctx context.Context, nIDs []compact.NodeID) ([][]by
 	return hashes, nil
 }
 
+// fetchTile fetches and parses the specified tile from storage.
 func (n *nodeCache) fetchTile(ctx context.Context, tileLevel, tileIndex uint64, p uint8) (api.HashTile, error) {
-	ti, err, _ := n.g.Do(fmt.Sprintf("%d/%d", tileLevel, tileIndex), func() (any, error) {
-		return otel.Trace(ctx, "tessera.client.nodecache.fetchTile", tracer, func(ctx context.Context, span trace.Span) (api.HashTile, error) {
-			tKey := tileKey{tileLevel, tileIndex}
-			// Check cache
-			if t, ok := n.tiles.Get(tKey); ok {
-				return t, nil
-			}
+	return otel.Trace(ctx, "tessera.client.nodecache.fetchTile", tracer, func(ctx context.Context, span trace.Span) (api.HashTile, error) {
+		tileRaw, err := n.getTile(ctx, tileLevel, tileIndex, p)
+		if err != nil {
+			return api.HashTile{}, fmt.Errorf("failed to fetch tile: %v", err)
+		}
 
-			span.AddEvent("cache miss")
-			tileRaw, err := n.getTile(ctx, tileLevel, tileIndex, p)
-			if err != nil {
-				return api.HashTile{}, fmt.Errorf("failed to fetch tile: %v", err)
-			}
-
-			var tile api.HashTile
-			if err := tile.UnmarshalText(tileRaw); err != nil {
-				return api.HashTile{}, fmt.Errorf("failed to parse tile: %v", err)
-			}
-
-			n.tiles.Add(tKey, tile)
-			return tile, nil
-		})
+		var tile api.HashTile
+		if err := tile.UnmarshalText(tileRaw); err != nil {
+			return api.HashTile{}, fmt.Errorf("failed to parse tile: %v", err)
+		}
+		return tile, nil
 	})
-	t := ti.(api.HashTile)
-	return t, err
 }
