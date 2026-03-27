@@ -199,7 +199,7 @@ func (pb *ProofBuilder) InclusionProof(ctx context.Context, index uint64) ([][]b
 		if err != nil {
 			return nil, fmt.Errorf("failed to calculate inclusion proof node list: %v", err)
 		}
-		return pb.fetchNodes(ctx, nodes)
+		return pb.fetchNodesAndRehash(ctx, nodes)
 	})
 }
 
@@ -216,12 +216,12 @@ func (pb *ProofBuilder) ConsistencyProof(ctx context.Context, smaller, larger ui
 		if err != nil {
 			return nil, fmt.Errorf("failed to calculate consistency proof node list: %v", err)
 		}
-		return pb.fetchNodes(ctx, nodes)
+		return pb.fetchNodesAndRehash(ctx, nodes)
 	})
 }
 
 // fetchNodesAndRehash retrieves the specified proof nodes via pb's nodeCache, rehashing them if necessary.
-func (pb *ProofBuilder) fetchNodes(ctx context.Context, nodes proof.Nodes) ([][]byte, error) {
+func (pb *ProofBuilder) fetchNodesAndRehash(ctx context.Context, nodes proof.Nodes) ([][]byte, error) {
 	hashes, err := pb.nodeCache.GetNodes(ctx, nodes.IDs)
 	if err != nil {
 		return nil, err
