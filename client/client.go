@@ -34,7 +34,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/sync/errgroup"
-	"golang.org/x/sync/singleflight"
 )
 
 var (
@@ -337,10 +336,10 @@ func (lst *LogStateTracker) Latest() log.Checkpoint {
 // performance by caching tiles it's seen.
 // Threadsafe.
 type nodeCache struct {
-	logSize uint64
-	nodes   *lru.Cache[compact.NodeID, []byte]
-	getTile TileFetcherFunc
-	g       singleflight.Group
+	logSize   uint64
+	nodes     *lru.Cache[compact.NodeID, []byte]
+	getTile   TileFetcherFunc
+	tileLocks *shardedMutex[compact.NodeID]
 }
 
 // newNodeCache creates a new nodeCache instance for a given log size.
@@ -350,9 +349,10 @@ func newNodeCache(f TileFetcherFunc, logSize uint64) *nodeCache {
 		panic(fmt.Errorf("lru.New: %v", err))
 	}
 	return &nodeCache{
-		logSize: logSize,
-		nodes:   c,
-		getTile: f,
+		logSize:   logSize,
+		nodes:     c,
+		getTile:   f,
+		tileLocks: newShardedMutex[compact.NodeID](),
 	}
 }
 
@@ -361,36 +361,33 @@ func newNodeCache(f TileFetcherFunc, logSize uint64) *nodeCache {
 func (n *nodeCache) GetNode(ctx context.Context, id compact.NodeID) ([]byte, error) {
 	return otel.Trace(ctx, "tessera.client.nodecache.GetNode", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
 		span.SetAttributes(indexKey.Int64(otel.Clamp64(id.Index)), levelKey.Int64(int64(id.Level)))
-
-		// Check if we've already cached this node, return it directly if so, otherwise we'll need to fetch it.
+		// Fast-path: check to see we have this node in the cache and return it directly if so, otherwise we'll need to fetch it.
 		if e, ok := n.nodes.Get(id); ok {
 			return e, nil
 		}
 
-		// We now need to fetch the tile and use the contents to populate the cache.
-		// We'll fetch/parse the tile, and then reconsistute all the internal nodes into the
-		// node cache. We only want to do this once per tile, so use singleflight keyed by the _tile_ ID
-		// to make that happen.
+		// No dice, so we need to fetch the tile and use the contents to populate the cache.
+		// We only want to do this once per tile, so lock keyed by the _tile_ ID here.
 		tileLevel, tileIndex, _, _ := layout.NodeCoordsToTileAddress(uint64(id.Level), uint64(id.Index))
-		k := fmt.Sprintf("%d/%d", tileLevel, tileIndex)
-		defer n.g.Forget(k)
-		_, err, _ := n.g.Do(k, func() (any, error) {
-			if n.nodes.Contains(id) {
-				return struct{}{}, nil
-			}
-			span.AddEvent("cache miss")
+		k := compact.NodeID{Level: uint(tileLevel), Index: tileIndex}
+		n.tileLocks.Lock(k)
+		defer n.tileLocks.Unlock(k)
+		// Re-check if we have the node cached - since we're under lock here it's possible that another goroutine
+		// managed to get into this section before us and populate the cache.
+		if e, ok := n.nodes.Get(id); ok {
+			return e, nil
+		}
+		span.AddEvent("cache miss")
 
-			p := layout.PartialTileSize(tileLevel, tileIndex, n.logSize)
-			if err := n.fetchTileAndPopulateCache(ctx, tileLevel, tileIndex, p); err != nil {
-				return struct{}{}, err
-			}
-
-			return struct{}{}, nil
-		})
+		p := layout.PartialTileSize(tileLevel, tileIndex, n.logSize)
+		nodes, err := n.fetchTileNodes(ctx, tileLevel, tileIndex, p)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch and populate node cache: %v", err)
 		}
-		if e, ok := n.nodes.Get(id); ok {
+		for k, v := range nodes {
+			n.nodes.Add(k, v)
+		}
+		if e, ok := nodes[id]; ok {
 			return e, nil
 		}
 		return nil, fmt.Errorf("internal error: missing node %+v", id)
@@ -417,19 +414,20 @@ func (n *nodeCache) GetNodes(ctx context.Context, nIDs []compact.NodeID) ([][]by
 	return hashes, nil
 }
 
-// fetchTileAndPopulateCache fetches and parses the specified tile from storage, populating the nodes it contains into the node cache.
-func (n *nodeCache) fetchTileAndPopulateCache(ctx context.Context, tileLevel, tileIndex uint64, p uint8) error {
-	return otel.TraceErr(ctx, "tessera.client.nodecache.fetchTileAndPopulateCache", tracer, func(ctx context.Context, span trace.Span) error {
+// fetchTileNodes retrieves the specified tile, parses it, and returns a map of tree-space-coordinate to node hash.
+func (n *nodeCache) fetchTileNodes(ctx context.Context, tileLevel, tileIndex uint64, p uint8) (map[compact.NodeID][]byte, error) {
+	return otel.Trace(ctx, "tessera.client.nodecache.fetchTileAndPopulateCache", tracer, func(ctx context.Context, span trace.Span) (map[compact.NodeID][]byte, error) {
 		tileRaw, err := n.getTile(ctx, tileLevel, tileIndex, p)
 		if err != nil {
-			return fmt.Errorf("failed to fetch tile: %v", err)
+			return nil, fmt.Errorf("failed to fetch tile: %v", err)
 		}
 
 		var tile api.HashTile
 		if err := tile.UnmarshalText(tileRaw); err != nil {
-			return fmt.Errorf("failed to parse tile: %v", err)
+			return nil, fmt.Errorf("failed to parse tile: %v", err)
 		}
 
+		ret := make(map[compact.NodeID][]byte, 256*2-1)
 		// visitFn is a visitor callback which populates the nodes cache.
 		// Used by the calls to compact range below.
 		visitFn := func(intID compact.NodeID, h []byte) {
@@ -438,18 +436,75 @@ func (n *nodeCache) fetchTileAndPopulateCache(ctx context.Context, tileLevel, ti
 				Level: uint(tileLevel*layout.TileHeight) + intID.Level,
 				Index: (tileIndex*layout.TileWidth)>>intID.Level + intID.Index,
 			}
-			_ = n.nodes.Add(i, h)
+			ret[i] = h
 		}
 		rf := compact.RangeFactory{Hash: hasher.HashChildren}
 		r := rf.NewEmptyRange(0)
 		for _, l := range tile.Nodes {
 			if err := r.Append(l, visitFn); err != nil {
-				return fmt.Errorf("failed to Append: %v", err)
+				return nil, fmt.Errorf("failed to Append: %v", err)
 			}
 		}
 		if _, err := r.GetRootHash(visitFn); err != nil {
-			return fmt.Errorf("failed to visit all nodes: %v", err)
+			return nil, fmt.Errorf("failed to visit all nodes: %v", err)
 		}
-		return nil
+		return ret, nil
 	})
+}
+
+// cLock is a mutex which keeps track of the number of goroutines attempting to acquire a lock.
+type cLock struct {
+	sync.Mutex
+	n int64
+}
+
+// shardedMutex is a set of mutexes sharded by key.
+//
+// For a given key, it acts as a regular mutex with the exception that it also tracks the number
+// of blocked goroutines waiting to acquire the lock.
+//
+// If a mutex doesn't exist for a given key at the point that Lock is called, one will be created.
+// To help guard against unbounded growth, mutexes with zero pending waiters at the point they're unlocked are deleted.
+type shardedMutex[K comparable] struct {
+	// m protects the locks map and the waiter counts it contains.
+	m     *sync.Mutex
+	locks map[K]*cLock
+}
+
+// newShardedMutex creates a new shardedLock instance.
+func newShardedMutex[K comparable]() *shardedMutex[K] {
+	return &shardedMutex[K]{
+		m:     &sync.Mutex{},
+		locks: make(map[K]*cLock),
+	}
+}
+
+// Lock locks the given key.
+func (sl *shardedMutex[K]) Lock(k K) {
+	sl.m.Lock()
+	l, ok := sl.locks[k]
+	if !ok {
+		l = &cLock{}
+		sl.locks[k] = l
+	}
+	l.n++
+	sl.m.Unlock()
+
+	l.Lock()
+}
+
+// Unlock unlocks the given key.
+func (sl *shardedMutex[K]) Unlock(k K) {
+	sl.m.Lock()
+	l, ok := sl.locks[k]
+	if !ok {
+		panic("unlock on non-existent key")
+	}
+	l.n--
+	if l.n == 0 {
+		delete(sl.locks, k)
+	}
+	sl.m.Unlock()
+
+	l.Unlock()
 }
