@@ -101,10 +101,8 @@ func (a *PublicationAwaiter) Await(ctx context.Context, future IndexFuture) (Ind
 				if errorObserved {
 					return i, a.checkpoint, a.err // Second consecutive error
 				}
-				errorObserved = true
-			} else {
-				errorObserved = false
-			}
+            }
+			errorObserved = a.err != nil
 			a.c.Wait()
 		}
 
