@@ -178,8 +178,8 @@ type ProofBuilder struct {
 }
 
 // NewProofBuilder creates a new ProofBuilder object for a given tree size.
-// The returned ProofBuilder can be re-used for proofs related to a given tree size, but
-// it is not thread-safe and should not be accessed concurrently.
+// The returned ProofBuilder can be re-used for proofs related to a given tree size, and is
+// thread-safe.
 func NewProofBuilder(ctx context.Context, treeSize uint64, f TileFetcherFunc) (*ProofBuilder, error) {
 	pb := &ProofBuilder{
 		treeSize:  treeSize,
@@ -416,7 +416,7 @@ func (n *nodeCache) GetNodes(ctx context.Context, nIDs []compact.NodeID) ([][]by
 
 // fetchTileNodes retrieves the specified tile, parses it, and returns a map of tree-space-coordinate to node hash.
 func (n *nodeCache) fetchTileNodes(ctx context.Context, tileLevel, tileIndex uint64, p uint8) (map[compact.NodeID][]byte, error) {
-	return otel.Trace(ctx, "tessera.client.nodecache.fetchTileAndPopulateCache", tracer, func(ctx context.Context, span trace.Span) (map[compact.NodeID][]byte, error) {
+	return otel.Trace(ctx, "tessera.client.nodecache.fetchTileNodes", tracer, func(ctx context.Context, span trace.Span) (map[compact.NodeID][]byte, error) {
 		tileRaw, err := n.getTile(ctx, tileLevel, tileIndex, p)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch tile: %v", err)
