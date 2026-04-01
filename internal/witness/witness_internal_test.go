@@ -1,13 +1,8 @@
 package witness
 
 import (
-	"io"
 	"testing"
 )
-
-// globalReader is used to store the result of benchmark runs to prevent
-// the Go compiler from optimizing away the function call (dead-code elimination).
-var globalReader io.Reader
 
 func BenchmarkBuildRequestBody(b *testing.B) {
 	w := &witness{size: 0}
@@ -19,6 +14,6 @@ func BenchmarkBuildRequestBody(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		globalReader = w.buildRequestBody(proof, cp)
+		_ = w.buildRequestBody(proof, cp)
 	}
 }
