@@ -17,7 +17,7 @@ package client_test
 
 import (
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"testing"
 	"time"
 
@@ -59,14 +59,14 @@ func TestProofBuilderIsThreadsafe(t *testing.T) {
 	concurrency := 512
 
 	var wg errgroup.Group
-	for idx := range concurrency {
+	for range concurrency {
 		wg.Go(func() error {
-			leafIndex := uint64(idx % int(treeSize))
+			leafIndex := uint64(1 + rand.IntN(int(treeSize-1)))
 			if _, err := pb.InclusionProof(ctx, leafIndex); err != nil {
 				return fmt.Errorf("failure calling InclusionProof(%d): %v", leafIndex, err)
 			}
 
-			smaller := uint64(1 + rand.Intn(int(treeSize-1)))
+			smaller := uint64(1 + rand.IntN(int(treeSize-1)))
 			if _, err := pb.ConsistencyProof(ctx, smaller, treeSize); err != nil {
 				return fmt.Errorf("failure calling ConsistencyProof(%d, %d): %v", smaller, treeSize, err)
 			}
