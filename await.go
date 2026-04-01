@@ -91,7 +91,7 @@ func (a *PublicationAwaiter) Await(ctx context.Context, future IndexFuture) (Ind
 			a.preWaitSignaller <- struct{}{}
 		}
 
-		// Await the tree to grow to include the new leaf, or for two consecutive errors to be reported.
+		// Await the tree growing to include the new leaf, or for two consecutive errors to be reported.
 		errorObserved := false
 		for ctx.Err() == nil {
 			if a.size > i.Index {
