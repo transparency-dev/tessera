@@ -291,23 +291,11 @@ func (w *witness) update(ctx context.Context, cp []byte, size uint64, fetchProof
 			}
 		}
 
-		// The request body MUST be a sequence of
-		// - a previous size line,
-		// - zero or more consistency proof lines,
-		// - and an empty line,
-		// - followed by a [checkpoint][].
-		body := fmt.Sprintf("old %d\n", w.size)
-		for _, p := range proof {
-			body += base64.StdEncoding.EncodeToString(p) + "\n"
-		}
-		body += "\n"
-		body += string(cp)
-
 		start := time.Now()
 		nameAttr := witnessNameKey.String(w.verifier.Name())
 		witnessReqsTotal.Add(ctx, 1, metric.WithAttributes(nameAttr))
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.url, strings.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.url, w.buildRequestBody(proof, cp))
 		if err != nil {
 			return nil, fmt.Errorf("failed to construct request to %q: %v", w.url, err)
 		}
@@ -389,4 +377,27 @@ func (w *witness) update(ctx context.Context, cp []byte, size uint64, fetchProof
 			return nil, fmt.Errorf("got bad status code: %v", httpResp.StatusCode)
 		}
 	})
+}
+
+// buildRequestBody formats the request body for the witness.
+// The request body MUST be a sequence of
+// - a previous size line,
+// - zero or more consistency proof lines,
+// - and an empty line,
+// - followed by a [checkpoint][].
+func (w *witness) buildRequestBody(proof [][]byte, cp []byte) io.Reader {
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "old %d\n", w.size)
+
+	// Preallocate for 32 byte SHA256 nodes
+	dst := make([]byte, base64.StdEncoding.EncodedLen(32))
+
+	for _, p := range proof {
+		base64.StdEncoding.Encode(dst, p)
+		b.Write(dst)
+		b.WriteByte('\n')
+	}
+	b.WriteByte('\n')
+	b.Write(cp)
+	return &b
 }
