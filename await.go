@@ -90,17 +90,24 @@ func (a *PublicationAwaiter) Await(ctx context.Context, future IndexFuture) (Ind
 		if a.preWaitSignaller != nil {
 			a.preWaitSignaller <- struct{}{}
 		}
-		for (a.size <= i.Index && a.err == nil) && ctx.Err() == nil {
+
+		// Await the tree growing to include the new leaf, or for two consecutive errors to be reported.
+		errorObserved := false
+		for ctx.Err() == nil {
+			if a.size > i.Index {
+				return i, a.checkpoint, nil // Success
+			}
+			if a.err != nil {
+				if errorObserved {
+					return i, a.checkpoint, a.err // Second consecutive error
+				}
+            }
+			errorObserved = a.err != nil
 			a.c.Wait()
 		}
 
-		// Make sure we report any errors that caused us to stop early
-		err = a.err
-		if err == nil {
-			err = ctx.Err()
-		}
-
-		return i, a.checkpoint, err
+		// The loop only exits if the context was cancelled or expired.
+		return i, nil, ctx.Err()
 	})
 }
 
@@ -148,8 +155,8 @@ func (a *PublicationAwaiter) pollLoop(ctx context.Context, readCheckpoint func(c
 			a.checkpoint = cp
 			a.size = cpSize
 			a.err = cpErr
-			// Note that for now, this releases all clients in the event of a single failure.
-			// If this causes problems, this could be changed to attempt retries.
+			// Note that this releases all clients in the event of any failure.
+			// However individual clients (via Await) can decide whether to ignore or fail.
 			a.c.Broadcast()
 			span.AddEvent("Broadcast Sent")
 			a.c.L.Unlock()
