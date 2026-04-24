@@ -299,6 +299,7 @@ func NewAppender(ctx context.Context, d Driver, opts *AppendOptions) (*Appender,
 	t := terminator{
 		delegate:       a.Add,
 		readCheckpoint: r.ReadCheckpoint,
+		followers:      opts.followers,
 	}
 	// TODO(mhutchinson): move this into the decorators
 	a.Add = func(ctx context.Context, entry *Entry) IndexFuture {
@@ -488,6 +489,8 @@ func (i *integrationStats) statsDecorator(delegate AddFn) AddFn {
 type terminator struct {
 	delegate       AddFn
 	readCheckpoint func(ctx context.Context) ([]byte, error)
+	followers      []Follower
+
 	// This mutex guards the stopped state. We use this instead of an atomic.Boolean
 	// to get the property that no readers of this state can have the lock when the
 	// write gets it. This means that no in-flight Add operations will be occurring on
@@ -525,9 +528,10 @@ func (t *terminator) Add(ctx context.Context, entry *Entry) IndexFuture {
 	}
 }
 
-// Shutdown ensures that all calls to Add that have returned a value will be resolved. Any
-// futures returned by _this appender_ which resolve to an index will be integrated and have
-// a checkpoint that commits to them published if this returns successfully.
+// Shutdown ensures that all calls to Add that have returned a value will be resolved
+// and that the followers are caught up to the largest index.
+// Any futures returned by _this appender_ which resolve to an index will be integrated
+// and have a checkpoint that commits to them published if this returns successfully.
 //
 // After this returns, any calls to Add will fail.
 func (t *terminator) Shutdown(ctx context.Context) error {
@@ -539,6 +543,8 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 		// special case no work done
 		return nil
 	}
+	checkpointDone := false
+	followersDone := make([]bool, len(t.followers))
 	sleepTime := 0 * time.Millisecond
 	for {
 		select {
@@ -549,19 +555,45 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 		}
 		sleepTime = 100 * time.Millisecond // after the first time, ensure we sleep in any other loops
 
-		cp, err := t.readCheckpoint(ctx)
-		if err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
+		// Wait for checkpoint.
+		if !checkpointDone {
+			cp, err := t.readCheckpoint(ctx)
+			if err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
+				continue
+			}
+			_, size, _, err := parse.CheckpointUnsafe(cp)
+			if err != nil {
 				return err
 			}
-			continue
+			slog.DebugContext(ctx, "Shutting down, waiting for checkpoint", slog.Uint64("goal", maxIndex), slog.Uint64("current", size))
+			if size <= maxIndex {
+				continue
+			}
+			checkpointDone = true
 		}
-		_, size, _, err := parse.CheckpointUnsafe(cp)
-		if err != nil {
-			return err
+
+		// Wait for followers to catch up to the checkpoint.
+		allFollowersDone := true
+		for i, f := range t.followers {
+			if followersDone[i] {
+				continue // Skip followers that have already caught up
+			}
+
+			processed, err := f.EntriesProcessed(ctx)
+			if err != nil {
+				return err
+			}
+			slog.DebugContext(ctx, "Shutting down, waiting for followers", slog.Uint64("goal", maxIndex), slog.Uint64("processed", processed))
+			if processed <= maxIndex {
+				allFollowersDone = false
+				break // wait for the outer loop to sleep and retry
+			}
+			followersDone[i] = true
 		}
-		slog.DebugContext(ctx, "Shutting down, waiting for checkpoint", slog.Uint64("goal", maxIndex), slog.Uint64("current", size))
-		if size > maxIndex {
+		if allFollowersDone {
 			return nil
 		}
 	}
