@@ -439,7 +439,7 @@ func TestPublishTree(t *testing.T) {
 			if err := storage.init(ctx); err != nil {
 				t.Fatalf("storage.init: %v", err)
 			}
-			if err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, storage.updateCheckpoint); err != nil {
+			if _, err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, storage.updateCheckpoint); err != nil {
 				t.Fatalf("publishTree: %v", err)
 			}
 			cpOld := []byte("bananas")
@@ -449,7 +449,7 @@ func TestPublishTree(t *testing.T) {
 			updatesSeen := 0
 			for _, d := range test.attempts {
 				time.Sleep(d)
-				if err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, storage.updateCheckpoint); err != nil {
+				if _, err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, storage.updateCheckpoint); err != nil {
 					t.Fatalf("publishTree: %v", err)
 				}
 				cpNew, err := m.getObject(ctx, layout.CheckpointPath)
