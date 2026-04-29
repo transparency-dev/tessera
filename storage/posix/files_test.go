@@ -61,7 +61,7 @@ func TestGarbageCollect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Appender: %v", err)
 	}
-	if err := appender.publishCheckpoint(ctx, 0, 0); err != nil {
+	if _, err := appender.publishCheckpoint(ctx, 0, 0); err != nil {
 		t.Fatalf("publishCheckpoint: %v", err)
 	}
 
@@ -174,7 +174,7 @@ func TestGarbageCollectOption(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Appender: %v", err)
 			}
-			if err := appender.publishCheckpoint(ctx, 0, 0); err != nil {
+			if _, err := appender.publishCheckpoint(ctx, 0, 0); err != nil {
 				t.Fatalf("publishCheckpoint: %v", err)
 			}
 
@@ -337,7 +337,7 @@ func TestPublishTree(t *testing.T) {
 				return fmt.Appendf(nil, "origin\n%d\n%x\n%d\n,", size, hash, time.Now().Unix()), nil
 			}
 
-			if err := appender.publishCheckpoint(ctx, test.publishInterval, test.republishInterval); err != nil {
+			if _, err := appender.publishCheckpoint(ctx, test.publishInterval, test.republishInterval); err != nil {
 				t.Fatalf("publishTree: %v", err)
 			}
 
@@ -357,7 +357,7 @@ func TestPublishTree(t *testing.T) {
 
 			for _, d := range test.attempts {
 				time.Sleep(d)
-				if err := appender.publishCheckpoint(ctx, test.publishInterval, test.republishInterval); err != nil {
+				if _, err := appender.publishCheckpoint(ctx, test.publishInterval, test.republishInterval); err != nil {
 					t.Fatalf("publishTree: %v", err)
 				}
 				cpNew, err := lr.ReadCheckpoint(ctx)

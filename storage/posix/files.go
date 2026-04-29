@@ -179,11 +179,19 @@ func (a *appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 		if err := otel.TraceErr(ctx, "tessera.storage.posix.publishCheckpointJob", tracer, func(ctx context.Context, span trace.Span) error {
 			ctx, cancel := context.WithTimeout(ctx, defaultPublicationTimeout)
 			defer cancel()
-			if err := a.publishCheckpoint(ctx, pubInterval, republishInterval); err != nil {
+			publishedAt, err := a.publishCheckpoint(ctx, pubInterval, republishInterval)
+			if err != nil {
 				return err
+			}
+			nextPublication := pubInterval - time.Since(publishedAt)
+			if nextPublication <= 0 {
+				t.Reset(time.Millisecond) // Schedule a checkpoint update immediately.
+			} else {
+				t.Reset(nextPublication)
 			}
 			return nil
 		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
+			t.Reset(pubInterval)
 			slog.WarnContext(ctx, "publishCheckpoint failed", slog.Any("error", err))
 		}
 	}
@@ -578,7 +586,7 @@ func (a *appender) initialise(ctx context.Context) error {
 			return fmt.Errorf("failed to write tree-state checkpoint: %v", err)
 		}
 		if a.newCP != nil {
-			if err := a.publishCheckpoint(ctx, 0, 0); err != nil {
+			if _, err := a.publishCheckpoint(ctx, 0, 0); err != nil {
 				return fmt.Errorf("failed to publish checkpoint: %v", err)
 			}
 		}
@@ -666,16 +674,12 @@ func (s *Storage) readTreeState(ctx context.Context) (uint64, []byte, error) {
 // publishCheckpoint checks whether the currently published checkpoint (if any) is more than
 // minStaleness old, and, if so, creates and published a fresh checkpoint from the current
 // stored tree state.
-func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, minStalenessRepub time.Duration) (errR error) {
-	return otel.TraceErr(ctx, "tessera.storage.posix.publishCheckpoint", tracer, func(ctx context.Context, span trace.Span) error {
+//
+// Returns the time at which the checkpoint is published, or was last published.
+func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, minStalenessRepub time.Duration) (time.Time, error) {
+	var publishedAt time.Time
+	if err := otel.TraceErr(ctx, "tessera.storage.posix.publishCheckpoint", tracer, func(ctx context.Context, span trace.Span) error {
 		now := time.Now()
-		defer func() {
-			// Detect any errors and update metrics accordingly.
-			// Non-error cases are explicitly handled in the body of the function below.
-			if errR != nil {
-				publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
-			}
-		}()
 
 		// Lock the destination "published" checkpoint location:
 		unlock, err := a.s.lockFile(ctx, publishLock)
@@ -698,6 +702,7 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 		} else if err != nil {
 			return fmt.Errorf("stat(%s): %v", layout.CheckpointPath, err)
 		} else {
+			publishedAt = info.ModTime()
 			publishedAge = time.Since(info.ModTime())
 			if publishedAge < minStalenessActive {
 				slog.DebugContext(ctx, "publishCheckpoint: skipping publish because previous checkpoint too fresh", slog.Duration("age", publishedAge), slog.Duration("minstalenessactive", minStalenessActive))
@@ -732,6 +737,7 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 		if err := a.s.createOverwrite(layout.CheckpointPath, cpRaw); err != nil {
 			return fmt.Errorf("createOverwrite(%s): %v", layout.CheckpointPath, err)
 		}
+		publishedAt = time.Now()
 
 		slog.DebugContext(ctx, "Published latest checkpoint", slog.Uint64("size", size), slog.String("root", fmt.Sprintf("%x", root)))
 
@@ -739,7 +745,12 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 		publishCount.Add(ctx, 1)
 
 		return nil
-	})
+	}); err != nil {
+		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
+		return time.Time{}, err
+	}
+
+	return publishedAt, nil
 }
 
 // publishedSize returns the size of tree that the currently published checkpoint, if any, commits to.

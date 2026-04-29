@@ -128,7 +128,7 @@ type sequencer interface {
 	nextIndex(ctx context.Context) (uint64, error)
 
 	// publishCheckpoint coordinates the publication of new checkpoints based on the current integrated tree.
-	publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(ctx context.Context, size uint64, root []byte) error) error
+	publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(ctx context.Context, size uint64, root []byte) error) (time.Time, error)
 
 	// garbageCollect coordinates the removal of unneeded partial tiles/entry bundles for the provided tree size, up to a maximum number of deletes per invocation.
 	garbageCollect(ctx context.Context, treeSize uint64, maxDeletes uint, removePrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) error
@@ -320,11 +320,19 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 			ctx, cancel := context.WithTimeout(ctx, defaultPublicationTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
-			if err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.updateCheckpoint); err != nil {
+			publishedAt, err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.updateCheckpoint)
+			if err != nil {
 				return fmt.Errorf("publishCheckpoint failed: %v", err)
+			}
+			nextPublication := pubInterval - time.Since(publishedAt)
+			if nextPublication <= 0 {
+				t.Reset(time.Millisecond) // Schedule a checkpoint update immediately.
+			} else {
+				t.Reset(nextPublication)
 			}
 			return nil
 		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
+			t.Reset(pubInterval)
 			slog.ErrorContext(ctx, "Failed to execute checkpoint publisher job", slog.Any("error", err))
 		}
 	}
@@ -1238,9 +1246,11 @@ func (s *mySQLSequencer) nextIndex(ctx context.Context) (uint64, error) {
 // publishCheckpoint checks when the last checkpoint was published, and if it was more than minAge ago, calls the provided
 // function to publish a new one.
 //
+// Returns the time at which the checkpoint is published, or was last published.
+//
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
-func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) (errR error) {
+func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) (publishedAt time.Time, errR error) {
 	start := time.Now()
 	defer func() {
 		// Detect any errors and update metrics accordingly.
@@ -1252,7 +1262,7 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 
 	tx, err := s.dbPool.Begin()
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 	defer func() {
 		if tx != nil {
@@ -1264,20 +1274,20 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 	var pubAt int64
 	var lastSize sql.NullInt64
 	if err := pRow.Scan(&pubAt, &lastSize); err != nil {
-		return fmt.Errorf("failed to parse PubCoord: %v", err)
+		return time.Time{}, fmt.Errorf("failed to parse PubCoord: %v", err)
 	}
 	cpAge := time.Since(time.Unix(pubAt, 0))
 	if cpAge < minStaleActive {
 		slog.DebugContext(ctx, "publishCheckpoint: last checkpoint published too recently, not publishing new checkpoint", slog.Duration("age", cpAge), slog.Duration("minstaleactive", minStaleActive))
 		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped")))
-		return nil
+		return time.Unix(pubAt, 0), nil
 	}
 
 	row := tx.QueryRowContext(ctx, "SELECT seq, rootHash FROM IntCoord WHERE id = ?", 0)
 	var fromSeq uint64
 	var rootHash []byte
 	if err := row.Scan(&fromSeq, &rootHash); err != nil {
-		return fmt.Errorf("failed to read IntCoord: %v", err)
+		return time.Time{}, fmt.Errorf("failed to read IntCoord: %v", err)
 	}
 
 	currentSize := fromSeq
@@ -1295,26 +1305,27 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 	if !shouldPublish {
 		slog.DebugContext(ctx, "publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
 		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped_no_growth")))
-		return nil
+		return time.Unix(pubAt, 0), nil
 	}
 
 	slog.DebugContext(ctx, "publishCheckpoint: updating checkpoint (replacing old checkpoint)", slog.Duration("age", cpAge))
 
 	if err := f(ctx, fromSeq, rootHash); err != nil {
-		return err
+		return time.Time{}, err
 	}
 
-	if _, err := tx.ExecContext(ctx, "UPDATE PubCoord SET publishedAt=?, size=? WHERE id=?", time.Now().Unix(), currentSize, 0); err != nil {
-		return err
+	publishedAt = time.Now()
+	if _, err := tx.ExecContext(ctx, "UPDATE PubCoord SET publishedAt=?, size=? WHERE id=?", publishedAt.Unix(), currentSize, 0); err != nil {
+		return time.Time{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		return time.Time{}, err
 	}
 	opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
 	publishCount.Add(ctx, 1)
 	tx = nil
 
-	return nil
+	return publishedAt, nil
 }
 
 // garbageCollect will identify up to maxBundles unneeded partial entry bundles (and any unneeded partial tiles which sit above them in the tree) and
