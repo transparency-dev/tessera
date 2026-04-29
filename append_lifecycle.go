@@ -36,6 +36,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/mod/sumdb/note"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -535,10 +536,10 @@ func (t *terminator) Add(ctx context.Context, entry *Entry) IndexFuture {
 	}
 }
 
-// Shutdown ensures that all calls to Add that have returned a value will be resolved
-// and that the followers are caught up to the largest index.
-// Any futures returned by _this appender_ which resolve to an index will be integrated
-// and have a checkpoint that commits to them published if this returns successfully.
+// Shutdown ensures that all calls to Add that have returned a value will be resolved.
+// Futures returned by _this appender_ which resolve to an index will be integrated and have
+// a checkpoint that commits to them published if this returns successfully.
+// Once published, it ensures that all followers are caught up to the largest index.
 //
 // After this returns, any calls to Add will fail.
 func (t *terminator) Shutdown(ctx context.Context) error {
@@ -551,63 +552,63 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, t.shutdownTimeout)
+	timeoutCtx, cancel := context.WithTimeout(ctx, t.shutdownTimeout)
 	defer cancel()
 
-	checkpointDone := false
-	followersDone := make([]bool, len(t.followers))
-	sleepTime := 0 * time.Millisecond
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			time.Sleep(sleepTime)
-		}
-		sleepTime = 100 * time.Millisecond // after the first time, ensure we sleep in any other loops
+	g, gCtx := errgroup.WithContext(timeoutCtx)
+	pollInterval := 100 * time.Millisecond
 
-		// Wait for checkpoint.
-		if !checkpointDone {
-			cp, err := t.readCheckpoint(ctx)
+	// Wait for checkpoint.
+	g.Go(func() error {
+		for {
+			select {
+			case <-gCtx.Done():
+				return gCtx.Err()
+			default:
+			}
+			cp, err := t.readCheckpoint(gCtx)
 			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
 					return err
 				}
+				time.Sleep(pollInterval)
 				continue
 			}
 			_, size, _, err := parse.CheckpointUnsafe(cp)
 			if err != nil {
 				return err
 			}
-			slog.DebugContext(ctx, "Shutting down, waiting for checkpoint", slog.Uint64("goal", maxIndex), slog.Uint64("current", size))
-			if size <= maxIndex {
-				continue
+			slog.DebugContext(gCtx, "Shutting down, waiting for checkpoint", slog.Uint64("goal", maxIndex), slog.Uint64("current", size))
+			if size > maxIndex {
+				return nil
 			}
-			checkpointDone = true
+			time.Sleep(pollInterval)
 		}
+	})
 
-		// Wait for followers to catch up to the checkpoint.
-		allFollowersDone := true
-		for i, f := range t.followers {
-			if followersDone[i] {
-				continue // Skip followers that have already caught up
+	// Wait for followers to catch up to the largest index.
+	for _, f := range t.followers {
+		g.Go(func() error {
+			for {
+				select {
+				case <-gCtx.Done():
+					return gCtx.Err()
+				default:
+				}
+				processed, err := f.EntriesProcessed(gCtx)
+				if err != nil {
+					return err
+				}
+				slog.DebugContext(gCtx, "Shutting down, waiting for follower", slog.String("follower", f.Name()), slog.Uint64("goal", maxIndex), slog.Uint64("processed", processed))
+				if processed > maxIndex {
+					return nil
+				}
+				time.Sleep(pollInterval)
 			}
-
-			processed, err := f.EntriesProcessed(ctx)
-			if err != nil {
-				return err
-			}
-			slog.DebugContext(ctx, "Shutting down, waiting for followers", slog.Uint64("goal", maxIndex), slog.Uint64("processed", processed))
-			if processed <= maxIndex {
-				allFollowersDone = false
-				break // wait for the outer loop to sleep and retry
-			}
-			followersDone[i] = true
-		}
-		if allFollowersDone {
-			return nil
-		}
+		})
 	}
+
+	return g.Wait()
 }
 
 // NewAppendOptions creates a new options struct for configuring appender lifecycle instances.
