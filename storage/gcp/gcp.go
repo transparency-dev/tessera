@@ -75,7 +75,7 @@ const (
 	// GCS has a rate limit 1 update per second for individual objects, but we've observed that attempting
 	// to update at exactly that rate still results in the occasional refusal, so bake in a little wiggle
 	// room.
-	minCheckpointInterval = 1200 * time.Millisecond
+	minCheckpointInterval = 1100 * time.Millisecond
 
 	logContType      = "application/octet-stream"
 	ckptContType     = "text/plain; charset=utf-8"
