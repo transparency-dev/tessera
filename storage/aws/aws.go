@@ -235,12 +235,22 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq sequencer, op
 	}
 
 	r := &Appender{
-		logStore:    logStore,
-		sequencer:   seq,
-		queue:       storage.NewQueue(ctx, opts.BatchMaxAge(), opts.BatchMaxSize(), seq.assignEntries),
-		newCP:       opts.CheckpointPublisher(logStore, s.cfg.HTTPClient),
-		treeUpdated: make(chan struct{}),
+		logStore:        logStore,
+		sequencer:       seq,
+		newCP:           opts.CheckpointPublisher(logStore, s.cfg.HTTPClient),
+		treeUpdated:     make(chan struct{}),
+		entriesAssigned: make(chan struct{}),
 	}
+	r.queue = storage.NewQueue(ctx, opts.BatchMaxAge(), opts.BatchMaxSize(), func(ctx context.Context, entries []*tessera.Entry) error {
+		if err := r.sequencer.assignEntries(ctx, entries); err != nil {
+			return err
+		}
+		select {
+		case r.entriesAssigned <- struct{}{}:
+		default:
+		}
+		return nil
+	})
 
 	if err := r.init(ctx); err != nil {
 		return nil, nil, fmt.Errorf("failed to initialise log storage: %v", err)
@@ -268,7 +278,8 @@ type Appender struct {
 
 	queue *storage.Queue
 
-	treeUpdated chan struct{}
+	treeUpdated     chan struct{}
+	entriesAssigned chan struct{}
 }
 
 // integrateEntriesJob periodically appends newly sequenced entries to the log.
@@ -281,6 +292,7 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-a.entriesAssigned:
 		case <-t.C:
 		}
 
