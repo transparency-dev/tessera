@@ -264,10 +264,20 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoord
 			objStore:    o,
 			entriesPath: opts.EntriesPath(),
 		},
-		sequencer: seq,
-		cpUpdated: make(chan struct{}),
+		sequencer:       seq,
+		cpUpdated:       make(chan struct{}),
+		entriesAssigned: make(chan struct{}),
 	}
-	a.queue = storage.NewQueue(ctx, opts.BatchMaxAge(), opts.BatchMaxSize(), a.sequencer.assignEntries)
+	a.queue = storage.NewQueue(ctx, opts.BatchMaxAge(), opts.BatchMaxSize(), func(ctx context.Context, entries []*tessera.Entry) error {
+		if err := a.sequencer.assignEntries(ctx, entries); err != nil {
+			return err
+		}
+		select {
+		case a.entriesAssigned <- struct{}{}:
+		default:
+		}
+		return nil
+	})
 
 	reader := &LogReader{
 		lrs: *a.logStore,
@@ -301,7 +311,8 @@ type Appender struct {
 
 	queue *storage.Queue
 
-	cpUpdated chan struct{}
+	cpUpdated       chan struct{}
+	entriesAssigned chan struct{}
 }
 
 // Add is the entrypoint for adding entries to a sequencing log.
@@ -329,6 +340,7 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-a.entriesAssigned:
 		case <-t.C:
 		}
 
