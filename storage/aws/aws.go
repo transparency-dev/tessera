@@ -239,7 +239,7 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq sequencer, op
 		sequencer:       seq,
 		newCP:           opts.CheckpointPublisher(logStore, s.cfg.HTTPClient),
 		treeUpdated:     make(chan struct{}),
-		entriesAssigned: make(chan struct{}),
+		entriesAssigned: make(chan struct{}, 1),
 	}
 	r.queue = storage.NewQueue(ctx, opts.BatchMaxAge(), opts.BatchMaxSize(), func(ctx context.Context, entries []*tessera.Entry) error {
 		if err := r.sequencer.assignEntries(ctx, entries); err != nil {
