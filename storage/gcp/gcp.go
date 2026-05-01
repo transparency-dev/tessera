@@ -75,7 +75,7 @@ const (
 	// GCS has a rate limit 1 update per second for individual objects, but we've observed that attempting
 	// to update at exactly that rate still results in the occasional refusal, so bake in a little wiggle
 	// room.
-	minCheckpointInterval = 1200 * time.Millisecond
+	minCheckpointInterval = 1100 * time.Millisecond
 
 	logContType      = "application/octet-stream"
 	ckptContType     = "text/plain; charset=utf-8"
@@ -129,7 +129,7 @@ type sequencer interface {
 	// nextIndex returns the next available index in the log.
 	nextIndex(ctx context.Context) (uint64, error)
 	// publishCheckpoint coordinates the publication of new checkpoints based on the current integrated tree.
-	publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(ctx context.Context, size uint64, root []byte) error) error
+	publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(ctx context.Context, size uint64, root []byte) error) (time.Time, error)
 	// garbageCollect coordinates the removal of unneeded partial tiles/entry bundles for the provided tree size, up to a maximum number of deletes per invocation.
 	garbageCollect(ctx context.Context, treeSize uint64, maxDeletes uint, removePrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) error
 }
@@ -372,11 +372,19 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 			ctx, cancel := context.WithTimeout(ctx, defaultPublicationTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
-			if err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.updateCheckpoint); err != nil {
+			publishedAt, err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.updateCheckpoint)
+			if err != nil {
 				return fmt.Errorf("publishCheckpoint failed: %v", err)
+			}
+			nextPublication := pubInterval - time.Since(publishedAt)
+			if nextPublication <= 0 {
+				t.Reset(time.Millisecond) // Schedule a checkpoint update immediately.
+			} else {
+				t.Reset(nextPublication)
 			}
 			return nil
 		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
+			t.Reset(pubInterval)
 			slog.ErrorContext(ctx, "publishCheckpoint failed", slog.Any("error", err))
 		}
 	}
@@ -1074,6 +1082,8 @@ func (s *spannerCoordinator) nextIndex(ctx context.Context) (uint64, error) {
 // publishCheckpoint checks when the last checkpoint was published, and if appropriate, calls the provided
 // function to publish a new one.
 //
+// Returns the time at which the checkpoint is published, or was last published.
+//
 // A checkpoint will not be published if either:
 //   - the currently published checkpoint was published less than minStaleActive ago
 //   - the new checkpoint is the same size as the currently published one, AND the currently published checkpoint
@@ -1081,13 +1091,14 @@ func (s *spannerCoordinator) nextIndex(ctx context.Context) (uint64, error) {
 //
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
-func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) error {
+func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) (time.Time, error) {
+	var pubAt time.Time
 	currentSize, rootHash, err := s.currentTree(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get current tree: %v", err)
+		return time.Time{}, fmt.Errorf("failed to get current tree: %v", err)
 	}
 
-	return otel.TraceErr(ctx, "tessera.storage.gcp.publishCheckpoint", tracer, func(ctx context.Context, span trace.Span) error {
+	if err := otel.TraceErr(ctx, "tessera.storage.gcp.publishCheckpoint", tracer, func(ctx context.Context, span trace.Span) error {
 		// outcomeAttr records the outcome of the checkpoint publication attempt for metrics and traces.
 		var outcomeAttr attribute.KeyValue
 		start := time.Now()
@@ -1102,7 +1113,6 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 			if err != nil {
 				return fmt.Errorf("failed to read PubCoord: %w", err)
 			}
-			var pubAt time.Time
 			var lastSize spanner.NullInt64
 			if err := pRow.Columns(&pubAt, &lastSize); err != nil {
 				return fmt.Errorf("failed to parse PubCoord: %v", err)
@@ -1144,7 +1154,8 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 				return err
 			}
 			span.AddEvent("Updating PubCoord")
-			if err := txn.BufferWrite([]*spanner.Mutation{spanner.Update("PubCoord", []string{"id", "publishedAt", "size"}, []any{0, time.Now(), int64(currentSize)})}); err != nil {
+			pubAt = time.Now()
+			if err := txn.BufferWrite([]*spanner.Mutation{spanner.Update("PubCoord", []string{"id", "publishedAt", "size"}, []any{0, pubAt, int64(currentSize)})}); err != nil {
 				return err
 			}
 
@@ -1158,7 +1169,11 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 		span.SetAttributes(outcomeAttr)
 		publishCount.Add(ctx, 1, metric.WithAttributes(outcomeAttr))
 		return nil
-	})
+	}); err != nil {
+		return time.Time{}, err
+	}
+
+	return pubAt, nil
 }
 
 // garbageCollect will identify up to maxBundles unneeded partial entry bundles (and any unneeded partial tiles which sit above them in the tree) and
