@@ -36,6 +36,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/mod/sumdb/note"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -60,6 +61,9 @@ const (
 
 	// DefaultEntrySizeLimit is the maximum possible size of data for a single entry, as specified by C2SP tlog-tiles.
 	DefaultEntrySizeLimit = 1<<16 - 1
+
+	// DefaultShutdownTimeout is the maximum duration to wait for the shutdown process to complete.
+	DefaultShutdownTimeout = 60 * time.Second
 )
 
 var (
@@ -297,8 +301,10 @@ func NewAppender(ctx context.Context, d Driver, opts *AppendOptions) (*Appender,
 	}
 	go sd.updateStats(ctx, r)
 	t := terminator{
-		delegate:       a.Add,
-		readCheckpoint: r.ReadCheckpoint,
+		delegate:        a.Add,
+		readCheckpoint:  r.ReadCheckpoint,
+		followers:       opts.followers,
+		shutdownTimeout: opts.shutdownTimeout,
 	}
 	// TODO(mhutchinson): move this into the decorators
 	a.Add = func(ctx context.Context, entry *Entry) IndexFuture {
@@ -488,6 +494,8 @@ func (i *integrationStats) statsDecorator(delegate AddFn) AddFn {
 type terminator struct {
 	delegate       AddFn
 	readCheckpoint func(ctx context.Context) ([]byte, error)
+	followers      []Follower
+
 	// This mutex guards the stopped state. We use this instead of an atomic.Boolean
 	// to get the property that no readers of this state can have the lock when the
 	// write gets it. This means that no in-flight Add operations will be occurring on
@@ -497,6 +505,9 @@ type terminator struct {
 
 	// largestIssued tracks the largest index allocated by this appender.
 	largestIssued atomic.Uint64
+
+	// shutdownTimeout is the maximum duration to wait for the shutdown process to complete.
+	shutdownTimeout time.Duration
 }
 
 func (t *terminator) Add(ctx context.Context, entry *Entry) IndexFuture {
@@ -525,9 +536,10 @@ func (t *terminator) Add(ctx context.Context, entry *Entry) IndexFuture {
 	}
 }
 
-// Shutdown ensures that all calls to Add that have returned a value will be resolved. Any
-// futures returned by _this appender_ which resolve to an index will be integrated and have
+// Shutdown ensures that all calls to Add that have returned a value will be resolved.
+// Futures returned by _this appender_ which resolve to an index will be integrated and have
 // a checkpoint that commits to them published if this returns successfully.
+// Once published, it ensures that all followers are caught up to the largest index.
 //
 // After this returns, any calls to Add will fail.
 func (t *terminator) Shutdown(ctx context.Context) error {
@@ -539,32 +551,68 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 		// special case no work done
 		return nil
 	}
-	sleepTime := 0 * time.Millisecond
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			time.Sleep(sleepTime)
-		}
-		sleepTime = 100 * time.Millisecond // after the first time, ensure we sleep in any other loops
 
-		cp, err := t.readCheckpoint(ctx)
-		if err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, t.shutdownTimeout)
+	defer cancel()
+
+	g, gCtx := errgroup.WithContext(timeoutCtx)
+
+	// Wait for checkpoint.
+	g.Go(func() error {
+		ticker := time.NewTicker(1 * time.Nanosecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-gCtx.Done():
+				return gCtx.Err()
+			case <-ticker.C:
+				ticker.Reset(100 * time.Millisecond)
+			}
+
+			cp, err := t.readCheckpoint(gCtx)
+			if err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
+				continue
+			}
+			_, size, _, err := parse.CheckpointUnsafe(cp)
+			if err != nil {
 				return err
 			}
-			continue
+			slog.DebugContext(gCtx, "Shutting down, waiting for checkpoint", slog.Uint64("goal", maxIndex), slog.Uint64("current", size))
+			if size > maxIndex {
+				return nil
+			}
 		}
-		_, size, _, err := parse.CheckpointUnsafe(cp)
-		if err != nil {
-			return err
-		}
-		slog.DebugContext(ctx, "Shutting down, waiting for checkpoint", slog.Uint64("goal", maxIndex), slog.Uint64("current", size))
-		if size > maxIndex {
-			return nil
-		}
+	})
+
+	// Wait for followers to catch up to the largest index.
+	for _, f := range t.followers {
+		g.Go(func() error {
+			ticker := time.NewTicker(1 * time.Nanosecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-gCtx.Done():
+					return gCtx.Err()
+				case <-ticker.C:
+					ticker.Reset(100 * time.Millisecond)
+				}
+
+				processed, err := f.EntriesProcessed(gCtx)
+				if err != nil {
+					return err
+				}
+				slog.DebugContext(gCtx, "Shutting down, waiting for follower", slog.String("follower", f.Name()), slog.Uint64("goal", maxIndex), slog.Uint64("processed", processed))
+				if processed > maxIndex {
+					return nil
+				}
+			}
+		})
 	}
+
+	return g.Wait()
 }
 
 // NewAppendOptions creates a new options struct for configuring appender lifecycle instances.
@@ -583,6 +631,7 @@ func NewAppendOptions() *AppendOptions {
 		addDecorators:               make([]func(AddFn) AddFn, 0),
 		pushbackMaxOutstanding:      DefaultPushbackMaxOutstanding,
 		garbageCollectionInterval:   DefaultGarbageCollectionInterval,
+		shutdownTimeout:             DefaultShutdownTimeout,
 	}
 }
 
@@ -622,6 +671,9 @@ type AppendOptions struct {
 
 	// garbageCollectionInterval of zero should be interpreted as requesting garbage collection to be disabled.
 	garbageCollectionInterval time.Duration
+
+	// shutdownTimeout is the maximum duration to wait for the shutdown process to complete.
+	shutdownTimeout time.Duration
 }
 
 // valid returns an error if an invalid combination of options has been set, or nil otherwise.
@@ -738,6 +790,10 @@ func (o AppendOptions) CheckpointRepublishInterval() time.Duration {
 
 func (o AppendOptions) GarbageCollectionInterval() time.Duration {
 	return o.garbageCollectionInterval
+}
+
+func (o AppendOptions) ShutdownTimeout() time.Duration {
+	return o.shutdownTimeout
 }
 
 // WithCheckpointSigner is an option for setting the note signer and verifier to use when creating and parsing checkpoints.
@@ -892,5 +948,15 @@ type WitnessOptions struct {
 // Setting to zero disables garbage collection.
 func (o *AppendOptions) WithGarbageCollectionInterval(interval time.Duration) *AppendOptions {
 	o.garbageCollectionInterval = interval
+	return o
+}
+
+// WithShutdownTimeout allows the maximum duration Tessera will wait for the shutdown
+// process to complete. Any delays in checkpoint finalisation or logs which have not caught up
+// to the checkpoint will cause a timeout error.
+//
+// The default value is DefaultShutdownTimeout.
+func (o *AppendOptions) WithShutdownTimeout(timeout time.Duration) *AppendOptions {
+	o.shutdownTimeout = timeout
 	return o
 }

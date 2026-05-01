@@ -149,3 +149,23 @@ func mustCreateSigner(t *testing.T, k string) note.Signer {
 	}
 	return s
 }
+
+func TestShutdownTimeout(t *testing.T) {
+	term := &terminator{
+		readCheckpoint: func(ctx context.Context) ([]byte, error) {
+			// simulate a call that doesn't finish, just block or wait
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	term.largestIssued.Store(1)
+	term.shutdownTimeout = 10 * time.Millisecond
+
+	err := term.Shutdown(context.Background())
+	if err == nil {
+		t.Fatal("Expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "deadline exceeded") && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("Expected context deadline exceeded or canceled error, got: %v", err)
+	}
+}
