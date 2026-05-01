@@ -556,22 +556,24 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 	defer cancel()
 
 	g, gCtx := errgroup.WithContext(timeoutCtx)
-	pollInterval := 100 * time.Millisecond
 
 	// Wait for checkpoint.
 	g.Go(func() error {
+		pollInterval := 0 * time.Millisecond
 		for {
 			select {
 			case <-gCtx.Done():
 				return gCtx.Err()
 			default:
+				time.Sleep(pollInterval)
 			}
+			pollInterval = 100 * time.Millisecond // after the first time, ensure we sleep in any other loops.
+
 			cp, err := t.readCheckpoint(gCtx)
 			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
 					return err
 				}
-				time.Sleep(pollInterval)
 				continue
 			}
 			_, size, _, err := parse.CheckpointUnsafe(cp)
@@ -582,19 +584,22 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 			if size > maxIndex {
 				return nil
 			}
-			time.Sleep(pollInterval)
 		}
 	})
 
 	// Wait for followers to catch up to the largest index.
 	for _, f := range t.followers {
 		g.Go(func() error {
+			pollInterval := 0 * time.Millisecond
 			for {
 				select {
 				case <-gCtx.Done():
 					return gCtx.Err()
 				default:
+					time.Sleep(pollInterval)
 				}
+				pollInterval = 100 * time.Millisecond // after the first time, ensure we sleep in any other loops.
+
 				processed, err := f.EntriesProcessed(gCtx)
 				if err != nil {
 					return err
@@ -603,7 +608,6 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 				if processed > maxIndex {
 					return nil
 				}
-				time.Sleep(pollInterval)
 			}
 		})
 	}
