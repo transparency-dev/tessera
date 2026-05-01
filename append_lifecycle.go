@@ -559,15 +559,15 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 
 	// Wait for checkpoint.
 	g.Go(func() error {
-		pollInterval := 0 * time.Millisecond
+		ticker := time.NewTicker(1 * time.Nanosecond)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-gCtx.Done():
 				return gCtx.Err()
-			default:
-				time.Sleep(pollInterval)
+			case <-ticker.C:
+				ticker.Reset(100 * time.Millisecond)
 			}
-			pollInterval = 100 * time.Millisecond // after the first time, ensure we sleep in any other loops.
 
 			cp, err := t.readCheckpoint(gCtx)
 			if err != nil {
@@ -590,15 +590,15 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 	// Wait for followers to catch up to the largest index.
 	for _, f := range t.followers {
 		g.Go(func() error {
-			pollInterval := 0 * time.Millisecond
+			ticker := time.NewTicker(1 * time.Nanosecond)
+			defer ticker.Stop()
 			for {
 				select {
 				case <-gCtx.Done():
 					return gCtx.Err()
-				default:
-					time.Sleep(pollInterval)
+				case <-ticker.C:
+					ticker.Reset(100 * time.Millisecond)
 				}
-				pollInterval = 100 * time.Millisecond // after the first time, ensure we sleep in any other loops.
 
 				processed, err := f.EntriesProcessed(gCtx)
 				if err != nil {
