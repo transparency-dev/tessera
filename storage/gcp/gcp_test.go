@@ -615,7 +615,7 @@ func TestGarbageCollect(t *testing.T) {
 		for _, p := range expectedPartialPrefixes(size, appender.logStore.entriesPath) {
 			wantPartialPrefixes[p] = struct{}{}
 		}
-		for k := range m.mem {
+		for _, k := range m.keys() {
 			if strings.Contains(k, ".p/") {
 				p := strings.SplitAfter(k, ".p/")[0]
 				if _, ok := wantPartialPrefixes[p]; !ok {
