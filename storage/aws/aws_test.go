@@ -297,9 +297,8 @@ func TestTileRoundtrip(t *testing.T) {
 			}
 
 			expPath := layout.TilePath(test.level, test.index, layout.PartialTileSize(test.level, test.index, test.logSize))
-			_, ok := m.mem[expPath]
-			if !ok {
-				t.Fatalf("want tile at %v but found none", expPath)
+			if _, err := m.getObject(ctx, expPath); err != nil {
+				t.Fatalf("want tile at %v but got: %v", expPath, err)
 			}
 
 			got, err := s.getTiles(ctx, []storage.TileID{{Level: test.level, Index: test.index}}, test.logSize)
@@ -356,9 +355,8 @@ func TestBundleRoundtrip(t *testing.T) {
 			}
 
 			expPath := layout.EntriesPath(test.index, test.p)
-			_, ok := m.mem[expPath]
-			if !ok {
-				t.Fatalf("want bundle at %v but found none", expPath)
+			if _, err := m.getObject(ctx, expPath); err != nil {
+				t.Fatalf("want bundle at %v but got: %v", expPath, err)
 			}
 
 			got, err := s.getEntryBundle(ctx, test.index, test.p)
@@ -547,7 +545,7 @@ func TestGarbageCollect(t *testing.T) {
 		for _, p := range expectedPartialPrefixes(size, appender.logStore.entriesPath) {
 			wantPartialPrefixes[p] = struct{}{}
 		}
-		for k := range m.mem {
+		for _, k := range m.keys() {
 			if strings.Contains(k, ".p/") {
 				p := strings.SplitAfter(k, ".p/")[0]
 				if _, ok := wantPartialPrefixes[p]; !ok {
@@ -679,7 +677,7 @@ func TestGarbageCollectOption(t *testing.T) {
 					wantPartialPrefixes[p] = struct{}{}
 				}
 				allPartialDirs := make(map[string]struct{})
-				for k := range m.mem {
+				for _, k := range m.keys() {
 					if strings.Contains(k, ".p/") {
 						allPartialDirs[strings.SplitAfter(k, ".p/")[0]] = struct{}{}
 					}
@@ -745,6 +743,16 @@ func (m *memObjStore) getObject(_ context.Context, obj string) ([]byte, error) {
 		return nil, fmt.Errorf("obj %q not found: %w", obj, &types.NoSuchKey{})
 	}
 	return d, nil
+}
+
+func (m *memObjStore) keys() []string {
+	m.RLock()
+	defer m.RUnlock()
+	r := make([]string, 0, len(m.mem))
+	for k := range m.mem {
+		r = append(r, k)
+	}
+	return r
 }
 
 // TODO(phboneff): add content type tests
