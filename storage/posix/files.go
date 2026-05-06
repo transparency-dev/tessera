@@ -672,15 +672,21 @@ func (s *Storage) readTreeState(ctx context.Context) (uint64, []byte, error) {
 // stored tree state.
 //
 // Returns the time at which the checkpoint is published, or was last published.
-func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, minStalenessRepub time.Duration) (time.Time, error) {
-	var publishedAt time.Time
-	if err := otel.TraceErr(ctx, "tessera.storage.posix.publishCheckpoint", tracer, func(ctx context.Context, span trace.Span) error {
+func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, minStalenessRepub time.Duration) (publishedAt time.Time, errR error) {
+	return otel.Trace(ctx, "tessera.storage.posix.publishCheckpoint", tracer, func(ctx context.Context, span trace.Span) (time.Time, error) {
 		now := time.Now()
+		defer func() {
+			// Detect any errors and update metrics accordingly.
+			// Non-error cases are explicitly handled in the body of the function below.
+			if errR != nil {
+				publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
+			}
+		}()
 
 		// Lock the destination "published" checkpoint location:
 		unlock, err := a.s.lockFile(ctx, publishLock)
 		if err != nil {
-			return fmt.Errorf("lockFile(%s): %v", publishLock, err)
+			return time.Time{}, fmt.Errorf("lockFile(%s): %v", publishLock, err)
 		}
 		defer func() {
 			if err := unlock(); err != nil {
@@ -696,42 +702,42 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 			slog.DebugContext(ctx, "No checkpoint exists, publishing")
 			cpExists = false
 		} else if err != nil {
-			return fmt.Errorf("stat(%s): %v", layout.CheckpointPath, err)
+			return time.Time{}, fmt.Errorf("stat(%s): %v", layout.CheckpointPath, err)
 		} else {
 			publishedAt = info.ModTime()
 			publishedAge = time.Since(info.ModTime())
 			if publishedAge < minStalenessActive {
 				slog.DebugContext(ctx, "publishCheckpoint: skipping publish because previous checkpoint too fresh", slog.Duration("age", publishedAge), slog.Duration("minstalenessactive", minStalenessActive))
 				publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped")))
-				return nil
+				return publishedAt, nil
 			}
 			publishedSize, err = a.publishedSize(ctx)
 			if err != nil {
 				slog.DebugContext(ctx, "publishCheckpoint: skipping publish because unable to determine previously published size", slog.Any("error", err))
-				return err
+				return time.Time{}, err
 			}
 		}
 
 		size, root, err := a.s.readTreeState(ctx)
 		if err != nil {
 			publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
-			return fmt.Errorf("readTreeState: %v", err)
+			return time.Time{}, fmt.Errorf("readTreeState: %v", err)
 		}
 		if cpExists && size == publishedSize {
 			if minStalenessRepub == 0 || publishedAge < minStalenessRepub {
 				slog.DebugContext(ctx, "publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
 				publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped_no_growth")))
-				return nil
+				return publishedAt, nil
 			}
 		}
 
 		cpRaw, err := a.newCP(ctx, size, root)
 		if err != nil {
-			return fmt.Errorf("newCP: %v", err)
+			return time.Time{}, fmt.Errorf("newCP: %v", err)
 		}
 
 		if err := a.s.createOverwrite(layout.CheckpointPath, cpRaw); err != nil {
-			return fmt.Errorf("createOverwrite(%s): %v", layout.CheckpointPath, err)
+			return time.Time{}, fmt.Errorf("createOverwrite(%s): %v", layout.CheckpointPath, err)
 		}
 		publishedAt = time.Now()
 
@@ -740,13 +746,8 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 		posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
 		publishCount.Add(ctx, 1)
 
-		return nil
-	}); err != nil {
-		publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("error")))
-		return time.Time{}, err
-	}
-
-	return publishedAt, nil
+		return publishedAt, nil
+	})
 }
 
 // publishedSize returns the size of tree that the currently published checkpoint, if any, commits to.
