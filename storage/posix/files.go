@@ -739,6 +739,7 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 		if err := a.s.createOverwrite(layout.CheckpointPath, cpRaw); err != nil {
 			return time.Time{}, fmt.Errorf("createOverwrite(%s): %v", layout.CheckpointPath, err)
 		}
+		// This is not the actual ModTime of the file, but it's close enough.
 		publishedAt = time.Now()
 
 		slog.DebugContext(ctx, "Published latest checkpoint", slog.Uint64("size", size), slog.String("root", fmt.Sprintf("%x", root)))
