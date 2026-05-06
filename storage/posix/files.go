@@ -183,12 +183,8 @@ func (a *appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 			if err != nil {
 				return err
 			}
-			nextPublication := pubInterval - time.Since(publishedAt)
-			if nextPublication <= 0 {
-				t.Reset(time.Millisecond) // Schedule a checkpoint update immediately.
-			} else {
-				t.Reset(nextPublication)
-			}
+			// Schedule a checkpoint update immediately, if an updated is due.
+			t.Reset(max(time.Millisecond, pubInterval-time.Since(publishedAt)))
 			return nil
 		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
 			t.Reset(pubInterval)

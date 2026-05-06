@@ -388,12 +388,8 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 			if err != nil {
 				return fmt.Errorf("publishCheckpoint failed: %v", err)
 			}
-			nextPublication := pubInterval - time.Since(publishedAt)
-			if nextPublication <= 0 {
-				t.Reset(time.Millisecond) // Schedule a checkpoint update immediately.
-			} else {
-				t.Reset(nextPublication)
-			}
+			// Schedule a checkpoint update immediately, if an updated is due.
+			t.Reset(max(time.Millisecond, pubInterval-time.Since(publishedAt)))
 			return nil
 		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
 			t.Reset(pubInterval)
@@ -1104,16 +1100,16 @@ func (s *spannerCoordinator) nextIndex(ctx context.Context) (uint64, error) {
 // This function uses PubCoord with an exclusive lock to guarantee that only one tessera instance can attempt to publish
 // a checkpoint at any given time.
 func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(context.Context, uint64, []byte) error) (time.Time, error) {
-	var pubAt time.Time
-	currentSize, rootHash, err := s.currentTree(ctx)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("failed to get current tree: %v", err)
-	}
-
-	if err := otel.TraceErr(ctx, "tessera.storage.gcp.publishCheckpoint", tracer, func(ctx context.Context, span trace.Span) error {
+	return otel.Trace(ctx, "tessera.storage.gcp.publishCheckpoint", tracer, func(ctx context.Context, span trace.Span) (time.Time, error) {
 		// outcomeAttr records the outcome of the checkpoint publication attempt for metrics and traces.
 		var outcomeAttr attribute.KeyValue
+		var pubAt time.Time
 		start := time.Now()
+
+		currentSize, rootHash, err := s.currentTree(ctx)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("failed to get current tree: %v", err)
+		}
 
 		span.AddEvent("Starting ReadWriteTransaction")
 		if _, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
@@ -1175,17 +1171,13 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 		}, spanner.TransactionOptions{TransactionTag: "tessera.op=publishCheckpoint"}); err != nil {
 			span.SetAttributes(outcomeTypeKey.String("error"))
 			publishCount.Add(ctx, 1, metric.WithAttributes(outcomeTypeKey.String("error")))
-			return err
+			return time.Time{}, err
 		}
 		opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
 		span.SetAttributes(outcomeAttr)
 		publishCount.Add(ctx, 1, metric.WithAttributes(outcomeAttr))
-		return nil
-	}); err != nil {
-		return time.Time{}, err
-	}
-
-	return pubAt, nil
+		return pubAt, nil
+	})
 }
 
 // garbageCollect will identify up to maxBundles unneeded partial entry bundles (and any unneeded partial tiles which sit above them in the tree) and
