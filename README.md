@@ -90,6 +90,7 @@ Tessera is generally available and production ready. The following items are pla
 |  10 | Mirrored logs ([#576][])                                  |   ⚠️   |
 |  11 | Preordered logs ([#575][])                                |   ❌   |
 |  12 | Trillian v1 to Tessera migration ([#577][])               |   ❌   |
+|  13 | Merkle Tree Certificates support ([#945][])               |   ⚠️   |
 |  N  | Fancy features (to be expanded upon later)                |   ❌   |
 
 ### What’s happening to Trillian v1?
@@ -451,3 +452,4 @@ transparency ecosystems over the years.
 [#575]: https://github.com/transparency-dev/tessera/issues/575
 [#576]: https://github.com/transparency-dev/tessera/issues/576
 [#577]: https://github.com/transparency-dev/tessera/issues/577
+[#945]: https://github.com/transparency-dev/tessera/issues/945
