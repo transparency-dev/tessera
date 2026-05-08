@@ -42,7 +42,7 @@ const (
 
 // Mirror is the interface that the handler uses to interact with the mirror's state.
 type Mirror interface {
-	AddCheckpoint(ctx context.Context, cp []byte, oldSize uint64, proof [][]byte) error
+	AddCheckpoint(ctx context.Context, oldSize uint64, proof [][]byte, cp []byte) error
 	AddEntries(ctx context.Context, logOrigin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*mirror.Package, error)) ([]byte, error)
 }
 
@@ -114,7 +114,7 @@ func addCheckpoint(m Mirror) http.HandlerFunc {
 			return
 		}
 
-		if err := m.AddCheckpoint(r.Context(), cp, oldSize, proof); err != nil {
+		if err := m.AddCheckpoint(r.Context(), oldSize, proof, cp); err != nil {
 			slog.ErrorContext(r.Context(), "AddCheckpoint failed", slog.Any("error", err))
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -127,6 +127,11 @@ func addCheckpoint(m Mirror) http.HandlerFunc {
 
 func addEntries(m Mirror) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// SPEC: The request body MUST have Content-Type of application/octet-stream ...
+		if t := strings.ToLower(r.Header.Get("Content-Type")); t != "application/octet-stream" {
+			http.Error(w, fmt.Sprintf("invalid Content-Type %q", t), http.StatusBadRequest)
+			return
+		}
 		req, err := parseAddEntriesPreamble(r.Body)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("failed to parse header: %v", err), http.StatusBadRequest)
@@ -227,15 +232,14 @@ func (a *addEntriesRequest) NextPackage() (*mirror.Package, error) {
 //
 // Returns a struct which represents the request, and provides streaming access to the entry packages.
 func parseAddEntriesPreamble(r io.Reader) (*addEntriesRequest, error) {
-	//SPEC: The request body MUST have Content-Type of application/octet-stream and contain the
-	//      following values, concatenated.
-	//        2 bytes, encoding a big-endian uint16: log_origin_size
-	//        log_origin_size bytes, containing the log origin: log_origin
-	//        8 bytes, encoding a big-endian uint64: upload_start
-	//        8 bytes, encoding a big-endian uint64: upload_end
-	//        2 bytes, encoding a big-endian uint16: ticket_size
-	//        ticket_size bytes, containing an opaque ticket value, described below
-	//        A sequence of entry packages
+	// SPEC: The request body MUST ... contain the following values, concatenated:
+	//         2 bytes, encoding a big-endian uint16: log_origin_size
+	//         log_origin_size bytes, containing the log origin: log_origin
+	//         8 bytes, encoding a big-endian uint64: upload_start
+	//         8 bytes, encoding a big-endian uint64: upload_end
+	//         2 bytes, encoding a big-endian uint16: ticket_size
+	//         ticket_size bytes, containing an opaque ticket value, described below
+	//         A sequence of entry packages
 	var logOriginSize uint16
 	if err := binary.Read(r, binary.BigEndian, &logOriginSize); err != nil {
 		return nil, err

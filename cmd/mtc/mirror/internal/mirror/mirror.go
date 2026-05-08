@@ -30,8 +30,8 @@ type Package struct {
 	Proof   [][]byte
 }
 
-func (m *Mirror) AddCheckpoint(ctx context.Context, cp []byte, oldSize uint64, proof [][]byte) error {
-	slog.InfoContext(ctx, "AddCheckpoint", slog.Int("cp_len", len(cp)), slog.Uint64("old_size", oldSize), slog.Int("proof_len", len(proof)))
+func (m *Mirror) AddCheckpoint(ctx context.Context, oldSize uint64, proof [][]byte, cpRaw []byte) error {
+	slog.InfoContext(ctx, "AddCheckpoint", slog.Uint64("old_size", oldSize), slog.Int("proof_len", len(proof)), slog.String("cp", string(cpRaw)))
 	return nil
 }
 

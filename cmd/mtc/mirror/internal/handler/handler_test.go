@@ -28,13 +28,13 @@ import (
 )
 
 type mockMirror struct {
-	addCheckpointFunc func(ctx context.Context, cp []byte, oldSize uint64, proof [][]byte) error
+	addCheckpointFunc func(ctx context.Context, oldSize uint64, proof [][]byte, cp []byte) error
 	addEntriesFunc    func(ctx context.Context, logOrigin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*mirror.Package, error)) ([]byte, error)
 }
 
-func (m *mockMirror) AddCheckpoint(ctx context.Context, cp []byte, oldSize uint64, proof [][]byte) error {
+func (m *mockMirror) AddCheckpoint(ctx context.Context, oldSize uint64, proof [][]byte, cp []byte) error {
 	if m.addCheckpointFunc != nil {
-		return m.addCheckpointFunc(ctx, cp, oldSize, proof)
+		return m.addCheckpointFunc(ctx, oldSize, proof, cp)
 	}
 	return nil
 }
@@ -50,7 +50,7 @@ func TestAddCheckpoint(t *testing.T) {
 	const cpOld = 100
 
 	mock := &mockMirror{
-		addCheckpointFunc: func(ctx context.Context, cp []byte, oldSize uint64, proof [][]byte) error {
+		addCheckpointFunc: func(ctx context.Context, oldSize uint64, proof [][]byte, cp []byte) error {
 			if oldSize != cpOld {
 				return fmt.Errorf("want oldSize %d, got %d", cpOld, oldSize)
 			}
@@ -132,6 +132,7 @@ func TestAddEntries(t *testing.T) {
 	_, _ = body.Write(make([]byte, 32)) // 1 hash
 
 	req := httptest.NewRequest(http.MethodPost, "/add-entries", &body)
+	req.Header.Add("Content-Type", "application/octet-stream")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
