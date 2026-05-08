@@ -719,7 +719,7 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 
 			span.AddEvent("Starting witnessing")
 			// Handle witnessing
-			{
+			if len(o.witnesses.Components) != 0 {
 				// Figure out the likely size the witnesses are aware of, but don't fail hard if we're unable
 				// to do so:
 				// a) it could be that this is the first checkpoint we're publishing
