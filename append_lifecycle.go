@@ -503,8 +503,9 @@ type terminator struct {
 	mu      sync.RWMutex
 	stopped bool
 
-	// largestIssued tracks the largest index allocated by this appender.
-	largestIssued atomic.Uint64
+	// wantTreeSize tracks a tree size which is large enough to cover all
+	// locally added entries.
+	wantTreeSize atomic.Uint64
 
 	// shutdownTimeout is the maximum duration to wait for the shutdown process to complete.
 	shutdownTimeout time.Duration
@@ -525,12 +526,13 @@ func (t *terminator) Add(ctx context.Context, entry *Entry) IndexFuture {
 			return i, err
 		}
 
-		// https://github.com/golang/go/issues/63999 - atomically set largest issued index
-		old := t.largestIssued.Load()
-		for old < i.Index && !t.largestIssued.CompareAndSwap(old, i.Index) {
-			old = t.largestIssued.Load()
+		// https://github.com/golang/go/issues/63999 - atomically set minimum tree size for shutdown.
+		wantSize := i.Index + 1
+		old := t.wantTreeSize.Load()
+		for old < wantSize && !t.wantTreeSize.CompareAndSwap(old, wantSize) {
+			old = t.wantTreeSize.Load()
 		}
-		appenderHighestIndex.Record(ctx, otel.Clamp64(t.largestIssued.Load()))
+		appenderHighestIndex.Record(ctx, otel.Clamp64(t.wantTreeSize.Load()-1))
 
 		return i, err
 	}
@@ -546,8 +548,9 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.stopped = true
-	maxIndex := t.largestIssued.Load()
-	if maxIndex == 0 {
+	
+	wantSize := t.wantTreeSize.Load()
+	if wantSize == 0 {
 		// special case no work done
 		return nil
 	}
@@ -580,8 +583,8 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			slog.DebugContext(gCtx, "Shutting down, waiting for checkpoint", slog.Uint64("goal", maxIndex), slog.Uint64("current", size))
-			if size > maxIndex {
+			slog.DebugContext(gCtx, "Shutting down, waiting for checkpoint", slog.Uint64("goal", wantSize), slog.Uint64("current", size))
+			if size >= wantSize {
 				return nil
 			}
 		}
@@ -604,8 +607,8 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 				if err != nil {
 					return err
 				}
-				slog.DebugContext(gCtx, "Shutting down, waiting for follower", slog.String("follower", f.Name()), slog.Uint64("goal", maxIndex), slog.Uint64("processed", processed))
-				if processed > maxIndex {
+				slog.DebugContext(gCtx, "Shutting down, waiting for follower", slog.String("follower", f.Name()), slog.Uint64("goal", wantSize), slog.Uint64("processed", processed))
+				if processed >= wantSize {
 					return nil
 				}
 			}

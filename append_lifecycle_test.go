@@ -16,6 +16,8 @@ package tessera
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -150,22 +152,70 @@ func mustCreateSigner(t *testing.T, k string) note.Signer {
 	return s
 }
 
-func TestShutdownTimeout(t *testing.T) {
-	term := &terminator{
-		readCheckpoint: func(ctx context.Context) ([]byte, error) {
-			// simulate a call that doesn't finish, just block or wait
-			<-ctx.Done()
-			return nil, ctx.Err()
+func TestShutdownBehavior(t *testing.T) {
+	tests := []struct {
+		name         string
+		wantTreeSize uint64
+		cpSize uint64
+		expectWait   bool
+	}{
+		{
+			name:         "no work done",
+			wantTreeSize: 0,
+			expectWait:   false,
+		},
+		{
+			name:         "wait for index 0",
+			wantTreeSize: 1,
+			cpSize:       0,
+			expectWait:   true,
+		},
+		{
+			name:         "already caught up",
+			wantTreeSize: 1,
+			cpSize:       1,
+			expectWait:   false,
 		},
 	}
-	term.largestIssued.Store(1)
-	term.shutdownTimeout = 10 * time.Millisecond
 
-	err := term.Shutdown(context.Background())
-	if err == nil {
-		t.Fatal("Expected timeout error, got nil")
-	}
-	if !strings.Contains(err.Error(), "deadline exceeded") && !strings.Contains(err.Error(), "context canceled") {
-		t.Fatalf("Expected context deadline exceeded or canceled error, got: %v", err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			term := &terminator{
+				readCheckpoint: func(ctx context.Context) ([]byte, error) {
+					// Return a valid checkpoint string that parse.CheckpointUnsafe can parse.
+					return []byte(fmt.Sprintf("example.com\n%d\nqINS1GRFhWHwdkUeqLEoP4yEMkTBBzxBkGwGQlVlVcs=\n", test.cpSize)), nil
+				},
+				shutdownTimeout: 10 * time.Millisecond,
+			}
+			term.wantTreeSize.Store(test.wantTreeSize)
+
+			// If we've added an entry, then the terminator should wait for a checkpoint covering it.
+			// Since we don't provide any checkpoints, we can detect this by waiting for it to timeout.
+			err := term.Shutdown(t.Context())
+			if gotTimeout := errors.Is(err, context.DeadlineExceeded); gotTimeout != test.expectWait {
+				t.Fatalf("Expected timeout error from waiting for checkpoint to catch up: %v, got timeout: %v, err: %v", test.expectWait, gotTimeout, err)
+			}
+		})
 	}
 }
+
+func TestAddUpdatesWantTreeSize(t *testing.T) {
+	wantIdx := uint64(5)
+	term := &terminator{
+		delegate: func(_ context.Context, _ *Entry) IndexFuture {
+			return func() (Index, error) {
+				return Index{Index: wantIdx}, nil
+			}
+		},
+	}
+
+	f := term.Add(t.Context(), nil)
+	if	_, err := f(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := term.wantTreeSize.Load(); got != wantIdx+1 {
+		t.Fatalf("wantTreeSize should be %d after adding index %d, got %d", wantIdx+1, wantIdx, got)
+	}
+}
+
