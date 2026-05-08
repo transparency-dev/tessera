@@ -18,7 +18,6 @@ package storage
 import (
 	"context"
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/transparency-dev/tessera"
@@ -33,14 +32,7 @@ import (
 // queue reaches a defined threshold, the queue will call a provided FlushFunc with
 // a slice containing all queued entries in the same order as they were added.
 type Queue struct {
-	maxSize uint
-	maxAge  time.Duration
-
-	timer *time.Timer
-	work  chan []queueItem
-
-	mu    sync.Mutex
-	items []queueItem
+	inputs chan queueItem
 }
 
 // FlushFunc is the signature of a function which will receive the slice of queued entries.
@@ -57,80 +49,89 @@ type FlushFunc func(ctx context.Context, entries []*tessera.Entry) error
 // for maxAge, or the size of the queue reaches maxSize.
 func NewQueue(ctx context.Context, maxAge time.Duration, maxSize uint, f FlushFunc) *Queue {
 	q := &Queue{
-		maxSize: maxSize,
-		maxAge:  maxAge,
-		work:    make(chan []queueItem, 1),
-		items:   make([]queueItem, 0, maxSize),
+		inputs: make(chan queueItem, maxSize),
 	}
+	batches := make(chan []queueItem, 1)
 
-	// Spin off a worker thread to write the queue flushes to storage.
-	go func(ctx context.Context) {
+	// Spin off a goroutine which accumulates added items into batches and sends them to the flush worker
+	// via the batches channel.
+	go func() {
+		defer close(batches)
+
+		var items []queueItem
+		timer := time.NewTimer(time.Hour)
+		timer.Stop()
+
+		flush := func() {
+			if len(items) == 0 {
+				return
+			}
+			if !timer.Stop() {
+				// If the timer has already fired, drain it to avoid a stutter.
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			// Send to batches channel. This might block if the worker is busy,
+			// but that's fine as it applies backpressure to the inputs channel.
+			select {
+			case batches <- items:
+			case <-ctx.Done():
+				return
+			}
+			items = nil
+		}
+
+		// Process the incoming items into batches, flushing the batch when either
+		// the batch is full, or the max age is reached.
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case entries := <-q.work:
-				q.doFlush(ctx, f, entries)
+			case item := <-q.inputs:
+				items = append(items, item)
+				if len(items) == 1 {
+					timer.Reset(maxAge)
+				}
+				if len(items) >= int(maxSize) {
+					flush()
+				}
+			case <-timer.C:
+				flush()
 			}
 		}
-	}(ctx)
+	}()
+
+	// Spin off a worker thread to process the flushed batches.
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case b, ok := <-batches:
+				if !ok {
+					return
+				}
+				q.doFlush(ctx, f, b)
+			}
+		}
+	}()
+
 	return q
 }
 
 // Add places e into the queue, and returns a func which should be called to retrieve the assigned index.
 func (q *Queue) Add(ctx context.Context, e *tessera.Entry) tessera.IndexFuture {
 	qi := newEntry(e)
-
-	q.mu.Lock()
-
-	q.items = append(q.items, qi)
-
-	// If this is the first item, start the timer.
-	if len(q.items) == 1 {
-		q.timer = time.AfterFunc(q.maxAge, q.flush)
+	select {
+	case q.inputs <- qi:
+	case <-ctx.Done():
+		return func() (tessera.Index, error) {
+			return tessera.Index{}, ctx.Err()
+		}
 	}
-
-	// If we've reached max size, flush.
-	var itemsToFlush []queueItem
-	if len(q.items) >= int(q.maxSize) {
-		itemsToFlush = q.flushLocked()
-	}
-	q.mu.Unlock()
-
-	if itemsToFlush != nil {
-		q.work <- itemsToFlush
-	}
-
 	return qi.f
-}
-
-// flush is called by the timer to flush the buffer.
-func (q *Queue) flush() {
-	q.mu.Lock()
-	itemsToFlush := q.flushLocked()
-	q.mu.Unlock()
-
-	if itemsToFlush != nil {
-		q.work <- itemsToFlush
-	}
-}
-
-// flushLocked must be called with q.mu held.
-// It prepares items for flushing and returns them.
-func (q *Queue) flushLocked() []queueItem {
-	if len(q.items) == 0 {
-		return nil
-	}
-
-	if q.timer != nil {
-		q.timer.Stop()
-		q.timer = nil
-	}
-
-	itemsToFlush := q.items
-	q.items = make([]queueItem, 0, q.maxSize)
-
-	return itemsToFlush
 }
 
 // doFlush handles the queue flush, and sending notifications of assigned log indices.

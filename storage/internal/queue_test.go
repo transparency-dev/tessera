@@ -83,12 +83,17 @@ func TestQueue(t *testing.T) {
 				adds[i] = q.Add(ctx, wantEntries[i])
 			}
 
+			var lastIndex int64 = -1
 			for i, r := range adds {
 				N, err := r()
 				if err != nil {
 					t.Errorf("Add: %v", err)
 					return
 				}
+				if int64(N.Index) <= lastIndex {
+					t.Errorf("Out of order index for item %d: got %d, last %d", i, N.Index, lastIndex)
+				}
+				lastIndex = int64(N.Index)
 				if got, want := assignedItems[N.Index].Data(), wantEntries[i].Data(); !reflect.DeepEqual(got, want) {
 					t.Errorf("Got item@%d %v, want %v", N.Index, got, want)
 				}
