@@ -88,6 +88,8 @@ const (
 	// compatible with the new format, and provide a means to do it if so.
 	SchemaCompatibilityVersion = 1
 
+	// defaultAssignEntriesTimeout is the default context timeout applied when assigning a batch of entries to the MySQL sequencer.
+	defaultAssignEntriesTimeout = 2 * time.Second
 	// defaultIntegrationTimeout is the default context timeout applied when undertaking an integration task.
 	defaultIntegrationTimeout = 10 * time.Second
 	// defaultPublicationTimeout is the default context timeout applied when undertaking a checkpoint publication task.
@@ -242,6 +244,8 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq sequencer, op
 		entriesAssigned: make(chan struct{}, 1),
 	}
 	r.queue = storage.NewQueue(ctx, opts.BatchMaxAge(), opts.BatchMaxSize(), func(ctx context.Context, entries []*tessera.Entry) error {
+		ctx, cancel := context.WithTimeout(ctx, defaultAssignEntriesTimeout)
+		defer cancel()
 		if err := r.sequencer.assignEntries(ctx, entries); err != nil {
 			return err
 		}
