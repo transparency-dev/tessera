@@ -247,10 +247,12 @@ func retry[T any](ctx context.Context, opts retryOpts, f func() (T, error)) (T, 
 			if tErr.RetryAfter > 0 {
 				delay = tErr.RetryAfter
 			}
+			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return res, ctx.Err()
-			case <-time.After(delay):
+			case <-timer.C:
 				if tErr.RetryAfter == 0 {
 					backoff = min(backoff*2, opts.maxBackoff)
 				}
