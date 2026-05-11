@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -78,6 +79,14 @@ func (h *HTTPFetcher) SetAuthorizationHeader(v string) {
 	h.authHeader = v
 }
 
+func isTransientNetworkError(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout()
+	}
+	return false
+}
+
 func (h HTTPFetcher) fetch(ctx context.Context, p string) ([]byte, error) {
 	u, err := h.rootURL.Parse(p)
 	if err != nil {
@@ -92,8 +101,10 @@ func (h HTTPFetcher) fetch(ctx context.Context, p string) ([]byte, error) {
 	}
 	r, err := h.c.Do(req)
 	if err != nil {
-		// Network errors are considered transient
-		return nil, TransientError{Err: err}
+		if isTransientNetworkError(err) {
+			return nil, TransientError{Err: err}
+		}
+		return nil, err
 	}
 	defer func() {
 		// Drain the body to ensure the underlying TCP connection can be returned

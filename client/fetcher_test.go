@@ -219,3 +219,48 @@ func TestWithTileRetry(t *testing.T) {
 		})
 	}
 }
+
+type myNetError struct {
+	timeout bool
+}
+
+func (e myNetError) Error() string   { return "error" }
+func (e myNetError) Timeout() bool   { return e.timeout }
+func (e myNetError) Temporary() bool { return false }
+
+func TestIsTransientNetworkError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "NilError",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "GenericError",
+			err:  errors.New("generic error"),
+			want: false,
+		},
+		{
+			name: "TimeoutError",
+			err:  myNetError{timeout: true},
+			want: true,
+		},
+		{
+			name: "NonTimeoutNetError",
+			err:  myNetError{timeout: false},
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTransientNetworkError(tc.err); got != tc.want {
+				t.Errorf("isTransientNetworkError() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
