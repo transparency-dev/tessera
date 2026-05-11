@@ -301,6 +301,11 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 		}
 
 		if err := otel.TraceErr(ctx, "tessera.storage.aws.integrateEntriesJob", tracer, func(ctx context.Context, span trace.Span) error {
+			start := time.Now()
+			defer func() {
+				opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("integrateEntries")))
+			}()
+			
 			ctx, cancel := context.WithTimeout(ctx, defaultIntegrationTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
@@ -1058,7 +1063,13 @@ func (s *mySQLSequencer) initDB(ctx context.Context) error {
 // index assigned to the first entry in the batch.
 func (s *mySQLSequencer) assignEntries(ctx context.Context, entries []*tessera.Entry) error {
 	return otel.TraceErr(ctx, "tessera.storage.gcp.assignEntries", tracer, func(ctx context.Context, span trace.Span) error {
+		start := time.Now()
+		defer func() {
+			opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("assignEntries")))
+		}()
+
 		span.SetAttributes(numEntriesKey.Int(len(entries)))
+
 		// First grab the treeSize in a non-locking read-only fashion (we don't want to block/collide with integration).
 		// We'll use this value to determine whether we need to apply back-pressure.
 		var treeSize uint64

@@ -306,7 +306,11 @@ func (l *logResourceStorage) NextIndex(ctx context.Context) (uint64, error) {
 // than one-by-one.
 func (a *appender) sequenceBatch(ctx context.Context, entries []*tessera.Entry) error {
 	return otel.TraceErr(ctx, "tessera.storage.posix.assignEntries", tracer, func(ctx context.Context, span trace.Span) error {
-		span.SetAttributes(numEntriesKey.Int(len(entries)))
+		start := time.Now()
+		defer func() {
+			posixOpsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("assignIntegrateBatch")))
+			span.SetAttributes(numEntriesKey.Int(len(entries)))
+		}()
 
 		// Double locking:
 		// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.

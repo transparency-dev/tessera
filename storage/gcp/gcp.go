@@ -349,6 +349,11 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 		}
 
 		if err := otel.TraceErr(ctx, "tessera.storage.gcp.integrateEntriesJob", tracer, func(ctx context.Context, span trace.Span) error {
+			start := time.Now()
+			defer func() {
+				opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("integrateEntries")))
+			}()
+
 			ctx, cancel := context.WithTimeout(ctx, defaultIntegrationTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
@@ -837,6 +842,11 @@ func (s *spannerCoordinator) checkDataCompatibility(ctx context.Context) error {
 // index assigned to the first entry in the batch.
 func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tessera.Entry) error {
 	return otel.TraceErr(ctx, "tessera.storage.gcp.assignEntries", tracer, func(ctx context.Context, span trace.Span) error {
+		start := time.Now()
+		defer func() {
+			opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("assignEntries")))
+		}()
+
 		span.SetAttributes(numEntriesKey.Int(len(entries)))
 
 		span.AddEvent("Reading IntCoord:seq")
