@@ -88,7 +88,7 @@ func TestHTTPFetcherRetry(t *testing.T) {
 					}
 					w.WriteHeader(status)
 					if status == http.StatusOK {
-						w.Write([]byte("data"))
+						_, _ = w.Write([]byte("data"))
 					}
 					return
 				}
