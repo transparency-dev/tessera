@@ -132,7 +132,11 @@ func parseRetryAfter(retryAfter string) time.Duration {
 	}
 	d, err := time.Parse(http.TimeFormat, retryAfter)
 	if err == nil {
-		return time.Until(d)
+		dur := time.Until(d)
+		if dur <= 0 {
+			return time.Nanosecond
+		}
+		return dur
 	}
 	s, err := strconv.Atoi(retryAfter)
 	if err == nil {

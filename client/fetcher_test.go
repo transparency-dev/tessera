@@ -45,6 +45,7 @@ func TestHTTPFetcherRetry(t *testing.T) {
 		retryAfter    string
 		expectedError error
 		wantAttempts  int
+		minDuration   time.Duration
 	}{
 		{
 			name:         "SuccessFirstTry",
@@ -73,6 +74,14 @@ func TestHTTPFetcherRetry(t *testing.T) {
 			responses:    []int{http.StatusTooManyRequests, http.StatusOK},
 			retryAfter:   "1", // 1 second
 			wantAttempts: 2,
+			minDuration:  time.Second,
+		},
+		{
+			name:         "RetryAfterPastDate",
+			responses:    []int{http.StatusTooManyRequests, http.StatusOK},
+			retryAfter:   "Wed, 21 Oct 2015 07:28:00 GMT",
+			wantAttempts: 2,
+			minDuration:  0,
 		},
 	}
 
@@ -129,8 +138,8 @@ func TestHTTPFetcherRetry(t *testing.T) {
 				t.Errorf("got %d attempts, want %d", attempts, tc.wantAttempts)
 			}
 
-			if tc.retryAfter != "" && duration < time.Second {
-				t.Errorf("expected retry delay of at least 1s, took %v", duration)
+			if tc.minDuration > 0 && duration < tc.minDuration {
+				t.Errorf("expected retry delay of at least %v, took %v", tc.minDuration, duration)
 			}
 		})
 	}
