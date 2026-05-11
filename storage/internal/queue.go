@@ -59,6 +59,9 @@ func NewQueue(ctx context.Context, maxAge time.Duration, maxSize uint, f FlushFu
 		defer close(batches)
 
 		var items []queueItem
+
+		// Initialise a timer with an arbitrarily large value, and immediately
+		// call Stop() to avoid a spurious trigger on the first iteration.
 		timer := time.NewTimer(time.Hour)
 		timer.Stop()
 
