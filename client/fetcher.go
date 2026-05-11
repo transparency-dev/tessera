@@ -16,19 +16,36 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
+	"time"
 
 	"log/slog"
 
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/internal/fetcher"
 )
+
+// TransientError indicates that an error is temporary and the operation can be retried.
+type TransientError struct {
+	Err        error
+	RetryAfter time.Duration // Optional, parsed from header if available
+}
+
+func (e TransientError) Error() string {
+	return fmt.Sprintf("transient error: %v", e.Err)
+}
+
+func (e TransientError) Unwrap() error {
+	return e.Err
+}
 
 // NewHTTPFetcher creates a new HTTPFetcher for the log rooted at the given URL, using
 // the provided HTTP client.
@@ -75,24 +92,49 @@ func (h HTTPFetcher) fetch(ctx context.Context, p string) ([]byte, error) {
 	}
 	r, err := h.c.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("get(%q): %v", u.String(), err)
+		// Network errors are considered transient
+		return nil, TransientError{Err: err}
 	}
-	switch r.StatusCode {
-	case http.StatusOK:
-		// All good, continue below
-	case http.StatusNotFound:
-		// Need to return ErrNotExist here, by contract.
-		return nil, fmt.Errorf("get(%q): %w", u.String(), os.ErrNotExist)
-	default:
-		return nil, fmt.Errorf("get(%q): %v", u.String(), r.StatusCode)
-	}
-
 	defer func() {
 		if err := r.Body.Close(); err != nil {
 			slog.ErrorContext(ctx, "resp.Body.Close", slog.Any("error", err))
 		}
 	}()
-	return io.ReadAll(r.Body)
+
+	switch r.StatusCode {
+	case http.StatusOK:
+		return io.ReadAll(r.Body)
+	case http.StatusNotFound:
+		// Need to return ErrNotExist here, by contract.
+		return nil, fmt.Errorf("get(%q): %w", u.String(), os.ErrNotExist)
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		var retryAfter time.Duration
+		if ra := r.Header.Get("Retry-After"); ra != "" {
+			retryAfter = parseRetryAfter(ra)
+		}
+		return nil, TransientError{
+			Err:        fmt.Errorf("get(%q): status %d", u.String(), r.StatusCode),
+			RetryAfter: retryAfter,
+		}
+	default:
+		return nil, fmt.Errorf("get(%q): %v", u.String(), r.StatusCode)
+	}
+}
+
+// parseRetryAfter parses the Retry-After header and returns a time.Duration.
+func parseRetryAfter(retryAfter string) time.Duration {
+	if retryAfter == "" {
+		return 0
+	}
+	d, err := time.Parse(http.TimeFormat, retryAfter)
+	if err == nil {
+		return time.Until(d)
+	}
+	s, err := strconv.Atoi(retryAfter)
+	if err == nil {
+		return time.Duration(s) * time.Second
+	}
+	return 0
 }
 
 func (h HTTPFetcher) ReadCheckpoint(ctx context.Context) ([]byte, error) {
@@ -109,6 +151,111 @@ func (h HTTPFetcher) ReadEntryBundle(ctx context.Context, i uint64, p uint8) ([]
 	return fetcher.PartialOrFullResource(ctx, p, func(ctx context.Context, p uint8) ([]byte, error) {
 		return h.fetch(ctx, layout.EntriesPath(i, p))
 	})
+}
+
+// retryOpts holds the configuration for retry logic.
+type retryOpts struct {
+	maxRetries     int
+	initialBackoff time.Duration
+	maxBackoff     time.Duration
+}
+
+// RetryOption is a function that modifies retryOpts.
+type RetryOption func(*retryOpts)
+
+// WithMaxRetries sets the maximum number of retries.
+func WithMaxRetries(n int) RetryOption {
+	return func(o *retryOpts) { o.maxRetries = n }
+}
+
+// WithInitialBackoff sets the initial backoff duration.
+func WithInitialBackoff(d time.Duration) RetryOption {
+	return func(o *retryOpts) { o.initialBackoff = d }
+}
+
+// WithMaxBackoff sets the maximum backoff duration.
+func WithMaxBackoff(d time.Duration) RetryOption {
+	return func(o *retryOpts) { o.maxBackoff = d }
+}
+
+func defaultRetryOpts() retryOpts {
+	return retryOpts{
+		maxRetries:     5,
+		initialBackoff: 100 * time.Millisecond,
+		maxBackoff:     2 * time.Second,
+	}
+}
+
+// WithTileRetry decorates a TileFetcherFunc with retry logic.
+func WithTileRetry(f TileFetcherFunc, opts ...RetryOption) TileFetcherFunc {
+	o := defaultRetryOpts()
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
+		return retry(ctx, o, func() ([]byte, error) {
+			return f(ctx, level, index, p)
+		})
+	}
+}
+
+// WithEntryBundleRetry decorates an EntryBundleFetcherFunc with retry logic.
+func WithEntryBundleRetry(f EntryBundleFetcherFunc, opts ...RetryOption) EntryBundleFetcherFunc {
+	o := defaultRetryOpts()
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return func(ctx context.Context, bundleIndex uint64, p uint8) ([]byte, error) {
+		return retry(ctx, o, func() ([]byte, error) {
+			return f(ctx, bundleIndex, p)
+		})
+	}
+}
+
+// WithCheckpointRetry decorates a CheckpointFetcherFunc with retry logic.
+func WithCheckpointRetry(f CheckpointFetcherFunc, opts ...RetryOption) CheckpointFetcherFunc {
+	o := defaultRetryOpts()
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return func(ctx context.Context) ([]byte, error) {
+		return retry(ctx, o, func() ([]byte, error) {
+			return f(ctx)
+		})
+	}
+}
+
+// retry retries the function f with exponential backoff up to maxRetries.
+func retry[T any](ctx context.Context, opts retryOpts, f func() (T, error)) (T, error) {
+	var backoff = opts.initialBackoff
+	for attempt := 0; attempt < opts.maxRetries; attempt++ {
+		res, err := f()
+		if err == nil {
+			return res, nil
+		}
+
+		var tErr TransientError
+		if errors.As(err, &tErr) {
+			if attempt == opts.maxRetries-1 {
+				return res, fmt.Errorf("after %d attempts: %w", opts.maxRetries, err)
+			}
+			delay := backoff
+			if tErr.RetryAfter > 0 {
+				delay = tErr.RetryAfter
+			}
+			select {
+			case <-ctx.Done():
+				return res, ctx.Err()
+			case <-time.After(delay):
+				if tErr.RetryAfter == 0 {
+					backoff = min(backoff*2, opts.maxBackoff)
+				}
+				continue
+			}
+		}
+		return res, err
+	}
+	return *new(T), fmt.Errorf("max retries reached")
 }
 
 // FileFetcher knows how to fetch log artifacts from a filesystem rooted at Root.
