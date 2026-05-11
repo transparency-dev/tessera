@@ -96,6 +96,10 @@ func (h HTTPFetcher) fetch(ctx context.Context, p string) ([]byte, error) {
 		return nil, TransientError{Err: err}
 	}
 	defer func() {
+		// Drain the body to ensure the underlying TCP connection can be returned
+		// to the keep-alive pool and reused for future requests.
+		_, _ = io.Copy(io.Discard, r.Body)
+
 		if err := r.Body.Close(); err != nil {
 			slog.ErrorContext(ctx, "resp.Body.Close", slog.Any("error", err))
 		}
