@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -298,7 +299,9 @@ func retry[T any](ctx context.Context, opts retryOpts, f func() (T, error)) (T, 
 				return res, ctx.Err()
 			case <-timer.C:
 				if tErr.RetryAfter == 0 {
-					backoff = min(backoff*2, opts.maxBackoff)
+					// Add jitter up to 50% of the current backoff
+					jitter := time.Duration(rand.Int64N(int64(backoff / 2)))
+					backoff = min(backoff*2, opts.maxBackoff) + jitter
 				}
 				continue
 			}
