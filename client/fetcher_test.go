@@ -107,11 +107,11 @@ func TestHTTPFetcherRetry(t *testing.T) {
 			minDuration:  0,
 		},
 		{
-			name:         "RetryAfterLargeCapped",
-			responses:    []int{http.StatusTooManyRequests, http.StatusOK},
-			retryAfter:   "3600", // 1 hour
-			wantAttempts: 2,
-			minDuration:  2 * time.Second, // Capped at maxBackoff (2s)
+			name:          "RetryAfterExceedsMaxBackoff",
+			responses:     []int{http.StatusTooManyRequests},
+			retryAfter:    "3600", // 1 hour
+			expectedError: errors.New("exceeds maxBackoff"),
+			wantAttempts:  1,
 		},
 	}
 

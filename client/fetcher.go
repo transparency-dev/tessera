@@ -290,7 +290,10 @@ func retry[T any](ctx context.Context, opts retryOpts, f func() (T, error)) (T, 
 			}
 			delay := backoff
 			if tErr.RetryAfter > 0 {
-				delay = min(tErr.RetryAfter, opts.maxBackoff)
+				if tErr.RetryAfter > opts.maxBackoff {
+					return res, fmt.Errorf("Retry-After %v exceeds maxBackoff %v: %w", tErr.RetryAfter, opts.maxBackoff, err)
+				}
+				delay = tErr.RetryAfter
 			}
 			timer := time.NewTimer(delay)
 			select {
