@@ -162,7 +162,7 @@ func parseRetryAfter(retryAfter string) time.Duration {
 	if retryAfter == "" {
 		return 0
 	}
-	d, err := time.Parse(http.TimeFormat, retryAfter)
+	d, err := http.ParseTime(retryAfter)
 	if err == nil {
 		dur := time.Until(d)
 		if dur <= 0 {

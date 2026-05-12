@@ -92,6 +92,20 @@ func TestHTTPFetcherRetry(t *testing.T) {
 			wantAttempts: 2,
 			minDuration:  0,
 		},
+		{
+			name:         "RetryAfterRFC850",
+			responses:    []int{http.StatusTooManyRequests, http.StatusOK},
+			retryAfter:   "Sunday, 06-Nov-94 08:49:37 GMT",
+			wantAttempts: 2,
+			minDuration:  0,
+		},
+		{
+			name:         "RetryAfterANSIC",
+			responses:    []int{http.StatusTooManyRequests, http.StatusOK},
+			retryAfter:   "Sun Nov  6 08:49:37 1994",
+			wantAttempts: 2,
+			minDuration:  0,
+		},
 	}
 
 	for _, tc := range tests {
