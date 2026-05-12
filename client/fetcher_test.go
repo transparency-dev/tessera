@@ -61,9 +61,9 @@ func TestHTTPFetcherRetry(t *testing.T) {
 		},
 		{
 			name:          "MaxRetriesExceeded",
-			responses:     []int{http.StatusServiceUnavailable, http.StatusServiceUnavailable, http.StatusServiceUnavailable, http.StatusServiceUnavailable, http.StatusServiceUnavailable},
-			expectedError: errors.New("after 5 attempts"),
-			wantAttempts:  5,
+			responses:     []int{http.StatusServiceUnavailable, http.StatusServiceUnavailable, http.StatusServiceUnavailable, http.StatusServiceUnavailable, http.StatusServiceUnavailable, http.StatusServiceUnavailable},
+			expectedError: errors.New("after 5 retries"),
+			wantAttempts:  6,
 		},
 		{
 			name:          "NotFoundNoRetry",
@@ -174,9 +174,9 @@ func TestWithTileRetry(t *testing.T) {
 		},
 		{
 			name:          "MaxRetriesExceeded",
-			responses:     []error{TransientError{Err: errors.New("temporary")}, TransientError{Err: errors.New("temporary")}, TransientError{Err: errors.New("temporary")}, TransientError{Err: errors.New("temporary")}, TransientError{Err: errors.New("temporary")}},
-			expectedError: errors.New("after 5 attempts"),
-			wantAttempts:  5,
+			responses:     []error{TransientError{Err: errors.New("temporary")}, TransientError{Err: errors.New("temporary")}, TransientError{Err: errors.New("temporary")}, TransientError{Err: errors.New("temporary")}, TransientError{Err: errors.New("temporary")}, TransientError{Err: errors.New("temporary")}},
+			expectedError: errors.New("after 5 retries"),
+			wantAttempts:  6,
 		},
 		{
 			name:          "NonTransientErrorNoRetry",
@@ -186,10 +186,10 @@ func TestWithTileRetry(t *testing.T) {
 		},
 		{
 			name:          "CustomMaxRetries",
-			responses:     []error{TransientError{Err: errors.New("temporary")}, TransientError{Err: errors.New("temporary")}},
+			responses:     []error{TransientError{Err: errors.New("temporary")}, TransientError{Err: errors.New("temporary")}, TransientError{Err: errors.New("temporary")}},
 			options:       []RetryOption{WithMaxRetries(2)},
-			expectedError: errors.New("after 2 attempts"),
-			wantAttempts:  2,
+			expectedError: errors.New("after 2 retries"),
+			wantAttempts:  3,
 		},
 	}
 

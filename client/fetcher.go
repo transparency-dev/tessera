@@ -270,7 +270,7 @@ func WithCheckpointRetry(f CheckpointFetcherFunc, opts ...RetryOption) Checkpoin
 // retry retries the function f with exponential backoff up to maxRetries.
 func retry[T any](ctx context.Context, opts retryOpts, f func() (T, error)) (T, error) {
 	var backoff = opts.initialBackoff
-	for attempt := 0; attempt < opts.maxRetries; attempt++ {
+	for attempt := 0; attempt <= opts.maxRetries; attempt++ {
 		res, err := f()
 		if err == nil {
 			return res, nil
@@ -278,8 +278,8 @@ func retry[T any](ctx context.Context, opts retryOpts, f func() (T, error)) (T, 
 
 		var tErr TransientError
 		if errors.As(err, &tErr) {
-			if attempt == opts.maxRetries-1 {
-				return res, fmt.Errorf("after %d attempts: %w", opts.maxRetries, err)
+			if attempt == opts.maxRetries {
+				return res, fmt.Errorf("after %d retries: %w", opts.maxRetries, err)
 			}
 			delay := backoff
 			if tErr.RetryAfter > 0 {
