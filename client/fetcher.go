@@ -122,7 +122,8 @@ func (h HTTPFetcher) fetch(ctx context.Context, p string) ([]byte, error) {
 	defer func() {
 		// Drain the body to ensure the underlying TCP connection can be returned
 		// to the keep-alive pool and reused for future requests.
-		_, _ = io.Copy(io.Discard, r.Body)
+		// Limit the drain to avoid hanging on large or infinite responses.
+		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 4096))
 
 		if err := r.Body.Close(); err != nil {
 			slog.ErrorContext(ctx, "resp.Body.Close", slog.Any("error", err))	
