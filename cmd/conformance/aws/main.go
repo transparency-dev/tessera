@@ -35,8 +35,6 @@ import (
 	"github.com/transparency-dev/tessera/storage/aws"
 	aws_as "github.com/transparency-dev/tessera/storage/aws/antispam"
 	"golang.org/x/mod/sumdb/note"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 )
 
 var (
@@ -132,18 +130,18 @@ func main() {
 		_, _ = fmt.Fprintf(w, "%d", idx.Index)
 	})
 
-	h2s := &http2.Server{}
-	h1s := &http.Server{
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+
+	server := &http.Server{
 		Addr:              *listen,
-		Handler:           h2c.NewHandler(http.DefaultServeMux, h2s),
+		Handler:           http.DefaultServeMux,
+		Protocols:         &protocols,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	if err := http2.ConfigureServer(h1s, h2s); err != nil {
-		slog.ErrorContext(ctx, "http2.ConfigureServer", slog.Any("error", err))
-		os.Exit(1)
-	}
 
-	if err := h1s.ListenAndServe(); err != nil {
+	if err := server.ListenAndServe(); err != nil {
 		if err := shutdown(ctx); err != nil {
 			slog.ErrorContext(ctx, "Failed to cleanly shutdown after ListenAndServe", slog.Any("error", err))
 			os.Exit(1)

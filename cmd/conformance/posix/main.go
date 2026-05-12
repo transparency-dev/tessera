@@ -29,8 +29,6 @@ import (
 	"time"
 
 	"golang.org/x/mod/sumdb/note"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	"log/slog"
 
@@ -127,18 +125,18 @@ func main() {
 		"export WRITE_URL=http://localhost%s/ \n"+
 		"export READ_URL=http://localhost%s/ \n", *listen, *listen)
 	// Run the HTTP server with the single handler and block until this is terminated
-	h2s := &http2.Server{}
-	h1s := &http.Server{
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+
+	server := &http.Server{
 		Addr:              *listen,
-		Handler:           h2c.NewHandler(http.DefaultServeMux, h2s),
+		Handler:           http.DefaultServeMux,
+		Protocols:         &protocols,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	if err := http2.ConfigureServer(h1s, h2s); err != nil {
-		slog.ErrorContext(ctx, "http2.ConfigureServer", slog.Any("error", err))
-		os.Exit(1)
-	}
 
-	if err := h1s.ListenAndServe(); err != nil {
+	if err := server.ListenAndServe(); err != nil {
 		if err := shutdown(ctx); err != nil {
 			slog.ErrorContext(ctx, "Failed to cleanly shutdown after ListenAndServe", slog.Any("error", err))
 			os.Exit(1)
