@@ -370,7 +370,9 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 				if err != errOutOfSync {
 					klog.Errorf("Failed to commit antispam population tx: %v", err)
 				}
-				stop()
+				if stop != nil {
+					stop()
+				}
 				next = nil
 				streamDone = true
 				continue
