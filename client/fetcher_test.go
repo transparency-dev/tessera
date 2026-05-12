@@ -290,6 +290,11 @@ func TestIsTransientNetworkError(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "EOF",
+			err:  io.EOF,
+			want: true,
+		},
+		{
 			name: "ConnReset",
 			err:  syscall.ECONNRESET,
 			want: true,

@@ -87,7 +87,7 @@ func isTransientNetworkError(err error) bool {
 			return true
 		}
 	}
-	if errors.Is(err, io.ErrUnexpectedEOF) {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
 	var errno syscall.Errno
