@@ -271,8 +271,10 @@ func WithCheckpointRetry(f CheckpointFetcherFunc, opts ...RetryOption) Checkpoin
 // retry retries the function f with exponential backoff up to maxRetries.
 func retry[T any](ctx context.Context, opts retryOpts, f func() (T, error)) (T, error) {
 	var backoff = opts.initialBackoff
+	var err error
+	var res T
 	for attempt := 0; attempt <= opts.maxRetries; attempt++ {
-		res, err := f()
+		res, err = f()
 		if err == nil {
 			return res, nil
 		}
@@ -280,7 +282,7 @@ func retry[T any](ctx context.Context, opts retryOpts, f func() (T, error)) (T, 
 		var tErr TransientError
 		if errors.As(err, &tErr) {
 			if attempt == opts.maxRetries {
-				return res, fmt.Errorf("after %d retries: %w", opts.maxRetries, err)
+				break
 			}
 			delay := backoff
 			if tErr.RetryAfter > 0 {
@@ -300,7 +302,7 @@ func retry[T any](ctx context.Context, opts retryOpts, f func() (T, error)) (T, 
 		}
 		return res, err
 	}
-	return *new(T), fmt.Errorf("max retries reached")
+	return res, fmt.Errorf("after %d retries: %w", opts.maxRetries, err)
 }
 
 // FileFetcher knows how to fetch log artifacts from a filesystem rooted at Root.
