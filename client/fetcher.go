@@ -112,7 +112,7 @@ func (h HTTPFetcher) fetch(ctx context.Context, p string) ([]byte, error) {
 		_, _ = io.Copy(io.Discard, r.Body)
 
 		if err := r.Body.Close(); err != nil {
-			slog.ErrorContext(ctx, "resp.Body.Close", slog.Any("error", err))
+			slog.ErrorContext(ctx, "resp.Body.Close", slog.Any("error", err))	
 		}
 	}()
 
@@ -151,6 +151,9 @@ func parseRetryAfter(retryAfter string) time.Duration {
 	}
 	s, err := strconv.Atoi(retryAfter)
 	if err == nil {
+		if s <= 0 {
+			return time.Nanosecond
+		}
 		return time.Duration(s) * time.Second
 	}
 	return 0

@@ -83,6 +83,13 @@ func TestHTTPFetcherRetry(t *testing.T) {
 			wantAttempts: 2,
 			minDuration:  0,
 		},
+		{
+			name:         "RetryAfterZero",
+			responses:    []int{http.StatusTooManyRequests, http.StatusOK},
+			retryAfter:   "0",
+			wantAttempts: 2,
+			minDuration:  0,
+		},
 	}
 
 	for _, tc := range tests {
