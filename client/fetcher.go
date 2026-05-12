@@ -81,6 +81,9 @@ func (h *HTTPFetcher) SetAuthorizationHeader(v string) {
 }
 
 func isTransientNetworkError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		if netErr.Timeout() {

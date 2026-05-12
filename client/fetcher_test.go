@@ -275,6 +275,16 @@ func TestIsTransientNetworkError(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "ContextCanceled",
+			err:  context.Canceled,
+			want: false,
+		},
+		{
+			name: "ContextDeadlineExceeded",
+			err:  context.DeadlineExceeded,
+			want: false,
+		},
+		{
 			name: "TimeoutError",
 			err:  myNetError{timeout: true},
 			want: true,
