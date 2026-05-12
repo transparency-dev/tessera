@@ -26,6 +26,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"log/slog"
@@ -82,7 +83,19 @@ func (h *HTTPFetcher) SetAuthorizationHeader(v string) {
 func isTransientNetworkError(err error) bool {
 	var netErr net.Error
 	if errors.As(err, &netErr) {
-		return netErr.Timeout()
+		if netErr.Timeout() {
+			return true
+		}
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		switch errno {
+		case syscall.ECONNRESET, syscall.ECONNABORTED, syscall.ECONNREFUSED:
+			return true
+		}
 	}
 	return false
 }
@@ -118,7 +131,14 @@ func (h HTTPFetcher) fetch(ctx context.Context, p string) ([]byte, error) {
 
 	switch r.StatusCode {
 	case http.StatusOK:
-		return io.ReadAll(r.Body)
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			if isTransientNetworkError(err) {
+				return nil, TransientError{Err: err}
+			}
+			return nil, err
+		}
+		return data, nil
 	case http.StatusNotFound:
 		// Need to return ErrNotExist here, by contract.
 		return nil, fmt.Errorf("get(%q): %w", u.String(), os.ErrNotExist)

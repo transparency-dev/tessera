@@ -3,11 +3,13 @@ package client
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -260,6 +262,21 @@ func TestIsTransientNetworkError(t *testing.T) {
 			name: "NonTimeoutNetError",
 			err:  myNetError{timeout: false},
 			want: false,
+		},
+		{
+			name: "UnexpectedEOF",
+			err:  io.ErrUnexpectedEOF,
+			want: true,
+		},
+		{
+			name: "ConnReset",
+			err:  syscall.ECONNRESET,
+			want: true,
+		},
+		{
+			name: "ConnRefused",
+			err:  syscall.ECONNREFUSED,
+			want: true,
 		},
 	}
 
