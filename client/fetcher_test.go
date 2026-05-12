@@ -212,6 +212,12 @@ func TestWithTileRetry(t *testing.T) {
 			expectedError: errors.New("after 2 retries"),
 			wantAttempts:  3,
 		},
+		{
+			name:         "InitialBackoffZero",
+			responses:    []error{TransientError{Err: errors.New("temporary")}, nil},
+			options:      []RetryOption{WithInitialBackoff(0)},
+			wantAttempts: 2,
+		},
 	}
 
 	for _, tc := range tests {

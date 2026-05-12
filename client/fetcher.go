@@ -300,7 +300,10 @@ func retry[T any](ctx context.Context, opts retryOpts, f func() (T, error)) (T, 
 			case <-timer.C:
 				if tErr.RetryAfter == 0 {
 					// Add jitter up to 50% of the current backoff
-					jitter := time.Duration(rand.Int64N(int64(backoff / 2)))
+					var jitter time.Duration
+					if n := int64(backoff / 2); n > 0 {
+						jitter = time.Duration(rand.Int64N(n))
+					}
 					backoff = min(backoff*2, opts.maxBackoff) + jitter
 				}
 				continue
