@@ -212,6 +212,44 @@ func TestAntispamPushbackRecovers(t *testing.T) {
 	}
 }
 
+func TestAntispamFollowerErrorBeforeStream(t *testing.T) {
+	as, err := NewAntispam(t.Context(), t.TempDir(), AntispamOpts{})
+	if err != nil {
+		t.Fatalf("NewAntispam: %v", err)
+	}
+
+	fl, shutdown := testonly.NewTestLog(t, tessera.NewAppendOptions().WithCheckpointInterval(time.Second))
+	defer func() {
+		if err := shutdown(t.Context()); err != nil {
+			t.Logf("shutdown: %v", err)
+		}
+	}()
+
+	f := as.Follower(testBundleHasher)
+
+	mockLR := &failingLogReader{
+		LogReader: fl.LogReader,
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	go f.Follow(ctx, mockLR)
+
+	// Wait for the ticker (1s) and some execution time.
+	time.Sleep(1500 * time.Millisecond)
+	
+	cancel()
+}
+
+type failingLogReader struct {
+	tessera.LogReader
+}
+
+func (f *failingLogReader) IntegratedSize(ctx context.Context) (uint64, error) {
+	return 0, fmt.Errorf("injected error")
+}
+
 func testIDHash(d []byte) []byte {
 	r := sha256.Sum256(d)
 	return r[:]
