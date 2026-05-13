@@ -548,7 +548,7 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.stopped = true
-	
+
 	wantSize := t.wantTreeSize.Load()
 	if wantSize == 0 {
 		// special case no work done
@@ -677,12 +677,26 @@ type AppendOptions struct {
 
 	// shutdownTimeout is the maximum duration to wait for the shutdown process to complete.
 	shutdownTimeout time.Duration
+
+	// primarySigner is the "canonical" signer which is used when creating new checkpoints.
+	primarySigner note.Signer
+
+	// additionalSigners are additional signers which are used to sign new checkpoints.
+	additionalSigners []note.Signer
 }
 
 // valid returns an error if an invalid combination of options has been set, or nil otherwise.
 func (o AppendOptions) valid() error {
 	if o.newCP == nil {
 		return errors.New("invalid AppendOptions: WithCheckpointSigner must be set")
+	}
+	if o.primarySigner != nil {
+		origin := o.primarySigner.Name()
+		for _, signer := range o.additionalSigners {
+			if origin != signer.Name() {
+				return fmt.Errorf("additional signer name %q does not match primary signer name %q", signer.Name(), origin)
+			}
+		}
 	}
 	if o.checkpointRepublishInterval > 0 && o.checkpointRepublishInterval < o.checkpointInterval {
 		return fmt.Errorf("invalid AppendOptions: WithCheckpointRepublishInterval (%d) is smaller than WithCheckpointInterval (%d)", o.checkpointRepublishInterval, o.checkpointInterval)
@@ -807,23 +821,19 @@ func (o AppendOptions) ShutdownTimeout() time.Duration {
 // A primary signer must be provided:
 // - the primary signer is the "canonical" signing identity which should be used when creating new checkpoints.
 //
-// Zero or more dditional signers may also be provided.
+// Zero or more additional signers may also be provided.
 // This enables cases like:
 //   - a rolling key rotation, where checkpoints are signed by both the old and new keys for some period of time,
 //   - using different signature schemes for different audiences, etc.
 //
 // When providing additional signers, their names MUST be identical to the primary signer name, and this name will be used
-// as the checkpoint Origin line.
+// as the checkpoint Origin line. This requirement is enforced during Appender initialization.
 //
 // Checkpoints signed by these signer(s) will be standard checkpoints as defined by https://c2sp.org/tlog-checkpoint.
 func (o *AppendOptions) WithCheckpointSigner(s note.Signer, additionalSigners ...note.Signer) *AppendOptions {
 	origin := s.Name()
-	for _, signer := range additionalSigners {
-		if origin != signer.Name() {
-			slog.ErrorContext(context.Background(), "WithCheckpointSigner: additional signer name does not match primary signer name", slog.String("name", signer.Name()), slog.String("origin", origin))
-			os.Exit(1)
-		}
-	}
+	o.primarySigner = s
+	o.additionalSigners = additionalSigners
 	o.newCP = func(ctx context.Context, size uint64, hash []byte) ([]byte, error) {
 		return otel.Trace(ctx, "tessera.SignCheckpoint", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
 			// If we're signing a zero-sized tree, the tlog-checkpoint spec says (via RFC6962) that
