@@ -1132,6 +1132,9 @@ func (m *MigrationStorage) fetchLeafHashes(ctx context.Context, from, to, source
 		if err != nil {
 			return nil, fmt.Errorf("bundleHasherFunc for bundle index %d: %v", ri.Index, err)
 		}
+		if len(bh) < int(ri.First+ri.N) {
+			return nil, fmt.Errorf("bundle index %d has fewer entries than expected (%d < %d)", ri.Index, len(bh), ri.First+ri.N)
+		}
 		lh = append(lh, bh[ri.First:ri.First+ri.N]...)
 		n++
 		if n >= maxBundles {
