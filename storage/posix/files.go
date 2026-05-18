@@ -179,12 +179,12 @@ func (a *appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 		if err := otel.TraceErr(ctx, "tessera.storage.posix.publishCheckpointJob", tracer, func(ctx context.Context, span trace.Span) error {
 			ctx, cancel := context.WithTimeout(ctx, defaultPublicationTimeout)
 			defer cancel()
-			publishedAt, err := a.publishCheckpoint(ctx, pubInterval, republishInterval)
+			nextPub, err := a.publishCheckpoint(ctx, pubInterval, republishInterval)
 			if err != nil {
 				return err
 			}
 			// Schedule a checkpoint update immediately, if an updated is due.
-			t.Reset(max(time.Millisecond, pubInterval-time.Since(publishedAt)))
+			t.Reset(max(time.Millisecond, time.Until(nextPub)))
 			return nil
 		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
 			t.Reset(pubInterval)
@@ -675,10 +675,10 @@ func (s *Storage) readTreeState(ctx context.Context) (uint64, []byte, error) {
 // minStaleness old, and, if so, creates and published a fresh checkpoint from the current
 // stored tree state.
 //
-// Returns the time at which the checkpoint is published, or was last published.
-func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, minStalenessRepub time.Duration) (publishedAt time.Time, errR error) {
+// Returns the time at which publishCheckpoint should be called again.
+func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, minStalenessRepub time.Duration) (nextPubAt time.Time, errR error) {
 	return otel.Trace(ctx, "tessera.storage.posix.publishCheckpoint", tracer, func(ctx context.Context, span trace.Span) (time.Time, error) {
-		now := time.Now()
+		start := time.Now()
 		defer func() {
 			// Detect any errors and update metrics accordingly.
 			// Non-error cases are explicitly handled in the body of the function below.
@@ -701,6 +701,7 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 		var publishedAge time.Duration
 		var publishedSize uint64
 		cpExists := true
+		var pubAt time.Time
 		info, err := a.s.stat(layout.CheckpointPath)
 		if errors.Is(err, os.ErrNotExist) {
 			slog.DebugContext(ctx, "No checkpoint exists, publishing")
@@ -708,12 +709,13 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 		} else if err != nil {
 			return time.Time{}, fmt.Errorf("stat(%s): %v", layout.CheckpointPath, err)
 		} else {
-			publishedAt = info.ModTime()
+			pubAt = info.ModTime()
 			publishedAge = time.Since(info.ModTime())
 			if publishedAge < minStalenessActive {
 				slog.DebugContext(ctx, "publishCheckpoint: skipping publish because previous checkpoint too fresh", slog.Duration("age", publishedAge), slog.Duration("minstalenessactive", minStalenessActive))
 				publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped")))
-				return publishedAt, nil
+				nextPubAt = pubAt.Add(minStalenessActive)
+				return nextPubAt, nil
 			}
 			publishedSize, err = a.publishedSize(ctx)
 			if err != nil {
@@ -731,7 +733,11 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 			if minStalenessRepub == 0 || publishedAge < minStalenessRepub {
 				slog.DebugContext(ctx, "publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
 				publishCount.Add(ctx, 1, metric.WithAttributes(errorTypeKey.String("skipped_no_growth")))
-				return publishedAt, nil
+				nextPubAt = start.Add(minStalenessActive)
+				if minStalenessRepub > 0 && nextPubAt.After(pubAt.Add(minStalenessRepub)) {
+					nextPubAt = pubAt.Add(minStalenessRepub)
+				}
+				return nextPubAt, nil
 			}
 		}
 
@@ -744,14 +750,14 @@ func (a *appender) publishCheckpoint(ctx context.Context, minStalenessActive, mi
 			return time.Time{}, fmt.Errorf("createOverwrite(%s): %v", layout.CheckpointPath, err)
 		}
 		// This is not the actual ModTime of the file, but it's close enough.
-		publishedAt = time.Now()
+		pubAt = time.Now()
 
 		slog.DebugContext(ctx, "Published latest checkpoint", slog.Uint64("size", size), slog.String("root", fmt.Sprintf("%x", root)))
 
-		posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
+		posixOpsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
 		publishCount.Add(ctx, 1)
 
-		return publishedAt, nil
+		return pubAt.Add(minStalenessActive), nil
 	})
 }
 
