@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	cloud.google.com/go/spanner v1.91.0
-	cloud.google.com/go/storage v1.62.1
+	cloud.google.com/go/storage v1.62.2
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.56.0
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace v1.32.0
 	github.com/RobinUS2/golang-moving-average v1.0.0
@@ -37,8 +37,8 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.43.0
 	golang.org/x/exp v0.0.0-20240325151524-a685a6edb6d8
 	golang.org/x/mod v0.36.0
-	google.golang.org/api v0.278.0
-	google.golang.org/grpc v1.81.0
+	google.golang.org/api v0.279.0
+	google.golang.org/grpc v1.81.1
 )
 
 require (
