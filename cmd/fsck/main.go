@@ -98,19 +98,19 @@ func main() {
 
 		checkResult <- err
 		close(checkResult)
+		cancel() // We're done, so we can exit.
 	}()
 
 	if *ui {
 		if err := tui.RunApp(ctx, f); err != nil {
 			slog.ErrorContext(ctx, "App exited", slog.Any("error", err))
 		}
-		// User may have exited the UI, cancel the context to signal to everything else.
+		// User may have exited the UI, cancel the context to signal to the async fsck process too.
 		cancel()
 	} else {
 		for {
 			select {
 			case err := <-checkResult:
-				cancel()
 				if err != nil {
 					slog.ErrorContext(ctx, "fsck failed", slog.Any("error", err))
 					os.Exit(1)
