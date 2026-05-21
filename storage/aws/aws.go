@@ -1299,7 +1299,15 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 	if err := pRow.Scan(&publishedAt, &lastSize); err != nil {
 		return time.Time{}, fmt.Errorf("failed to parse PubCoord: %v", err)
 	}
-	pubAt := time.Unix(publishedAt, 0)
+	var pubAt time.Time
+	// Tessera used to store publishedAt in seconds, and now stores it in nanoseconds.
+	// This handles the transition.
+	const nanosecondThreshold = 1_310_324_790_000
+	if publishedAt < nanosecondThreshold {
+		pubAt = time.Unix(publishedAt, 0)
+	} else {
+		pubAt = time.Unix(0, publishedAt)
+	}
 	cpAge := time.Since(pubAt)
 	if cpAge < minStaleActive {
 		slog.DebugContext(ctx, "publishCheckpoint: last checkpoint published too recently, not publishing new checkpoint", slog.Duration("age", cpAge), slog.Duration("minstaleactive", minStaleActive))
@@ -1343,7 +1351,7 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 	}
 
 	pubAt = time.Now()
-	if _, err := tx.ExecContext(ctx, "UPDATE PubCoord SET publishedAt=?, size=? WHERE id=?", pubAt.Unix(), currentSize, 0); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE PubCoord SET publishedAt=?, size=? WHERE id=?", pubAt.UnixNano(), currentSize, 0); err != nil {
 		return time.Time{}, err
 	}
 	if err := tx.Commit(); err != nil {
