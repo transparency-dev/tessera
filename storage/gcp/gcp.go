@@ -393,12 +393,12 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 			ctx, cancel := context.WithTimeout(ctx, defaultPublicationTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
-			publishedAt, err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.updateCheckpoint)
+			nextPub, err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.updateCheckpoint)
 			if err != nil {
 				return fmt.Errorf("publishCheckpoint failed: %v", err)
 			}
 			// Schedule a checkpoint update immediately, if an updated is due.
-			t.Reset(max(time.Millisecond, pubInterval-time.Since(publishedAt)))
+			t.Reset(max(time.Millisecond, time.Until(nextPub)))
 			return nil
 		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
 			t.Reset(pubInterval)
@@ -1104,7 +1104,7 @@ func (s *spannerCoordinator) nextIndex(ctx context.Context) (uint64, error) {
 // publishCheckpoint checks when the last checkpoint was published, and if appropriate, calls the provided
 // function to publish a new one.
 //
-// Returns the time at which the checkpoint is published, or was last published.
+// Returns the time at which publishCheckpoint should be called again.
 //
 // A checkpoint will not be published if either:
 //   - the currently published checkpoint was published less than minStaleActive ago
@@ -1117,7 +1117,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 	return otel.Trace(ctx, "tessera.storage.gcp.publishCheckpoint", tracer, func(ctx context.Context, span trace.Span) (time.Time, error) {
 		// outcomeAttr records the outcome of the checkpoint publication attempt for metrics and traces.
 		var outcomeAttr attribute.KeyValue
-		var pubAt time.Time
+		var nextPubAt time.Time
 		start := time.Now()
 
 		currentSize, rootHash, err := s.currentTree(ctx)
@@ -1136,6 +1136,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 				return fmt.Errorf("failed to read PubCoord: %w", err)
 			}
 			var lastSize spanner.NullInt64
+			var pubAt time.Time
 			if err := pRow.Columns(&pubAt, &lastSize); err != nil {
 				return fmt.Errorf("failed to parse PubCoord: %v", err)
 			}
@@ -1150,6 +1151,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 			if cpAge < minStaleActive {
 				slog.DebugContext(ctx, "publishCheckpoint: last checkpoint published too recently, not publishing new checkpoint", slog.Duration("cpAge", cpAge), slog.Duration("minStaleActive", minStaleActive))
 				outcomeAttr = outcomeTypeKey.String("skipped")
+				nextPubAt = pubAt.Add(minStaleActive)
 				return nil
 			}
 
@@ -1166,6 +1168,10 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 			if !shouldPublish {
 				slog.DebugContext(ctx, "publishCheckpoint: skipping publish because tree hasn't grown and previous checkpoint is too recent")
 				outcomeAttr = outcomeTypeKey.String("skipped_no_growth")
+				nextPubAt = start.Add(minStaleActive)
+				if minStaleRepub > 0 && nextPubAt.After(pubAt.Add(minStaleRepub)) {
+					nextPubAt = pubAt.Add(minStaleRepub)
+				}
 				return nil
 			}
 
@@ -1177,6 +1183,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 			}
 			span.AddEvent("Updating PubCoord")
 			pubAt = time.Now()
+			nextPubAt = pubAt.Add(minStaleActive)
 			if err := txn.BufferWrite([]*spanner.Mutation{spanner.Update("PubCoord", []string{"id", "publishedAt", "size"}, []any{0, pubAt, int64(currentSize)})}); err != nil {
 				return err
 			}
@@ -1190,7 +1197,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 		opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("publishCheckpoint")))
 		span.SetAttributes(outcomeAttr)
 		publishCount.Add(ctx, 1, metric.WithAttributes(outcomeAttr))
-		return pubAt, nil
+		return nextPubAt, nil
 	})
 }
 

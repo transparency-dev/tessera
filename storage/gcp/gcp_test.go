@@ -491,6 +491,12 @@ func TestPublishTree(t *testing.T) {
 			republishInterval: 2 * time.Second,
 			attempts:          []time.Duration{1500 * time.Millisecond, 2500 * time.Millisecond},
 			wantUpdates:       1,
+		}, {
+			name:              "publish: no growth; republish: disabled",
+			publishInterval:   100 * time.Millisecond,
+			republishInterval: 0,
+			attempts:          []time.Duration{100 * time.Millisecond, 100 * time.Millisecond},
+			wantUpdates:       0,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -518,6 +524,7 @@ func TestPublishTree(t *testing.T) {
 				t.Fatalf("storage.init: %v", err)
 			}
 
+			pubAt := time.Now() // Good approximation of the checkpoint's future publishedAt.
 			if _, err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, storage.updateCheckpoint); err != nil {
 				t.Fatalf("publishTree: %v", err)
 			}
@@ -528,8 +535,16 @@ func TestPublishTree(t *testing.T) {
 			updatesSeen := 0
 			for _, d := range test.attempts {
 				time.Sleep(d)
-				if _, err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, storage.updateCheckpoint); err != nil {
+				nextPubAt, err := s.publishCheckpoint(ctx, test.publishInterval, test.republishInterval, storage.updateCheckpoint)
+				notAfter := time.Now().Add(test.publishInterval)
+				if err != nil {
 					t.Fatalf("publishTree: %v", err)
+				}
+				if nextPubAt.Before(pubAt.Add(test.publishInterval)) {
+					t.Errorf("nextPubAt = %v, want larger than %v", nextPubAt, pubAt.Add(test.publishInterval))
+				}
+				if nextPubAt.After(notAfter) {
+					t.Errorf("nextPubAt = %v, want smaller than %v", nextPubAt, notAfter)
 				}
 				cpNew, _, err := m.getObject(ctx, layout.CheckpointPath)
 				if err != nil {
@@ -537,6 +552,7 @@ func TestPublishTree(t *testing.T) {
 				}
 				if !bytes.Equal(cpOld, cpNew) {
 					updatesSeen++
+					pubAt = time.Now()
 					cpOld = cpNew
 				}
 			}
