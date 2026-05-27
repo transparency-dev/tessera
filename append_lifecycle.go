@@ -282,6 +282,7 @@ func NewAppender(ctx context.Context, d Driver, opts *AppendOptions) (*Appender,
 	if opts == nil {
 		return nil, nil, nil, errors.New("opts cannot be nil")
 	}
+	slog.InfoContext(ctx, "Creating new appender", slog.Any("options", opts))
 	if err := opts.valid(); err != nil {
 		return nil, nil, nil, err
 	}
@@ -972,4 +973,56 @@ func (o *AppendOptions) WithGarbageCollectionInterval(interval time.Duration) *A
 func (o *AppendOptions) WithShutdownTimeout(timeout time.Duration) *AppendOptions {
 	o.shutdownTimeout = timeout
 	return o
+}
+
+// LogValue implements slog.LogValuer to allow safe serialization of AppendOptions.
+func (o *AppendOptions) LogValue() slog.Value {
+	if o == nil {
+		return slog.Value{}
+	}
+
+	attrs := []slog.Attr{
+		slog.Duration("batchMaxAge", o.batchMaxAge),
+		slog.Uint64("batchMaxSize", uint64(o.batchMaxSize)),
+		slog.Uint64("pushbackMaxOutstanding", uint64(o.pushbackMaxOutstanding)),
+		slog.Uint64("maxEntrySize", uint64(o.maxEntrySize)),
+		slog.Duration("checkpointInterval", o.checkpointInterval),
+		slog.Duration("checkpointRepublishInterval", o.checkpointRepublishInterval),
+		slog.Duration("garbageCollectionInterval", o.garbageCollectionInterval),
+		slog.Duration("shutdownTimeout", o.shutdownTimeout),
+	}
+
+	if o.primarySigner != nil {
+		attrs = append(attrs, slog.String("primarySigner", o.primarySigner.Name()))
+	}
+
+	if len(o.additionalSigners) > 0 {
+		names := make([]string, len(o.additionalSigners))
+		for i, s := range o.additionalSigners {
+			names[i] = s.Name()
+		}
+		attrs = append(attrs, slog.Any("additionalSigners", names))
+	}
+
+	if len(o.witnesses.Components) > 0 {
+		endpoints := o.witnesses.Endpoints()
+		urls := make([]string, 0, len(endpoints))
+		for u := range endpoints {
+			urls = append(urls, u)
+		}
+		attrs = append(attrs, slog.Group("witnesses",
+			slog.Int("threshold", o.witnesses.N),
+			slog.Any("endpoints", urls),
+		))
+	}
+
+	if len(o.followers) > 0 {
+		names := make([]string, len(o.followers))
+		for i, f := range o.followers {
+			names[i] = f.Name()
+		}
+		attrs = append(attrs, slog.Any("followers", names))
+	}
+
+	return slog.GroupValue(attrs...)
 }

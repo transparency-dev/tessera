@@ -44,6 +44,7 @@ var (
 	persistentAntispam        = flag.Bool("antispam", false, "EXPERIMENTAL: Set to true to enable Badger-based persistent antispam storage")
 	additionalPrivateKeyFiles = []string{}
 	slogLevel                 = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is 0 (INFO). See https://pkg.go.dev/log/slog#Level for other levels.")
+	logFormat                 = flag.String("log_format", "text", "The format of the logs: text or json.")
 )
 
 func init() {
@@ -63,7 +64,14 @@ func addCacheHeaders(value string, fs http.Handler) http.HandlerFunc {
 func main() {
 	flag.Parse()
 	ctx := context.Background()
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
+	var handler slog.Handler
+	switch *logFormat {
+	case "json":
+		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})
+	default:
+		handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})
+	}
+	slog.SetDefault(slog.New(handler))
 
 	// Gather the info needed for reading/writing checkpoints
 	s, a := getSignersOrDie()
