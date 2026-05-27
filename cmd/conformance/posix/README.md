@@ -19,7 +19,7 @@ Then, start the personality:
 ```shell
 go run ./cmd/conformance/posix \
   --storage_dir=${LOG_DIR} \
-  --listen=:2025 \
+  --listen=:2025
 ```
 
 ## Add entries to the log

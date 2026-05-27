@@ -44,6 +44,7 @@ var (
 	projectID          = flag.String("project", "", "GCP Project ID for Cloud Logging traces (optional)")
 	additionalSigners  = []string{}
 	slogLevel          = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is 0 (INFO). See https://pkg.go.dev/log/slog#Level for other levels.")
+	logFormat          = flag.String("log_format", "json", "The format of the logs: text or json.")
 )
 
 func init() {
@@ -57,7 +58,13 @@ func main() {
 	flag.Parse()
 	ctx := context.Background()
 
-	handler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})
+	var handler slog.Handler
+	switch *logFormat {
+	case "text":
+		handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})
+	default:
+		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})
+	}
 	slog.SetDefault(slog.New(logger.NewGCPContextHandler(handler, *projectID)))
 
 	shutdownOTel := initOTel(ctx, *traceFraction)
