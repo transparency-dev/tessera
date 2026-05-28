@@ -30,6 +30,7 @@ import (
 	"log/slog"
 
 	"github.com/dgraph-io/badger/v4"
+	"github.com/dgraph-io/badger/v4/options"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/internal/otel"
@@ -96,7 +97,11 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 		opts.CompactionInterval = DefaultCompactionInterval
 	}
 
-	bOpts := badger.DefaultOptions(badgerPath).WithLogger(&slogger{})
+	bOpts := badger.DefaultOptions(badgerPath).
+		WithLogger(&slogger{}).
+		WithValueThreshold(1<<10).
+		WithCompression(options.None)
+
 	if opts.BadgerOptions != nil {
 		bOpts = opts.BadgerOptions(bOpts)
 	}
