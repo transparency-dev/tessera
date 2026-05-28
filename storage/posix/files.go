@@ -511,23 +511,36 @@ func (lrs *logResourceStorage) writeTile(ctx context.Context, level, index uint6
 		}
 
 		if partial == 0 {
-			partials, err := filepath.Glob(fmt.Sprintf("%s.p/*", tPath))
+			// If this is a full tile, replace all partial tiles with symlinks to the new full tile
+			fullTPath := filepath.Join(lrs.s.cfg.Path, tPath)
+			partials, err := filepath.Glob(fmt.Sprintf("%s.p/*", fullTPath))
 			if err != nil {
 				return fmt.Errorf("failed to list partial tiles for clean up; %w", err)
 			}
-			// Clean up old partial tiles by symlinking them to the new full tile.
-			for _, p := range partials {
-				slog.DebugContext(ctx, "relink partial", slog.String("p", p), slog.String("tpath", tPath))
-				// We have to do a little dance here to get POSIX atomicity:
-				// 1. Create a new temporary symlink to the full tile
-				// 2. Rename the temporary symlink over the top of the old partial tile
-				tmp := fmt.Sprintf("%s.link", tPath)
-				_ = os.Remove(tmp)
-				if err := os.Symlink(tPath, tmp); err != nil {
-					return fmt.Errorf("failed to create temp link to full tile: %w", err)
-				}
-				if err := os.Rename(tmp, p); err != nil {
-					return fmt.Errorf("failed to rename temp link over partial tile: %w", err)
+			if len(partials) > 0 {
+				// This tmp file is where the symlink that will be used to link each partial to full is created.
+				// Note that this is created in the parent directory (by the full tiles), and then renamed/moved to the partial dir.
+				tmp := fmt.Sprintf("%s.link", fullTPath)
+				defer func() {
+					_ = os.Remove(tmp)
+				}()
+				// Clean up old partial tiles by symlinking them to the new full tile.
+				for _, p := range partials {
+					slog.DebugContext(ctx, "relink partial", slog.String("p", p), slog.String("tpath", tPath))
+					// We have to do a little dance here to get POSIX atomicity:
+					// 1. Create a new temporary symlink to the full tile
+					// 2. Rename the temporary symlink over the top of the old partial tile
+					_ = os.Remove(tmp)
+					target, err := filepath.Rel(filepath.Dir(p), fullTPath)
+					if err != nil {
+						return fmt.Errorf("failed to calculate relative path for symlink: %w", err)
+					}
+					if err := os.Symlink(target, tmp); err != nil {
+						return fmt.Errorf("failed to create temp link to full tile: %w", err)
+					}
+					if err := os.Rename(tmp, p); err != nil {
+						return fmt.Errorf("failed to rename temp link over partial tile: %w", err)
+					}
 				}
 			}
 		}
