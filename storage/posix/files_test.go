@@ -560,3 +560,129 @@ func TestCreateTemp_ErrorReturns(t *testing.T) {
 		t.Fatal("Test timed out: createTemp is likely in an infinite loop")
 	}
 }
+
+func TestFlockLockingCorrectness(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+
+	// Create the state directory where locks are placed
+	if err := os.MkdirAll(filepath.Join(dir, ".state"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	s1 := &Storage{
+		cfg: Config{
+			HTTPClient: http.DefaultClient,
+			Path:       dir,
+		},
+	}
+	s2 := &Storage{
+		cfg: Config{
+			HTTPClient: http.DefaultClient,
+			Path:       dir,
+		},
+	}
+
+	lockName := "test.lock"
+	outputPath := filepath.Join(dir, "output.txt")
+
+	startedA := make(chan struct{})
+	proceedA := make(chan struct{})
+	tryingB := make(chan struct{})
+	doneB := make(chan struct{})
+
+	// Worker A
+	go func() {
+		unlock1, err := s1.lockFile(ctx, lockName)
+		if err != nil {
+			t.Errorf("s1.lockFile failed: %v", err)
+			return
+		}
+		close(startedA)
+		<-proceedA
+
+		// Append "A"
+		f, err := os.OpenFile(outputPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			t.Errorf("Worker A failed to open output file: %v", err)
+			_ = unlock1()
+			return
+		}
+		if _, err := f.WriteString("A\n"); err != nil {
+			t.Errorf("Worker A failed to write output: %v", err)
+		}
+		_ = f.Close()
+		_ = unlock1()
+	}()
+
+	// Worker B
+	go func() {
+		<-startedA
+		close(tryingB)
+		unlock2, err := s2.lockFile(ctx, lockName)
+		if err != nil {
+			t.Errorf("s2.lockFile failed: %v", err)
+			return
+		}
+		defer func() {
+			_ = unlock2()
+			close(doneB)
+		}()
+
+		// Append "B"
+		f, err := os.OpenFile(outputPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			t.Errorf("Worker B failed to open output file: %v", err)
+			return
+		}
+		if _, err := f.WriteString("B\n"); err != nil {
+			t.Errorf("Worker B failed to write output: %v", err)
+		}
+		_ = f.Close()
+	}()
+
+	// Coordinator
+	select {
+	case <-startedA:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Worker A failed to start and lock")
+	}
+
+	select {
+	case <-tryingB:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Worker B failed to start")
+	}
+
+	// Sleep briefly to allow Worker B to reach the lockFile call.
+	// Under BSD flock, Worker B MUST block and should not finish yet.
+	time.Sleep(100 * time.Millisecond)
+
+	select {
+	case <-doneB:
+		t.Fatal("Worker B finished prematurely; lock did not block same-process concurrent access")
+	default:
+		// Expected: Worker B is blocked waiting for Worker A to release the lock.
+	}
+
+	// Let Worker A proceed and unlock
+	close(proceedA)
+
+	// Worker B should now unblock, acquire the lock, write "B", and finish.
+	select {
+	case <-doneB:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Worker B timed out waiting to acquire lock")
+	}
+
+	// Verify the final write sequence was correct: A then B
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("failed to read output file: %v", err)
+	}
+
+	expected := "A\nB\n"
+	if string(content) != expected {
+		t.Fatalf("expected output file to contain %q, got %q (serialization failed)", expected, string(content))
+	}
+}

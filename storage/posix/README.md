@@ -34,7 +34,6 @@ of actions we can avoid corrupt or partially written files being part of the tre
 1. The storage library batches these entries up in memory, and, after a configurable period of time has elapsed
    or the batch reaches a configurable size threshold, the batch is sequenced and appended to the tree:
    1. An advisory lock is taken on `.state/treeState.lock` file.
-      This helps prevent multiple frontends from stepping on each other, but isn't necessary for safety.
    1. Flushed entries are assigned contiguous sequence numbers, and written out into entry bundle files.
    1. Integrate newly added leaves into Merkle tree, and write tiles out as files.
    1. Update `./state/treeState` file with the new size & root hash.

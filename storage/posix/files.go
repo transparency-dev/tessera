@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -208,30 +207,28 @@ func (s *Storage) lockFile(ctx context.Context, p string) (func() error, error) 
 
 		span.AddEvent("Open file")
 		p = filepath.Join(s.cfg.Path, stateDir, p)
-		f, err := os.OpenFile(p, syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC, filePerm)
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, filePerm)
 		if err != nil {
 			return nil, err
 		}
 
-		flockT := syscall.Flock_t{
-			Type:   syscall.F_WRLCK,
-			Whence: io.SeekStart,
-			Start:  0,
-			Len:    0,
-		}
-		// Keep trying until we manage to get an answer without being interrupted.
+		// Keep trying until we manage to get a lock without being interrupted.
 		span.AddEvent("Lock attempt")
 		for {
-			if err := syscall.FcntlFlock(f.Fd(), syscall.F_SETLKW, &flockT); err != syscall.EINTR {
-				if err == nil {
-					span.AddEvent("Lock taken")
-					posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String(fmt.Sprintf("lock-%s", p))))
+			if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != syscall.EINTR {
+				if err != nil {
+					_ = f.Close()
+					return nil, err
 				}
+				span.AddEvent("Lock taken")
+				posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String(fmt.Sprintf("lock-%s", p))))
 				c := func() error {
 					span.AddEvent("Lock released")
-					return f.Close()
+					errFlock := syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+					errClose := f.Close()
+					return errors.Join(errFlock, errClose)
 				}
-				return c, err
+				return c, nil
 			}
 		}
 	})
