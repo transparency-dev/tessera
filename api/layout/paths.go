@@ -122,7 +122,7 @@ func EntriesPath(n uint64, p uint8) string {
 	return fmt.Sprintf("tile/entries/%s", NWithSuffix(0, n, p))
 }
 
-// TilePath builds the path to the subtree tile with the given level and index in tile space.
+// TilePath builds the relative path to the subtree tile with the given level and index in tile space.
 // If p > 0 the path represents a partial tile.
 func TilePath(tileLevel, tileIndex uint64, p uint8) string {
 	return fmt.Sprintf("tile/%d/%s", tileLevel, NWithSuffix(tileLevel, tileIndex, p))
