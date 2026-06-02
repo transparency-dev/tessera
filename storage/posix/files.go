@@ -217,8 +217,8 @@ func (s *Storage) lockFile(ctx context.Context, p string) (func() error, error) 
 		for {
 			if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != syscall.EINTR {
 				if err != nil {
-					_ = f.Close()
-					return nil, err
+					errClose := f.Close()
+					return nil, errors.Join(err, errClose)
 				}
 				span.AddEvent("Lock taken")
 				posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String(fmt.Sprintf("lock-%s", p))))
