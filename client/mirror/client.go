@@ -19,6 +19,7 @@
 package mirror
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -164,9 +165,20 @@ func parseConflict(r io.Reader) error {
 // pushEntries streams entry packages and their proofs to the mirror's /add-entries endpoint.
 // nolint:unused
 func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte) error {
-	pr, _ := io.Pipe()
+	pr, pw := io.Pipe()
+	defer func() {
+		_ = pr.Close()
+	}()
 
-	// TODO(roger2hk): Implement streaming entries.
+	go func() {
+		gw := gzip.NewWriter(pw)
+		defer func() {
+			_ = gw.Close()
+			_ = pw.Close()
+		}()
+
+		// TODO(roger2hk): Implement streaming entries.
+	}()
 
 	u, err := c.opts.mirrorURL.Parse("add-entries")
 	if err != nil {
@@ -185,6 +197,8 @@ func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64,
 		return fmt.Errorf("POST %s failed: %w", u, err)
 	}
 	defer func() {
+		// Drain any remaining response body to enable HTTP keep-alive/connection reuse.
+		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}()
 
