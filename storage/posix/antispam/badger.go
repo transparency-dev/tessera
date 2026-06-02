@@ -84,6 +84,10 @@ type AntispamOpts struct {
 //
 // This functionality is experimental!
 func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*AntispamStorage, error) {
+	if os.Getenv("GOMEMLIMIT") == "" {
+		slog.WarnContext(ctx, "GOMEMLIMIT is not set. BadgerDB can consume significant memory under heavy write loads, potentially causing Out-Of-Memory (OOM) crashes. Setting GOMEMLIMIT (e.g., GOMEMLIMIT=2GiB) is highly recommended.")
+	}
+
 	if opts.MaxBatchSize == 0 {
 		opts.MaxBatchSize = DefaultMaxBatchSize
 	}
