@@ -8,14 +8,14 @@ import (
 
 func TestFileFetcherContextCancellation(t *testing.T) {
 	d := t.TempDir()
-	
+
 	f := FileFetcher{
 		Root: d,
 	}
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
-	
+
 	_, err := f.ReadCheckpoint(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("ReadCheckpoint: got error %v, want %v", err, context.Canceled)

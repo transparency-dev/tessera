@@ -238,7 +238,7 @@ func TestAntispamFollowerErrorBeforeStream(t *testing.T) {
 
 	// Wait for the ticker (1s) and some execution time.
 	time.Sleep(1500 * time.Millisecond)
-	
+
 	cancel()
 }
 
