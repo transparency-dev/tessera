@@ -81,8 +81,6 @@ type AntispamOpts struct {
 //
 // Note that the storage for this mapping is entirely separate and unconnected to the storage used for
 // maintaining the Merkle tree.
-//
-// This functionality is experimental!
 func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*AntispamStorage, error) {
 	if os.Getenv("GOMEMLIMIT") == "" {
 		slog.WarnContext(ctx, "GOMEMLIMIT is not set. BadgerDB can consume significant memory under heavy write loads, potentially causing Out-Of-Memory (OOM) crashes. Setting GOMEMLIMIT (e.g., GOMEMLIMIT=2GiB) is highly recommended.")
