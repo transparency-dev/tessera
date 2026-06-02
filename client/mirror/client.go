@@ -155,12 +155,10 @@ func (e ErrConflict) Error() string {
 //   - The tree size of a valid pending checkpoint, in decimal
 //   - The next entry, in decimal
 //   - An opaque, possibly zero length, ticket value, encoded in base64
-//
-// nolint:unused
-func parseConflict(r io.Reader) (ErrConflict, error) {
+func parseConflict(r io.Reader) error {
 	// TODO(roger2hk): Implement this.
 
-	return ErrConflict{}, errors.New("TODO")
+	return errors.New("TODO")
 }
 
 // pushEntries streams entry packages and their proofs to the mirror's /add-entries endpoint.
@@ -191,11 +189,7 @@ func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64,
 	}()
 
 	if resp.StatusCode == http.StatusConflict {
-		conflict, err := parseConflict(resp.Body)
-		if err != nil {
-			return fmt.Errorf("conflict returned, but failed to parse response body: %w", err)
-		}
-		return conflict
+		return parseConflict(resp.Body)
 	}
 
 	if resp.StatusCode != http.StatusOK {
