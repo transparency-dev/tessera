@@ -156,6 +156,7 @@ func (e ErrConflict) Error() string {
 //   - The tree size of a valid pending checkpoint, in decimal
 //   - The next entry, in decimal
 //   - An opaque, possibly zero length, ticket value, encoded in base64
+// nolint:unused
 func parseConflict(r io.Reader) error {
 	// TODO(roger2hk): Implement this.
 
