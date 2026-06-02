@@ -89,8 +89,10 @@ func mkdirAll(name string, perm os.FileMode) error {
 		return syncDir(dir, func() error {
 			// We'll see ErrNotExist if the final entry in the requested path doesn't exist,
 			// so we simply attempt to create it in here.
-			if err := os.Mkdir(name, perm); err != nil {
-				return fmt.Errorf("%q: %v", name, err)
+			//
+			// Ignore ErrExist as that just means someone else raced us and got there first.
+			if err := os.Mkdir(name, perm); err != nil && !errors.Is(err, os.ErrExist) {
+				return fmt.Errorf("%q: %w", name, err)
 			}
 			return nil
 		})
@@ -174,11 +176,13 @@ func createTemp(prefix string, d []byte) (name string, err error) {
 		f, err = os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL|os.O_SYNC, filePerm)
 		if err == nil {
 			break
-		} else if os.IsExist(err) {
+		} else if errors.Is(err, os.ErrExist) {
 			if try++; try < 10000 {
 				continue
 			}
 			return "", &os.PathError{Op: "createtemp", Path: prefix + "*", Err: os.ErrExist}
+		} else {
+			return "", err
 		}
 	}
 

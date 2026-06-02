@@ -439,3 +439,106 @@ func defaultMerkleLeafHasher(bundle []byte) ([][]byte, error) {
 	}
 	return r, nil
 }
+func TestWriteTileSymlinks(t *testing.T) {
+	ctx := t.Context()
+
+	// Helper to check if a file path is a symlink.
+	isSymlink := func(p string) bool {
+		fi, err := os.Lstat(p)
+		if err != nil {
+			return false
+		}
+		return fi.Mode()&os.ModeSymlink != 0
+	}
+
+	t.Run("relative glob failure", func(t *testing.T) {
+		tempDir := t.TempDir()
+		s := &Storage{
+			cfg: Config{
+				HTTPClient: http.DefaultClient,
+				Path:       tempDir,
+			},
+		}
+		lrs := &logResourceStorage{
+			s:           s,
+			entriesPath: tessera.NewAppendOptions().EntriesPath(),
+		}
+
+		// 1. Write a partial tile
+		if err := lrs.writeTile(ctx, 0, 0, 1, []byte("partial")); err != nil {
+			t.Fatalf("writeTile (partial): %v", err)
+		}
+
+		// 2. Write the full tile
+		if err := lrs.writeTile(ctx, 0, 0, 0, []byte("full")); err != nil {
+			t.Fatalf("writeTile (full): %v", err)
+		}
+
+		partialPath := filepath.Join(tempDir, layout.TilePath(0, 0, 1))
+		if !isSymlink(partialPath) {
+			t.Fatalf("partial tile was not converted to a symlink (still a regular file)")
+		}
+	})
+
+	t.Run("incorrect symlink target", func(t *testing.T) {
+		tempDir := t.TempDir()
+		s := &Storage{
+			cfg: Config{
+				HTTPClient: http.DefaultClient,
+				Path:       tempDir,
+			},
+		}
+		lrs := &logResourceStorage{
+			s:           s,
+			entriesPath: tessera.NewAppendOptions().EntriesPath(),
+		}
+
+		// 1. Write a partial tile
+		if err := lrs.writeTile(ctx, 0, 0, 1, []byte("partial")); err != nil {
+			t.Fatalf("writeTile (partial): %v", err)
+		}
+
+		// 2. Write the full tile
+		if err := lrs.writeTile(ctx, 0, 0, 0, []byte("full")); err != nil {
+			t.Fatalf("writeTile (full): %v", err)
+		}
+
+		partialPath := filepath.Join(tempDir, layout.TilePath(0, 0, 1))
+		if !isSymlink(partialPath) {
+			t.Fatalf("expected partial tile to be a symlink")
+		}
+
+		// Try reading the file contents via the symlink.
+		content, err := os.ReadFile(partialPath)
+		if err != nil {
+			t.Fatalf("symlink is broken: %v", err)
+		}
+		if string(content) != "full" {
+			t.Fatalf("expected symlink to resolve to full tile content 'full', got %q", string(content))
+		}
+	})
+}
+
+func TestCreateTemp_ErrorReturns(t *testing.T) {
+	tempDir := t.TempDir()
+	nonExistentDir := filepath.Join(tempDir, "nonexistent-subdir")
+	prefix := filepath.Join(nonExistentDir, "prefix")
+
+	done := make(chan struct{})
+	var err error
+	var name string
+
+	go func() {
+		name, err = createTemp(prefix, []byte("test data"))
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		if err == nil {
+			t.Errorf("expected error opening file in non-existent directory, got nil (file: %s)", name)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Test timed out: createTemp is likely in an infinite loop")
+	}
+}
