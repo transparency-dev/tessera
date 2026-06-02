@@ -30,13 +30,9 @@ import (
 	"github.com/transparency-dev/tessera/client"
 )
 
-// PackageProver is an interface for generating proof hashes required for
-// the entry package covering the index interval [start, end).
-type PackageProver interface {
-	// PackageProof computes and returns the proof hashes required by
-	// the mirror for the specified entry package.
-	PackageProof(ctx context.Context, start, end uint64) ([][]byte, error)
-}
+// PackageProverFunc computes and returns the proof hashes required by the mirror
+// for the specified entry package covering the index interval [start, end).
+type PackageProverFunc func(ctx context.Context, start, end uint64) ([][]byte, error)
 
 // Options holds the configuration for a tlog-mirror Client.
 type Options struct {
@@ -46,7 +42,7 @@ type Options struct {
 	tileFetcher             client.TileFetcherFunc
 	bundleFetcher           client.EntryBundleFetcherFunc
 	mirrorCheckpointFetcher client.CheckpointFetcherFunc
-	prover                  PackageProver
+	packageProver           PackageProverFunc
 }
 
 // NewOptions returns a new Options object with default values.
@@ -92,9 +88,9 @@ func (o *Options) WithMirrorCheckpointFetcher(mirrorCheckpointFetcher client.Che
 	return o
 }
 
-// WithProver sets the package prover.
-func (o *Options) WithProver(prover PackageProver) *Options {
-	o.prover = prover
+// WithPackageProver sets the package prover.
+func (o *Options) WithPackageProver(packageProver PackageProverFunc) *Options {
+	o.packageProver = packageProver
 	return o
 }
 
@@ -118,8 +114,8 @@ func (o *Options) validate() error {
 	if o.mirrorCheckpointFetcher == nil {
 		return errors.New("mirror checkpoint fetcher is required")
 	}
-	if o.prover == nil {
-		return errors.New("prover is required")
+	if o.packageProver == nil {
+		return errors.New("package prover is required")
 	}
 	return nil
 }
@@ -156,6 +152,7 @@ func (e ErrConflict) Error() string {
 //   - The tree size of a valid pending checkpoint, in decimal
 //   - The next entry, in decimal
 //   - An opaque, possibly zero length, ticket value, encoded in base64
+//
 // nolint:unused
 func parseConflict(r io.Reader) error {
 	// TODO(roger2hk): Implement this.
