@@ -156,7 +156,7 @@ func TestShutdownBehavior(t *testing.T) {
 	tests := []struct {
 		name         string
 		wantTreeSize uint64
-		cpSize uint64
+		cpSize       uint64
 		expectWait   bool
 	}{
 		{
@@ -210,7 +210,7 @@ func TestAddUpdatesWantTreeSize(t *testing.T) {
 	}
 
 	f := term.Add(t.Context(), nil)
-	if	_, err := f(); err != nil {
+	if _, err := f(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -218,4 +218,3 @@ func TestAddUpdatesWantTreeSize(t *testing.T) {
 		t.Fatalf("wantTreeSize should be %d after adding index %d, got %d", wantIdx+1, wantIdx, got)
 	}
 }
-

@@ -39,13 +39,13 @@ var (
 )
 
 var (
-	gcCounter                 metric.Int64Counter
-	gcRunsPerTick             metric.Int64Histogram
-	gcDuration                metric.Float64Histogram
-	lookupCounter             metric.Int64Counter
-	lookupDuration            metric.Float64Histogram
-	followTxnEntriesCounter   metric.Int64Histogram
-	followTxnDuration         metric.Float64Histogram
+	gcCounter               metric.Int64Counter
+	gcRunsPerTick           metric.Int64Histogram
+	gcDuration              metric.Float64Histogram
+	lookupCounter           metric.Int64Counter
+	lookupDuration          metric.Float64Histogram
+	followTxnEntriesCounter metric.Int64Histogram
+	followTxnDuration       metric.Float64Histogram
 
 	// Histogram buckets for operations (latency in ms)
 	histogramBuckets = []float64{0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200, 1400, 1600, 1800, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000}
