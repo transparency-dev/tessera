@@ -536,3 +536,27 @@ func TestWriteTileSymlinks(t *testing.T) {
 		}
 	})
 }
+
+func TestCreateTemp_ErrorReturns(t *testing.T) {
+	tempDir := t.TempDir()
+	nonExistentDir := filepath.Join(tempDir, "nonexistent-subdir")
+	prefix := filepath.Join(nonExistentDir, "prefix")
+
+	done := make(chan struct{})
+	var err error
+	var name string
+
+	go func() {
+		name, err = createTemp(prefix, []byte("test data"))
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		if err == nil {
+			t.Errorf("expected error opening file in non-existent directory, got nil (file: %s)", name)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Test timed out: createTemp is likely in an infinite loop")
+	}
+}
