@@ -19,13 +19,16 @@
 package mirror
 
 import (
+	"bufio"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/transparency-dev/tessera/client"
 )
@@ -153,9 +156,50 @@ func (e ErrConflict) Error() string {
 //   - The next entry, in decimal
 //   - An opaque, possibly zero length, ticket value, encoded in base64
 func parseConflict(r io.Reader) error {
-	// TODO(roger2hk): Implement this.
+	scanner := bufio.NewScanner(r)
 
-	return errors.New("TODO")
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("error reading pending tree size: %w", err)
+		}
+		return errors.New("missing pending tree size")
+	}
+	pendingSize, err := strconv.ParseUint(scanner.Text(), 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid pending tree size %q: %w", scanner.Text(), err)
+	}
+
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("error reading next entry: %w", err)
+		}
+		return errors.New("missing next entry")
+	}
+	nextEntry, err := strconv.ParseUint(scanner.Text(), 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid next entry %q: %w", scanner.Text(), err)
+	}
+
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("error reading ticket: %w", err)
+		}
+		return errors.New("missing ticket")
+	}
+	ticket, err := base64.StdEncoding.DecodeString(scanner.Text())
+	if err != nil {
+		return fmt.Errorf("invalid base64 ticket: %w", err)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading conflict body: %w", err)
+	}
+
+	return ErrConflict{
+		PendingSize: pendingSize,
+		NextEntry:   nextEntry,
+		Ticket:      ticket,
+	}
 }
 
 // pushEntries streams entry packages and their proofs to the mirror's /add-entries endpoint.
