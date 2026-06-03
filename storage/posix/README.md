@@ -55,3 +55,11 @@ POSIX compliance (e.g. `s3fs` or `NFS`) are unlikely to result in long term happ
 
 If in doubt, tools like https://github.com/saidsay-so/pjdfstest may help in determining whether a given
 filesystem is suitable.
+
+## Memory Management (GOMEMLIMIT)
+
+The POSIX persistent antispam feature is powered by BadgerDB, which can be memory-intensive under heavy write loads.
+This is particularly acute during Badger's periodic compaction windows.
+
+To prevent Out-Of-Memory (OOM) crashes, it is **strongly** recommended to configure the `GOMEMLIMIT` environment variable (e.g., `GOMEMLIMIT=2GiB`). This restricts the Go runtime's memory usage aggressively and helps ensure process stability.
+

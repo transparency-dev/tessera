@@ -317,6 +317,9 @@ These layes are configured by the `WithAntispam` method of the
 > This is a trade-off; fully-atomic "strong" de-duplication is _extremely_ expensive in terms of throughput and compute costs, and
 > would limit Tessera to only being able to use transactional type storage backends.
 
+> [!WARNING]
+> When using the POSIX storage driver with persistent antispam enabled, the underlying BadgerDB can consume a high amount of RAM under heavy write loads. It is strongly recommended to set the `GOMEMLIMIT` environment variable (e.g., `GOMEMLIMIT=2GiB`) to avoid Out-Of-Memory (OOM) crashes.
+
 ### Witnessing
 
 Logs are required to be append-only data structures.
