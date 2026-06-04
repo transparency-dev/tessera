@@ -16,13 +16,16 @@ package mirror
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"sync"
 )
 
-// Mirror is a placeholder. TBD where this actually lives, and how much is inside a storage lifecycle.
-type Mirror struct {
-}
+var (
+	// ErrUnknownLog is returned when a requested log is unknown to the mirror.
+	ErrUnknownLog = errors.New("unknown log origin")
+)
 
 // Package represents a single package of entries and its subtree consistency proof.
 type Package struct {
@@ -30,13 +33,65 @@ type Package struct {
 	Proof   [][]byte
 }
 
-func (m *Mirror) AddCheckpoint(ctx context.Context, oldSize uint64, proof [][]byte, cpRaw []byte) error {
-	slog.InfoContext(ctx, "AddCheckpoint", slog.Uint64("old_size", oldSize), slog.Int("proof_len", len(proof)), slog.String("cp", string(cpRaw)))
+// New creates a new Mirror.
+//
+// TODO(al): Add some way to configure and create targets.
+func New() *Mirror {
+	return &Mirror{
+		targets: make(map[string]*target),
+	}
+}
+
+// Mirror is the backend for the tlog-mirror HTTP service.
+//
+// Mirror is mostly a multiplexer over the various log targets. It knows about
+// the configured logs and routes requests to the appropriate target.
+type Mirror struct {
+	lock    sync.RWMutex
+	targets map[string]*target
+}
+
+func (m *Mirror) AddCheckpoint(ctx context.Context, origin string, oldSize uint64, proof [][]byte, cpRaw []byte) error {
+	t, err := m.target(origin)
+	if err != nil {
+		return err
+	}
+	return t.AddCheckpoint(ctx, oldSize, proof, cpRaw)
+}
+
+func (m *Mirror) AddEntries(ctx context.Context, origin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*Package, error)) ([]byte, error) {
+	t, err := m.target(origin)
+	if err != nil {
+		return nil, err
+	}
+	return t.AddEntries(ctx, uploadStart, uploadEnd, ticket, next)
+}
+
+// target returns the target for the given origin, or ErrUnknownLog if it doesn't exist.
+func (m *Mirror) target(origin string) (*target, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	r, ok := m.targets[origin]
+	if !ok {
+		return nil, ErrUnknownLog
+	}
+	return r, nil
+}
+
+// target represents a single log that the mirror is configured to maintain.
+type target struct {
+	origin string
+	// TODO: MirrorLifecycle
+}
+
+
+func (t *target) AddCheckpoint(ctx context.Context, oldSize uint64, proof [][]byte, cpRaw []byte) error {
+	slog.InfoContext(ctx, "AddCheckpoint", slog.String("origin", t.origin), slog.Uint64("old_size", oldSize), slog.Int("proof_len", len(proof)), slog.String("cp", string(cpRaw)))
 	return nil
 }
 
-func (m *Mirror) AddEntries(ctx context.Context, logOrigin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*Package, error)) ([]byte, error) {
-	slog.InfoContext(ctx, "AddEntries", slog.String("origin", logOrigin), slog.Uint64("start", uploadStart), slog.Uint64("end", uploadEnd))
+func (t *target) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*Package, error)) ([]byte, error) {
+	slog.InfoContext(ctx, "AddEntries", slog.String("origin", t.origin), slog.Uint64("start", uploadStart), slog.Uint64("end", uploadEnd))
 
 	// Drain the packages
 	for {

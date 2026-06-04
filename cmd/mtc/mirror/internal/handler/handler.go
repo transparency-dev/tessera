@@ -42,8 +42,8 @@ const (
 
 // Mirror is the interface that the handler uses to interact with the mirror's state.
 type Mirror interface {
-	AddCheckpoint(ctx context.Context, oldSize uint64, proof [][]byte, cp []byte) error
-	AddEntries(ctx context.Context, logOrigin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*mirror.Package, error)) ([]byte, error)
+	AddCheckpoint(ctx context.Context, origin string, oldSize uint64, proof [][]byte, cp []byte) error
+	AddEntries(ctx context.Context, origin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*mirror.Package, error)) ([]byte, error)
 }
 
 // New returns a new http.Handler for the mirror service.
@@ -109,12 +109,13 @@ func addCheckpoint(m Mirror) http.HandlerFunc {
 			return
 		}
 
-		if _, _, _, err := parse.CheckpointUnsafe(cp); err != nil {
+		// 4. Extract the origin from the checkpoint and pass the request to the backend to take action.
+		origin, _, _, err := parse.CheckpointUnsafe(cp)
+		if err != nil {
 			http.Error(w, fmt.Sprintf("invalid checkpoint: %v", err), http.StatusBadRequest)
 			return
 		}
-
-		if err := m.AddCheckpoint(r.Context(), oldSize, proof, cp); err != nil {
+		if err := m.AddCheckpoint(r.Context(), origin, oldSize, proof, cp); err != nil {
 			slog.ErrorContext(r.Context(), "AddCheckpoint failed", slog.Any("error", err))
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -140,7 +141,7 @@ func addEntries(m Mirror) http.HandlerFunc {
 
 		cosigs, err := m.AddEntries(r.Context(), req.logOrigin, req.uploadStart, req.uploadEnd, req.ticket, req.NextPackage)
 		if err != nil {
-			// TODO(al): Handle Conflict (409) if it's a conflict error.
+			// TODO(al): Handle various errors and respond accordingly.
 			slog.ErrorContext(r.Context(), "AddEntries failed", slog.Any("error", err))
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

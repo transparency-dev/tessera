@@ -28,13 +28,13 @@ import (
 )
 
 type mockMirror struct {
-	addCheckpointFunc func(ctx context.Context, oldSize uint64, proof [][]byte, cp []byte) error
+	addCheckpointFunc func(ctx context.Context, logOrigin string, oldSize uint64, proof [][]byte, cp []byte) error
 	addEntriesFunc    func(ctx context.Context, logOrigin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*mirror.Package, error)) ([]byte, error)
 }
 
-func (m *mockMirror) AddCheckpoint(ctx context.Context, oldSize uint64, proof [][]byte, cp []byte) error {
+func (m *mockMirror) AddCheckpoint(ctx context.Context, logOrigin string, oldSize uint64, proof [][]byte, cp []byte) error {
 	if m.addCheckpointFunc != nil {
-		return m.addCheckpointFunc(ctx, oldSize, proof, cp)
+		return m.addCheckpointFunc(ctx, logOrigin, oldSize, proof, cp)
 	}
 	return nil
 }
@@ -50,7 +50,7 @@ func TestAddCheckpoint(t *testing.T) {
 	const cpOld = 100
 
 	mock := &mockMirror{
-		addCheckpointFunc: func(ctx context.Context, oldSize uint64, proof [][]byte, cp []byte) error {
+		addCheckpointFunc: func(ctx context.Context, logOrigin string, oldSize uint64, proof [][]byte, cp []byte) error {
 			if oldSize != cpOld {
 				return fmt.Errorf("want oldSize %d, got %d", cpOld, oldSize)
 			}
