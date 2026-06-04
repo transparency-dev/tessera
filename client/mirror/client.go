@@ -147,13 +147,11 @@ func (e ErrConflict) Error() string {
 	return fmt.Sprintf("mirror sync conflict: pending size %d, next entry %d, ticket length %d", e.PendingSize, e.NextEntry, len(e.Ticket))
 }
 
-// parseConflict parses the text/x.tlog.mirror-info body of a 409 Conflict response.
+// parseConflict parses the text/x.tlog.mirror-info body of a 409 Conflict response or a 202 Accepted response.
 // Format:
 //   - The tree size of a valid pending checkpoint, in decimal
 //   - The next entry, in decimal
 //   - An opaque, possibly zero length, ticket value, encoded in base64
-//
-// nolint:unused
 func parseConflict(r io.Reader) error {
 	// TODO(roger2hk): Implement this.
 
@@ -161,8 +159,8 @@ func parseConflict(r io.Reader) error {
 }
 
 // pushEntries streams entry packages and their proofs to the mirror's /add-entries endpoint.
-// nolint:unused
-func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte) error {
+// It returns the mirror's cosignatures on success.
+func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte) ([]byte, error) {
 	pr, pw := io.Pipe()
 	defer func() {
 		_ = pr.Close()
@@ -180,19 +178,19 @@ func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64,
 
 	u, err := c.opts.mirrorURL.Parse("add-entries")
 	if err != nil {
-		return fmt.Errorf("failed to parse add-entries URL: %w", err)
+		return nil, fmt.Errorf("failed to parse add-entries URL: %v", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), pr)
 	if err != nil {
-		return fmt.Errorf("failed to create HTTP request: %w", err)
+		return nil, fmt.Errorf("failed to create HTTP request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("Content-Encoding", "gzip")
 
 	resp, err := c.opts.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("POST %s failed: %w", u, err)
+		return nil, fmt.Errorf("POST %s failed: %v", u, err)
 	}
 	defer func() {
 		// Drain any remaining response body to enable HTTP keep-alive/connection reuse.
@@ -200,63 +198,115 @@ func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64,
 		_ = resp.Body.Close()
 	}()
 
-	if resp.StatusCode == http.StatusConflict {
-		return parseConflict(resp.Body)
+	if resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusAccepted {
+		return nil, parseConflict(resp.Body)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("add-entries failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	return nil
-}
-
-// pushCheckpoint sends a new checkpoint and its consistency proof to the mirror's /add-checkpoint endpoint.
-// nolint:unused
-func (c *Client) pushCheckpoint(ctx context.Context, oldSize uint64, proof [][]byte, checkpointRaw []byte) ([]byte, error) {
-	// TODO(roger2hk): Implement checkpoint.
-	var reqBody io.Reader
-
-	u, err := c.opts.mirrorURL.Parse("add-checkpoint")
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse add-checkpoint URL: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
-	}
-	req.Header.Set("Content-Type", "text/plain") // add-checkpoint uses standard line-oriented payload
-
-	resp, err := c.opts.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("POST %s failed: %w", u, err)
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("add-checkpoint failed with status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("add-entries failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	cosigs, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read cosignatures from response body: %w", err)
+		return nil, fmt.Errorf("failed to read cosignatures from response body: %v", err)
 	}
 
 	return cosigs, nil
 }
 
+// pushCheckpoint sends a new checkpoint and its consistency proof to the mirror's /add-checkpoint endpoint.
+func (c *Client) pushCheckpoint(ctx context.Context, oldSize uint64, proof [][]byte, checkpointRaw []byte) error {
+	// TODO(roger2hk): Implement checkpoint.
+	var reqBody io.Reader
+
+	u, err := c.opts.mirrorURL.Parse("add-checkpoint")
+	if err != nil {
+		return fmt.Errorf("failed to parse add-checkpoint URL: %v", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP request: %v", err)
+	}
+	req.Header.Set("Content-Type", "text/plain") // add-checkpoint uses standard line-oriented payload
+
+	resp, err := c.opts.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("POST %s failed: %v", u, err)
+	}
+	defer func() {
+		// Drain any remaining response body to enable HTTP keep-alive/connection reuse.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("add-checkpoint failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}
+
 // Sync synchronizes all entries and the checkpoint from the source log to the mirror
 // up to the specified targetSize. It returns the mirror's cosignatures on success.
 func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSize uint64) ([]byte, error) {
-	// TODO(roger2hk):
-	// 1. Get the mirror's current state by querying it with upload_start=0, upload_end=0 (guaranteed to conflict).
-	// 2. If the mirror's pending checkpoint is smaller than target size, update it first.
-	// 3. Push entries up to target size in packages of 256, handling concurrent conflicts and retries.
+	// Get the mirror's current state by querying it with upload_start=0, upload_end=0 (guaranteed to conflict).
+	_, err := c.pushEntries(ctx, 0, 0, nil)
+	if err == nil {
+		return nil, errors.New("unexpected success when querying mirror status with size 0")
+	}
 
-	return nil, errors.New("WIP")
+	var conflict ErrConflict
+	if !errors.As(err, &conflict) {
+		return nil, fmt.Errorf("failed to retrieve mirror status: %v", err)
+	}
+
+	oldSize := conflict.PendingSize
+	nextEntry := conflict.NextEntry
+	ticket := conflict.Ticket
+
+	// If the mirror's pending checkpoint is smaller than target size, update it first.
+	if oldSize < targetSize {
+		var proof [][]byte
+		if oldSize > 0 {
+			pb, err := client.NewProofBuilder(ctx, targetSize, c.opts.tileFetcher)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create ProofBuilder: %v", err)
+			}
+			proof, err = pb.ConsistencyProof(ctx, oldSize, targetSize)
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate consistency proof: %v", err)
+			}
+		}
+
+		if err := c.pushCheckpoint(ctx, oldSize, proof, targetCheckpointRaw); err != nil {
+			return nil, fmt.Errorf("failed to push new checkpoint: %v", err)
+		}
+	}
+
+	// Push entries up to target size in packages of 256, handling concurrent conflicts and retries.
+	uploadEnd := max(targetSize, oldSize)
+
+	var cosigs []byte
+	for {
+		var err error
+		cosigs, err = c.pushEntries(ctx, nextEntry, uploadEnd, ticket)
+		if err == nil {
+			break
+		}
+
+		if !errors.As(err, &conflict) {
+			return nil, fmt.Errorf("sync failed during entry upload: %v", err)
+		}
+
+		nextEntry = conflict.NextEntry
+		ticket = conflict.Ticket
+		uploadEnd = conflict.PendingSize
+
+		// TODO(roger2hk): Handle the case uploadEnd is updated to a value smaller than targetSize.
+	}
+
+	return cosigs, nil
 }
