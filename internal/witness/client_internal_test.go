@@ -5,7 +5,7 @@ import (
 )
 
 func BenchmarkBuildRequestBody(b *testing.B) {
-	w := &witness{size: 0}
+	w := &witnessClient{size: 0}
 	proof := make([][]byte, 20)
 	for i := range proof {
 		proof[i] = []byte("representative-proof-data-block")

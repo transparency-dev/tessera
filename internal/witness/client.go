@@ -49,9 +49,9 @@ const (
 )
 
 var (
-	witnessReqsTotal    metric.Int64Counter
-	witnessReqHistogram metric.Int64Histogram
-	witnessRespsTotal   metric.Int64Counter
+	witnessClientReqsTotal    metric.Int64Counter
+	witnessClientReqHistogram metric.Int64Histogram
+	witnessClientRespsTotal   metric.Int64Counter
 
 	// custom histogram buckets as we're interested in 10-100s of millis.
 	witnessHistogramBuckets = []float64{0, 10, 20, 30, 40, 60, 80, 100, 120, 140, 160, 180, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000, 1200, 1400, 1600, 1800, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000}
@@ -60,29 +60,29 @@ var (
 func init() {
 	var err error
 
-	witnessReqsTotal, err = meter.Int64Counter(
+	witnessClientReqsTotal, err = meter.Int64Counter(
 		"tessera.witness.request",
 		metric.WithDescription("Number of requests to the witnesses' submit endpoint"),
 		metric.WithUnit("{call}"))
 	if err != nil {
-		slog.ErrorContext(context.Background(), "Failed to create witnessReqsTotal metric", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to create witnessClientReqsTotal metric", slog.Any("error", err))
 		os.Exit(1)
 	}
-	witnessReqHistogram, err = meter.Int64Histogram(
+	witnessClientReqHistogram, err = meter.Int64Histogram(
 		"tessera.witness.duration",
 		metric.WithDescription("Duration of calls to the witnesses' submit endpoint"),
 		metric.WithUnit("ms"),
 		metric.WithExplicitBucketBoundaries(witnessHistogramBuckets...))
 	if err != nil {
-		slog.ErrorContext(context.Background(), "Failed to create witnessReqHistogram metric", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to create witnessClientReqHistogram metric", slog.Any("error", err))
 		os.Exit(1)
 	}
-	witnessRespsTotal, err = meter.Int64Counter(
+	witnessClientRespsTotal, err = meter.Int64Counter(
 		"tessera.witness.response",
 		metric.WithDescription("Number of responses from the witnesses' submit endpoint"),
 		metric.WithUnit("{call}"))
 	if err != nil {
-		slog.ErrorContext(context.Background(), "Failed to create witnessRespsTotal metric", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "Failed to create witnessClientRespsTotal metric", slog.Any("error", err))
 		os.Exit(1)
 	}
 }
@@ -116,9 +116,9 @@ type WitnessGroup interface {
 // consistency proofs for the witnesses.
 func NewWitnessGateway(group WitnessGroup, client *http.Client, oldSize uint64, fetchTiles client.TileFetcherFunc) WitnessGateway {
 	endpoints := group.Endpoints()
-	witnesses := make([]*witness, 0, len(endpoints))
+	witnesses := make([]*witnessClient, 0, len(endpoints))
 	for u, v := range endpoints {
-		witnesses = append(witnesses, &witness{
+		witnesses = append(witnesses, &witnessClient{
 			client:   client,
 			url:      u,
 			verifier: v,
@@ -135,7 +135,7 @@ func NewWitnessGateway(group WitnessGroup, client *http.Client, oldSize uint64, 
 // WitnessGateway allows a log implementation to send out a checkpoint to witnesses.
 type WitnessGateway struct {
 	group     WitnessGroup
-	witnesses []*witness
+	witnesses []*witnessClient
 	fetchTile client.TileFetcherFunc
 }
 
@@ -258,21 +258,21 @@ func (pf *sharedConsistencyProofFetcher) ConsistencyProof(ctx context.Context, s
 	return f()
 }
 
-// witness is the log's model of a witness's view of this log.
+// witnessClient is the log's model of a witness's view of this log.
 // It has a URL which is the address to which updates to this log's state can be posted to the witness,
 // using the https://github.com/C2SP/C2SP/blob/main/tlog-witness.md spec.
 // It also has the size of the checkpoint that the log thinks that the witness last signed.
 // This is important for sending update proofs.
 // This is defaulted to zero on startup and calibrated after the first request, which is expected by the spec:
 // `If a client doesn't have information on the latest cosigned checkpoint, it MAY initially make a request with a old size of zero to obtain it`
-type witness struct {
+type witnessClient struct {
 	client   *http.Client
 	url      string
 	verifier note.Verifier
 	size     uint64
 }
 
-func (w *witness) update(ctx context.Context, cp []byte, size uint64, fetchProof func(ctx context.Context, from, to uint64) ([][]byte, error)) ([]byte, error) {
+func (w *witnessClient) update(ctx context.Context, cp []byte, size uint64, fetchProof func(ctx context.Context, from, to uint64) ([][]byte, error)) ([]byte, error) {
 	return otel.Trace(ctx, "tessera.witness.update", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
 		var recursed uint
 		if v := ctx.Value(antiRecursionCtxKey); v != nil {
@@ -293,7 +293,7 @@ func (w *witness) update(ctx context.Context, cp []byte, size uint64, fetchProof
 
 		start := time.Now()
 		nameAttr := witnessNameKey.String(w.verifier.Name())
-		witnessReqsTotal.Add(ctx, 1, metric.WithAttributes(nameAttr))
+		witnessClientReqsTotal.Add(ctx, 1, metric.WithAttributes(nameAttr))
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.url, w.buildRequestBody(proof, cp))
 		if err != nil {
@@ -312,9 +312,9 @@ func (w *witness) update(ctx context.Context, cp []byte, size uint64, fetchProof
 		}
 
 		statusAttr := witnessStatusKey.Int(httpResp.StatusCode)
-		witnessRespsTotal.Add(ctx, 1, metric.WithAttributes(nameAttr, statusAttr))
+		witnessClientRespsTotal.Add(ctx, 1, metric.WithAttributes(nameAttr, statusAttr))
 		d := time.Since(start)
-		witnessReqHistogram.Record(ctx, d.Milliseconds(), metric.WithAttributes(nameAttr, statusAttr))
+		witnessClientReqHistogram.Record(ctx, d.Milliseconds(), metric.WithAttributes(nameAttr, statusAttr))
 
 		switch httpResp.StatusCode {
 		case http.StatusOK:
@@ -385,7 +385,7 @@ func (w *witness) update(ctx context.Context, cp []byte, size uint64, fetchProof
 // - zero or more consistency proof lines,
 // - and an empty line,
 // - followed by a [checkpoint][].
-func (w *witness) buildRequestBody(proof [][]byte, cp []byte) io.Reader {
+func (w *witnessClient) buildRequestBody(proof [][]byte, cp []byte) io.Reader {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "old %d\n", w.size)
 
