@@ -304,6 +304,8 @@ func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSiz
 		nextEntry = conflict.NextEntry
 		ticket = conflict.Ticket
 		uploadEnd = conflict.PendingSize
+
+		// TODO(roger2hk): Handle the case uploadEnd is updated to a value smaller than targetSize.
 	}
 
 	return cosigs, nil
