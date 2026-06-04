@@ -49,6 +49,11 @@ func (o *MirrorOptions) WithSigner(s note.Signer) *MirrorOptions {
 	return o
 }
 
+// LogVerifier returns the configured note.Verifier.
+func (o *MirrorOptions) LogVerifier() note.Verifier {
+	return o.logVerifier
+}
+
 // Signer returns the configured note.Signer.
 func (o *MirrorOptions) Signer() note.Signer {
 	return o.signer
@@ -110,8 +115,17 @@ func NewMirrorTarget(ctx context.Context, d Driver, opts *MirrorOptions) (*Mirro
 	if err != nil {
 		return nil, fmt.Errorf("failed to init MirrorTarget lifecycle: %v", err)
 	}
+	w, err := witness.New(ctx, witness.Opts{
+		Persistence: mw,
+		Signers:     []note.Signer{opts.signer},
+		LogVerifier: opts.logVerifier,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create witness: %v", err)
+	}
 	return &MirrorTarget{
-		witness: witness.New(mw),
+		witness: w,
 		writer:  mw,
 		reader:  r,
 	}, nil
