@@ -19,7 +19,7 @@
 package mirror
 
 import (
-	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/base64"
@@ -156,43 +156,28 @@ func (e ErrConflict) Error() string {
 //   - The next entry, in decimal
 //   - An opaque, possibly zero length, ticket value, encoded in base64
 func parseConflict(r io.Reader) error {
-	scanner := bufio.NewScanner(r)
-
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("error reading pending tree size: %w", err)
-		}
-		return errors.New("missing pending tree size")
-	}
-	pendingSize, err := strconv.ParseUint(scanner.Text(), 10, 64)
+	all, err := io.ReadAll(&io.LimitedReader{N: 10 << 10, R: r})
 	if err != nil {
-		return fmt.Errorf("invalid pending tree size %q: %w", scanner.Text(), err)
+		return err
 	}
 
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("error reading next entry: %w", err)
-		}
-		return errors.New("missing next entry")
+	bits := bytes.Split(all, []byte("\n"))
+	if len(bits) != 4 {
+		return fmt.Errorf("got %d fields, want 4", len(bits))
 	}
-	nextEntry, err := strconv.ParseUint(scanner.Text(), 10, 64)
+	pendingSize, err := strconv.ParseUint(string(bits[0]), 10, 64)
 	if err != nil {
-		return fmt.Errorf("invalid next entry %q: %w", scanner.Text(), err)
+		return fmt.Errorf("invalid pending tree size %q: %w", bits[0], err)
 	}
 
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("error reading ticket: %w", err)
-		}
-		return errors.New("missing ticket")
+	nextEntry, err := strconv.ParseUint(string(bits[1]), 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid next entry %q: %w", bits[1], err)
 	}
-	ticket, err := base64.StdEncoding.DecodeString(scanner.Text())
+
+	ticket, err := base64.StdEncoding.DecodeString(string(bits[2]))
 	if err != nil {
 		return fmt.Errorf("invalid base64 ticket: %w", err)
-	}
-
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error reading conflict body: %w", err)
 	}
 
 	return ErrConflict{

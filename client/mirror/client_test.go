@@ -46,13 +46,9 @@ func TestParseConflict(t *testing.T) {
 			},
 		},
 		{
-			desc: "missing newline at the end",
-			body: "123\n456\ndGlja2V0LXZhbHVl",
-			want: ErrConflict{
-				PendingSize: 123,
-				NextEntry:   456,
-				Ticket:      []byte("ticket-value"),
-			},
+			desc:    "missing newline at the end",
+			body:    "123\n456\ndGlja2V0LXZhbHVl",
+			wantErr: true,
 		},
 		{
 			desc:    "invalid pending size",
