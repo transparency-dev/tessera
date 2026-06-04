@@ -178,19 +178,19 @@ func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64,
 
 	u, err := c.opts.mirrorURL.Parse("add-entries")
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse add-entries URL: %w", err)
+		return nil, fmt.Errorf("failed to parse add-entries URL: %v", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), pr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+		return nil, fmt.Errorf("failed to create HTTP request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("Content-Encoding", "gzip")
 
 	resp, err := c.opts.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("POST %s failed: %w", u, err)
+		return nil, fmt.Errorf("POST %s failed: %v", u, err)
 	}
 	defer func() {
 		// Drain any remaining response body to enable HTTP keep-alive/connection reuse.
@@ -209,7 +209,7 @@ func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64,
 
 	cosigs, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read cosignatures from response body: %w", err)
+		return nil, fmt.Errorf("failed to read cosignatures from response body: %v", err)
 	}
 
 	return cosigs, nil
@@ -222,18 +222,18 @@ func (c *Client) pushCheckpoint(ctx context.Context, oldSize uint64, proof [][]b
 
 	u, err := c.opts.mirrorURL.Parse("add-checkpoint")
 	if err != nil {
-		return fmt.Errorf("failed to parse add-checkpoint URL: %w", err)
+		return fmt.Errorf("failed to parse add-checkpoint URL: %v", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), reqBody)
 	if err != nil {
-		return fmt.Errorf("failed to create HTTP request: %w", err)
+		return fmt.Errorf("failed to create HTTP request: %v", err)
 	}
 	req.Header.Set("Content-Type", "text/plain") // add-checkpoint uses standard line-oriented payload
 
 	resp, err := c.opts.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("POST %s failed: %w", u, err)
+		return fmt.Errorf("POST %s failed: %v", u, err)
 	}
 	defer func() {
 		// Drain any remaining response body to enable HTTP keep-alive/connection reuse.
@@ -260,7 +260,7 @@ func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSiz
 
 	var conflict ErrConflict
 	if !errors.As(err, &conflict) {
-		return nil, fmt.Errorf("failed to retrieve mirror status: %w", err)
+		return nil, fmt.Errorf("failed to retrieve mirror status: %v", err)
 	}
 
 	oldSize := conflict.PendingSize
@@ -273,16 +273,16 @@ func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSiz
 		if oldSize > 0 {
 			pb, err := client.NewProofBuilder(ctx, targetSize, c.opts.tileFetcher)
 			if err != nil {
-				return nil, fmt.Errorf("failed to create ProofBuilder: %w", err)
+				return nil, fmt.Errorf("failed to create ProofBuilder: %v", err)
 			}
 			proof, err = pb.ConsistencyProof(ctx, oldSize, targetSize)
 			if err != nil {
-				return nil, fmt.Errorf("failed to generate consistency proof: %w", err)
+				return nil, fmt.Errorf("failed to generate consistency proof: %v", err)
 			}
 		}
 
 		if err := c.pushCheckpoint(ctx, oldSize, proof, targetCheckpointRaw); err != nil {
-			return nil, fmt.Errorf("failed to push new checkpoint: %w", err)
+			return nil, fmt.Errorf("failed to push new checkpoint: %v", err)
 		}
 	}
 
@@ -298,7 +298,7 @@ func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSiz
 		}
 
 		if !errors.As(err, &conflict) {
-			return nil, fmt.Errorf("sync failed during entry upload: %w", err)
+			return nil, fmt.Errorf("sync failed during entry upload: %v", err)
 		}
 
 		nextEntry = conflict.NextEntry
