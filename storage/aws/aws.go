@@ -1234,7 +1234,7 @@ func (s *mySQLSequencer) consumeEntries(ctx context.Context, limit uint64, f con
 		// TODO(phboneff): evaluate if seq BETWEEN ? AND ? is more efficient
 		q := "DELETE FROM Seq WHERE id=? AND seq IN ( " + placeholder(len(seqsConsumed)) + " )"
 		if _, err := tx.ExecContext(ctx, q, append([]any{0}, seqsConsumed...)...); err != nil {
-			return false, fmt.Errorf("update intcoord: %v", err)
+			return false, fmt.Errorf("delete from seq: %v", err)
 		}
 	}
 
