@@ -28,7 +28,7 @@ import (
 
 	"log/slog"
 
-	"github.com/transparency-dev/tessera/cmd/mtc/mirror/internal/mirror"
+	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/internal/parse"
 )
 
@@ -42,8 +42,8 @@ const (
 
 // Mirror is the interface that the handler uses to interact with the mirror's state.
 type Mirror interface {
-	AddCheckpoint(ctx context.Context, origin string, oldSize uint64, proof [][]byte, cp []byte) error
-	AddEntries(ctx context.Context, origin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*mirror.Package, error)) ([]byte, error)
+	AddCheckpoint(ctx context.Context, origin string, oldSize uint64, proof [][]byte, cp []byte) ([]byte, uint64, error)
+	AddEntries(ctx context.Context, origin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error)
 }
 
 // New returns a new http.Handler for the mirror service.
@@ -115,7 +115,7 @@ func addCheckpoint(m Mirror) http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("invalid checkpoint: %v", err), http.StatusBadRequest)
 			return
 		}
-		if err := m.AddCheckpoint(r.Context(), origin, oldSize, proof, cp); err != nil {
+		if _, _, err := m.AddCheckpoint(r.Context(), origin, oldSize, proof, cp); err != nil {
 			slog.ErrorContext(r.Context(), "AddCheckpoint failed", slog.Any("error", err))
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -172,7 +172,7 @@ type addEntriesRequest struct {
 // to return io.EOF.
 //
 // Not thread-safe.
-func (a *addEntriesRequest) NextPackage() (*mirror.Package, error) {
+func (a *addEntriesRequest) NextPackage() (*tessera.MirrorPackage, error) {
 	if a.start >= a.uploadEnd {
 		return nil, io.EOF
 	}
@@ -223,7 +223,7 @@ func (a *addEntriesRequest) NextPackage() (*mirror.Package, error) {
 
 	// Update next expected entry index.
 	a.start = end
-	return &mirror.Package{Entries: entries, Proof: proofs}, nil
+	return &tessera.MirrorPackage{Entries: entries, Proof: proofs}, nil
 }
 
 // parseAddEntriesPreamble consumes the body of the Add-Entries request.
