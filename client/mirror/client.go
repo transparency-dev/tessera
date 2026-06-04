@@ -159,6 +159,7 @@ func parseConflict(r io.Reader) error {
 }
 
 // pushEntries streams entry packages and their proofs to the mirror's /add-entries endpoint.
+// It returns the mirror's cosignatures on success.
 func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte) ([]byte, error) {
 	pr, pw := io.Pipe()
 	defer func() {
