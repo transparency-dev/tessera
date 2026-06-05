@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"iter"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1109,4 +1110,83 @@ func (m *MigrationStorage) fetchLeafHashes(ctx context.Context, from, to, source
 		}
 	}
 	return lh, nil
+}
+
+
+// MirrorWriter creates a new POSIX storage for the MirrorTarget lifecycle mode.
+func (s *Storage) MirrorWriter(ctx context.Context, opts *tessera.MirrorOptions) (tessera.MirrorWriter, tessera.LogReader, error) {
+	r := &MirrorWriter{
+		s: s,
+		logStorage: &logResourceStorage{
+			entriesPath: opts.EntriesPath(),
+			s:           s,
+		},
+		bundleHasher: opts.LeafHasher(),
+	}
+	if err := r.initialise(ctx); err != nil {
+		return nil, nil, err
+	}
+	return r, r.logStorage, nil
+}
+
+// MirrorWriter implements the tessera.MirrorWriter lifecycle contract.
+type MirrorWriter struct {
+	s            *Storage
+	logStorage   *logResourceStorage
+	bundleHasher func(entryBundle []byte) ([][]byte, error)
+	curSize      uint64
+}
+
+var _ tessera.MirrorWriter = &MirrorWriter{}
+
+func (m *MirrorWriter) initialise(ctx context.Context) error {
+	// Idempotent: If folder exists, nothing happens.
+	if err := mkdirAll(filepath.Join(m.s.cfg.Path, stateDir), dirPerm); err != nil {
+		return fmt.Errorf("failed to create log directory: %q", err)
+	}
+	// Double locking:
+	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
+	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
+	m.s.mu.Lock()
+	unlock, err := m.s.lockFile(ctx, treeStateLock)
+	if err != nil {
+		return fmt.Errorf("failed to lock tree state: %v", err)
+	}
+	defer func() {
+		if err := unlock(); err != nil {
+			// Oh dear, panic Mr Mainwaring!
+			panic(fmt.Errorf("failed to unlock tree state: %v", err))
+		}
+		m.s.mu.Unlock()
+	}()
+
+	if err := m.s.ensureVersion(compatibilityVersion); err != nil {
+		return err
+	}
+	curSize, _, err := m.s.readTreeState(ctx)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("failed to load checkpoint for mirror: %v", err)
+		}
+		// Create the directory structure and write out an empty checkpoint
+		slog.InfoContext(ctx, "Initializing directory for POSIX mirror (this should only happen ONCE per mirror!)", slog.String("path", m.s.cfg.Path))
+		if err := m.s.writeTreeState(ctx, 0, rfc6962.DefaultHasher.EmptyRoot()); err != nil {
+			return fmt.Errorf("failed to write tree-state checkpoint: %v", err)
+		}
+		return nil
+	}
+	m.curSize = curSize
+
+	return nil
+}
+
+// IntegrateBundles integrates a sequence of entry bundles into the tree, starting at the provided bundle index bundleIdx.
+// Returns the new size and root hash of the tree if successful.
+func (m *MirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, bundles iter.Seq[api.EntryBundle]) (uint64, []byte, error) {
+	return 0, nil, errors.New("unimplemented")
+}
+
+func (m *MirrorWriter) IntegratedSize(ctx context.Context) (uint64, error) {
+	sz, _, err := m.s.readTreeState(ctx)
+	return sz, err
 }
