@@ -16,6 +16,7 @@ package posix
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -1178,13 +1180,130 @@ func (m *MirrorWriter) initialise(ctx context.Context) error {
 	return nil
 }
 
+// marshalTlogEntryBundle returns a tlog-tiles compatible serialization of the provided entrybundle.
+func marshalTlogEntryBundle(b api.EntryBundle) ([]byte, error) {
+	// Max size we could possibly write out.
+	data := make([]byte, 0, len(b.Entries)*(2+1<<16))
+	for i, e := range b.Entries {
+		l := len(e)
+		if l >= 1<<16 {
+			return nil, fmt.Errorf("entry #%d has length %d >= 1<<16", i, l)
+		}
+		data = binary.BigEndian.AppendUint16(data, uint16(l))
+		data = append(data, e...)
+	}
+	return slices.Clip(data), nil
+}
+
 // IntegrateBundles integrates a sequence of entry bundles into the tree, starting at the provided bundle index bundleIdx.
 // Returns the new size and root hash of the tree if successful.
 func (m *MirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, bundles iter.Seq[api.EntryBundle]) (uint64, []byte, error) {
-	return 0, nil, errors.New("unimplemented")
+	targetSize := bundleIdx * layout.EntryBundleWidth
+	for b := range bundles {
+		p := len(b.Entries)
+		if p == layout.EntryBundleWidth {
+			p = 0
+		}
+		// tlog-mirror does not support any bundle serialization scheme other than tlog-tiles, so we just hard-code that here...
+		bundleData, err := marshalTlogEntryBundle(b)
+		if err != nil {
+			return 0, nil, fmt.Errorf("failed to marshal bundle index %d: %v", bundleIdx, err)
+		}
+		// ...and then write it out.
+		if err := m.logStorage.writeBundle(ctx, bundleIdx, uint8(p), bundleData); err != nil {
+			return 0, nil, err
+		}
+
+		bundleIdx++
+		targetSize += uint64(len(b.Entries))
+	}
+
+	if err := m.buildTree(ctx, targetSize); err != nil {
+		return 0, nil, err
+	}
+
+	return m.s.readTreeState(ctx)
 }
 
 func (m *MirrorWriter) IntegratedSize(ctx context.Context) (uint64, error) {
 	sz, _, err := m.s.readTreeState(ctx)
 	return sz, err
+}
+
+func (m *MirrorWriter) buildTree(ctx context.Context, targetSize uint64) error {
+	// Double locking:
+	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
+	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
+	m.s.mu.Lock()
+	unlock, err := m.s.lockFile(ctx, treeStateLock)
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err := unlock(); err != nil {
+			panic(err)
+		}
+		m.s.mu.Unlock()
+	}()
+
+	size, _, err := m.s.readTreeState(ctx)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		size = 0
+	}
+	m.curSize = size
+	slog.DebugContext(ctx, "Building", slog.Uint64("from", m.curSize))
+
+	for m.curSize < targetSize {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		lh, err := m.fetchLeafHashes(ctx, m.curSize, targetSize, targetSize)
+		if err != nil {
+			return fmt.Errorf("fetchLeafHashes(%d, %d): %v", m.curSize, targetSize, err)
+		}
+
+		newSize, newRoot, err := doIntegrate(ctx, m.curSize, lh, m.logStorage)
+		if err != nil {
+			return fmt.Errorf("doIntegrate(%d, ...): %v", m.curSize, err)
+		}
+		if err := m.s.writeTreeState(ctx, newSize, newRoot); err != nil {
+			return fmt.Errorf("failed to write new tree state: %v", err)
+		}
+		m.curSize = newSize
+		slog.DebugContext(ctx, "Integrated to", slog.Uint64("size", m.curSize))
+	}
+
+	return nil
+}
+
+func (m *MirrorWriter) fetchLeafHashes(ctx context.Context, from, to, sourceSize uint64) ([][]byte, error) {
+	const maxBundles = 300
+
+	lh := make([][]byte, 0, maxBundles)
+	n := 0
+	for ri := range layout.Range(from, to, sourceSize) {
+		b, err := m.logStorage.ReadEntryBundle(ctx, ri.Index, ri.Partial)
+		if err != nil {
+			return nil, fmt.Errorf("ReadEntryBundle(%d.%d): %w", ri.Index, ri.Partial, err)
+		}
+
+		bh, err := m.bundleHasher(b)
+		if err != nil {
+			return nil, fmt.Errorf("bundleHasherFunc for bundle index %d: %v", ri.Index, err)
+		}
+		if l := len(bh); l < int(ri.First+ri.N) {
+			return nil, fmt.Errorf("bundle index %d has fewer entries than expected (%d < %d)", ri.Index, l, ri.First+ri.N)
+		}
+		lh = append(lh, bh[ri.First:ri.First+ri.N]...)
+		n++
+		if n >= maxBundles {
+			break
+		}
+	}
+	return lh, nil
 }
