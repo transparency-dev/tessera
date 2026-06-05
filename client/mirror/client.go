@@ -19,13 +19,16 @@
 package mirror
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/transparency-dev/tessera/client"
 )
@@ -153,9 +156,35 @@ func (e ErrConflict) Error() string {
 //   - The next entry, in decimal
 //   - An opaque, possibly zero length, ticket value, encoded in base64
 func parseConflict(r io.Reader) error {
-	// TODO(roger2hk): Implement this.
+	all, err := io.ReadAll(&io.LimitedReader{N: 10 << 10, R: r})
+	if err != nil {
+		return err
+	}
 
-	return errors.New("TODO")
+	bits := bytes.Split(all, []byte("\n"))
+	if len(bits) != 4 {
+		return fmt.Errorf("got %d fields, want 4", len(bits))
+	}
+	pendingSize, err := strconv.ParseUint(string(bits[0]), 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid pending tree size %q: %w", bits[0], err)
+	}
+
+	nextEntry, err := strconv.ParseUint(string(bits[1]), 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid next entry %q: %w", bits[1], err)
+	}
+
+	ticket, err := base64.StdEncoding.DecodeString(string(bits[2]))
+	if err != nil {
+		return fmt.Errorf("invalid base64 ticket: %w", err)
+	}
+
+	return ErrConflict{
+		PendingSize: pendingSize,
+		NextEntry:   nextEntry,
+		Ticket:      ticket,
+	}
 }
 
 // pushEntries streams entry packages and their proofs to the mirror's /add-entries endpoint.
