@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package witness contains the implementation for sending out a checkpoint to witnesses
-// and retrieving sufficient signatures to satisfy a policy.
+// Package witness contains the implementations of a witness client, used to send out a checkpoint to witnesses
+// and retrieve sufficient signatures to satisfy a policy, and a witness service, used by the tlog-mirror implementation.
 package witness
 
 import (
