@@ -24,22 +24,22 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/transparency-dev/tessera/cmd/mtc/mirror/internal/mirror"
+	"github.com/transparency-dev/tessera"
 )
 
 type mockMirror struct {
-	addCheckpointFunc func(ctx context.Context, logOrigin string, oldSize uint64, proof [][]byte, cp []byte) error
-	addEntriesFunc    func(ctx context.Context, logOrigin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*mirror.Package, error)) ([]byte, error)
+	addCheckpointFunc func(ctx context.Context, logOrigin string, oldSize uint64, proof [][]byte, cp []byte) ([]byte, uint64, error)
+	addEntriesFunc    func(ctx context.Context, logOrigin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error)
 }
 
-func (m *mockMirror) AddCheckpoint(ctx context.Context, logOrigin string, oldSize uint64, proof [][]byte, cp []byte) error {
+func (m *mockMirror) AddCheckpoint(ctx context.Context, logOrigin string, oldSize uint64, proof [][]byte, cp []byte) ([]byte, uint64, error) {
 	if m.addCheckpointFunc != nil {
 		return m.addCheckpointFunc(ctx, logOrigin, oldSize, proof, cp)
 	}
-	return nil
+	return nil, 0, nil
 }
 
-func (m *mockMirror) AddEntries(ctx context.Context, logOrigin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*mirror.Package, error)) ([]byte, error) {
+func (m *mockMirror) AddEntries(ctx context.Context, logOrigin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error) {
 	if m.addEntriesFunc != nil {
 		return m.addEntriesFunc(ctx, logOrigin, uploadStart, uploadEnd, ticket, next)
 	}
@@ -50,14 +50,14 @@ func TestAddCheckpoint(t *testing.T) {
 	const cpOld = 100
 
 	mock := &mockMirror{
-		addCheckpointFunc: func(ctx context.Context, logOrigin string, oldSize uint64, proof [][]byte, cp []byte) error {
+		addCheckpointFunc: func(ctx context.Context, logOrigin string, oldSize uint64, proof [][]byte, cp []byte) ([]byte, uint64, error) {
 			if oldSize != cpOld {
-				return fmt.Errorf("want oldSize %d, got %d", cpOld, oldSize)
+				return nil, cpOld, fmt.Errorf("want oldSize %d, got %d", cpOld, oldSize)
 			}
 			if len(proof) != 1 {
-				return fmt.Errorf("want 1 proof hash, got %d", len(proof))
+				return nil, cpOld, fmt.Errorf("want 1 proof hash, got %d", len(proof))
 			}
-			return nil
+			return nil, 0, nil
 		},
 	}
 	h := New(mock)
@@ -84,7 +84,7 @@ func TestAddEntries(t *testing.T) {
 	)
 
 	mock := &mockMirror{
-		addEntriesFunc: func(ctx context.Context, logOrigin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*mirror.Package, error)) ([]byte, error) {
+		addEntriesFunc: func(ctx context.Context, logOrigin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error) {
 			if logOrigin != testOrigin {
 				return nil, fmt.Errorf("want logOrigin %s, got %s", testOrigin, logOrigin)
 			}
