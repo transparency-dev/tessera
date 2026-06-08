@@ -16,7 +16,9 @@ package mirror
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
+	"io"
 	"testing"
 )
 
@@ -103,6 +105,66 @@ func TestParseConflict(t *testing.T) {
 			}
 			if !bytes.Equal(ec.Ticket, tc.want.Ticket) {
 				t.Errorf("Ticket = %q, want %q", string(ec.Ticket), string(tc.want.Ticket))
+			}
+		})
+	}
+}
+
+func TestBuildCheckpointRequestBody(t *testing.T) {
+	tests := []struct {
+		desc          string
+		oldSize       uint64
+		proof         [][]byte
+		checkpointRaw []byte
+		want          string
+	}{
+		{
+			desc:          "empty proof and empty checkpoint",
+			oldSize:       0,
+			proof:         nil,
+			checkpointRaw: nil,
+			want:          "old 0\n\n",
+		},
+		{
+			desc:          "empty proof and non-empty checkpoint",
+			oldSize:       123,
+			proof:         nil,
+			checkpointRaw: []byte("some-checkpoint-data"),
+			want:          "old 123\n\nsome-checkpoint-data",
+		},
+		{
+			desc:    "single 32-byte proof line",
+			oldSize: 5,
+			proof: [][]byte{
+				bytes.Repeat([]byte{1}, 32),
+			},
+			checkpointRaw: []byte("checkpoint"),
+			want:          "old 5\n" + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)) + "\n\ncheckpoint",
+		},
+		{
+			desc:    "multiple 32-byte proof lines",
+			oldSize: 10,
+			proof: [][]byte{
+				bytes.Repeat([]byte{1}, 32),
+				bytes.Repeat([]byte{2}, 32),
+			},
+			checkpointRaw: []byte("checkpoint"),
+			want: "old 10\n" +
+				base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)) + "\n" +
+				base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32)) + "\n\ncheckpoint",
+		},
+	}
+
+	c := &Client{}
+	for _, tc := range tests {
+		t.Run(tc.desc, func(t *testing.T) {
+			gotReader := c.buildCheckpointRequestBody(tc.oldSize, tc.proof, tc.checkpointRaw)
+			gotBytes, err := io.ReadAll(gotReader)
+			if err != nil {
+				t.Fatalf("failed to read body: %v", err)
+			}
+			if got := string(gotBytes); got != tc.want {
+				t.Errorf("buildCheckpointRequestBody() = %q, want %q", got, tc.want)
 			}
 		})
 	}
