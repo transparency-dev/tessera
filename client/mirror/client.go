@@ -246,8 +246,7 @@ func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64,
 
 // pushCheckpoint sends a new checkpoint and its consistency proof to the mirror's /add-checkpoint endpoint.
 func (c *Client) pushCheckpoint(ctx context.Context, oldSize uint64, proof [][]byte, checkpointRaw []byte) error {
-	// TODO(roger2hk): Implement checkpoint.
-	var reqBody io.Reader
+	reqBody := c.buildCheckpointRequestBody(oldSize, proof, checkpointRaw)
 
 	u, err := c.opts.mirrorURL.Parse("add-checkpoint")
 	if err != nil {
@@ -276,6 +275,29 @@ func (c *Client) pushCheckpoint(ctx context.Context, oldSize uint64, proof [][]b
 	}
 
 	return nil
+}
+
+// buildCheckpointRequestBody formats the request body for the witness.
+// The request body MUST be a sequence of
+// - a previous size line,
+// - zero or more consistency proof lines,
+// - and an empty line,
+// - followed by a [checkpoint][].
+func (c *Client) buildCheckpointRequestBody(oldSize uint64, proof [][]byte, checkpointRaw []byte) io.Reader {
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "old %d\n", oldSize)
+
+	// Preallocate for 32 byte SHA256 nodes.
+	dst := make([]byte, base64.StdEncoding.EncodedLen(32))
+
+	for _, p := range proof {
+		base64.StdEncoding.Encode(dst, p)
+		b.Write(dst)
+		b.WriteByte('\n')
+	}
+	b.WriteByte('\n')
+	b.Write(checkpointRaw)
+	return &b
 }
 
 // Sync synchronizes all entries and the checkpoint from the source log to the mirror
