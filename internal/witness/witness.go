@@ -33,10 +33,10 @@ import (
 	"github.com/transparency-dev/formats/log"
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
-	"golang.org/x/mod/sumdb/note"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/mod/sumdb/note"
 
-	i_otel "github.com/transparency-dev/tessera/internal/otel"
+	iotel "github.com/transparency-dev/tessera/internal/otel"
 )
 
 var (
@@ -74,7 +74,7 @@ type Opts struct {
 
 // Witness is a witness for a single log.
 type Witness struct {
-	lsp         Persistence
+	p         	Persistence
 	signers     []note.Signer
 	logVerifier note.Verifier
 }
@@ -82,7 +82,7 @@ type Witness struct {
 // New creates a new witness for the configured log.
 func New(ctx context.Context, wo Opts) (*Witness, error) {
 	return &Witness{
-		lsp:         wo.Persistence,
+		p:         wo.Persistence,
 		signers:     wo.Signers,
 		logVerifier: wo.LogVerifier,
 	}, nil
@@ -105,96 +105,96 @@ func (w *Witness) verifyCheckpoint(ctx context.Context, chkptRaw []byte) (*log.C
 // - ErrCheckpointStale or ErrOldSizeInvalid: the presented checkpoint is out of date, the size of the current checkpoint is returned.
 // - Any other error, no supporting values are returned.
 func (w *Witness) Update(ctx context.Context, oldSize uint64, nextRaw []byte, cProof [][]byte) ([]byte, uint64, error) {
-	return i_otel.Trace2(ctx, "tessera.witness.server.update", tracer, func(ctx context.Context, span trace.Span) ([]byte, uint64, error) {
-	// Check the signatures on the raw checkpoint and parse it
-	// into the log.Checkpoint format.
-	//
-	// SPEC: The witness MUST verify the checkpoint signature against the public key(s) it trusts for the
-	//       checkpoint origin, and it MUST ignore signatures from unknown keys.
-	next, nextNote, err := w.verifyCheckpoint(ctx, nextRaw)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	var retSigs []byte
-	var retSize uint64
-
-	// Attempt to atomically update the latest known checkpoint for the given origin.
-	err = w.lsp.UpdateCheckpoint(ctx, func(prevRaw []byte) ([]byte, error) {
-		// If there was nothing stored already then treat this new
-		// checkpoint as trust-on-first-use (TOFU).
-		if prevRaw == nil {
-			// Store a witness cosigned version of the checkpoint.
-			signed, sigs, err := w.signChkpt(nextNote)
-			if err != nil {
-				return nil, fmt.Errorf("couldn't sign input checkpoint: %v", err)
-			}
-			retSigs = sigs
-			return signed, nil
-		}
-
-		prev, _, err := w.verifyCheckpoint(ctx, prevRaw)
+	return iotel.Trace2(ctx, "tessera.witness.server.update", tracer, func(ctx context.Context, span trace.Span) ([]byte, uint64, error) {
+		// Check the signatures on the raw checkpoint and parse it
+		// into the log.Checkpoint format.
+		//
+		// SPEC: The witness MUST verify the checkpoint signature against the public key(s) it trusts for the
+		//       checkpoint origin, and it MUST ignore signatures from unknown keys.
+		next, nextNote, err := w.verifyCheckpoint(ctx, nextRaw)
 		if err != nil {
-			retSize, retSigs = 0, nil
-			return nil, fmt.Errorf("couldn't parse stored checkpoint: %v", err)
+			return nil, 0, err
 		}
 
-		// SPEC: The old size MUST be equal to or lower than the (submitted) checkpoint size.
-		if oldSize > next.Size {
-			retSize, retSigs = prev.Size, nil
-			return nil, ErrOldSizeInvalid
-		}
-		// SPEC: The witness MUST check that the old size matches the size of the latest checkpoint it cosigned
-		//       for the checkpoint's origin (or zero if it never cosigned a checkpoint for that origin)
-		if oldSize != prev.Size {
-			retSize, retSigs = prev.Size, nil
-			return nil, fmt.Errorf("%w (%d != %d)", ErrCheckpointStale, oldSize, prev.Size)
-		}
-		// SPEC:  If the old size matches the checkpoint size, the witness MUST check that the root hashes are
-		//        also identical.
-		if next.Size == prev.Size {
-			if !bytes.Equal(next.Hash, prev.Hash) {
-				slog.ErrorContext(ctx, "INCONSISTENT CHECKPOINTS", slog.String("origin", w.logVerifier.Name()), slog.Any("prev", prev), slog.Any("next", next))
-				retSize, retSigs = 0, nil
-				return nil, ErrRootMismatch
+		var retSigs []byte
+		var retSize uint64
+
+		// Attempt to atomically update the latest known checkpoint for the given origin.
+		err = w.p.UpdateCheckpoint(ctx, func(prevRaw []byte) ([]byte, error) {
+			// If there was nothing stored already then treat this new
+			// checkpoint as trust-on-first-use (TOFU).
+			if prevRaw == nil {
+				// Store a witness cosigned version of the checkpoint.
+				signed, sigs, err := w.signChkpt(nextNote)
+				if err != nil {
+					return nil, fmt.Errorf("couldn't sign input checkpoint: %v", err)
+				}
+				retSigs = sigs
+				return signed, nil
 			}
-			// This used to short-circuit here to save work.
-			// However, having the most recently witnessed timestamp available is beneficial to demonstrate freshness.
-		}
-		// Checkpoints of size 0 are really placeholders and consistency proofs can't be performed.
-		// If we initialized on a tree size of 0, then we simply ratchet forward and effectively TOFU the new checkpoint.
-		if prev.Size == 0 {
-			// SPEC:  The proof MUST be empty if the old size is zero.
-			if len(cProof) > 0 {
-				retSize, retSigs = 0, nil
-				return nil, ErrInvalidProof
-			}
-			signed, sigs, err := w.signChkpt(nextNote)
+
+			prev, _, err := w.verifyCheckpoint(ctx, prevRaw)
 			if err != nil {
 				retSize, retSigs = 0, nil
+				return nil, fmt.Errorf("couldn't parse stored checkpoint: %v", err)
+			}
+
+			switch {
+			case oldSize > next.Size:
+				// SPEC: The old size MUST be equal to or lower than the (submitted) checkpoint size.
+				retSize, retSigs = prev.Size, nil
+				return nil, ErrOldSizeInvalid
+
+			case oldSize != prev.Size:
+				// SPEC: The witness MUST check that the old size matches the size of the latest checkpoint it cosigned
+				//       for the checkpoint's origin (or zero if it never cosigned a checkpoint for that origin)
+				retSize, retSigs = prev.Size, nil
+				return nil, fmt.Errorf("%w (%d != %d)", ErrCheckpointStale, oldSize, prev.Size)
+
+			case next.Size == prev.Size:
+				// SPEC:  If the old size matches the checkpoint size, the witness MUST check that the root hashes are
+				//        also identical.
+				if !bytes.Equal(next.Hash, prev.Hash) {
+					slog.ErrorContext(ctx, "INCONSISTENT CHECKPOINTS", slog.String("origin", w.logVerifier.Name()), slog.Any("prev", prev), slog.Any("next", next))
+					retSize, retSigs = 0, nil
+					return nil, ErrRootMismatch
+				}
+				// We'll continue on to signing the checkpoints below, so the log gets a fresh cosignature with updated timestamp.
+
+			case prev.Size == 0:
+				// SPEC:  The proof MUST be empty if the old size is zero.
+				//
+				// Checkpoints of size 0 are really placeholders and consistency proofs can't be performed.
+				// If we initialized on a tree size of 0, then we simply ratchet forward and effectively TOFU the new checkpoint.
+				if len(cProof) > 0 {
+					retSize, retSigs = 0, nil
+					return nil, ErrInvalidProof
+				}
+
+			case next.Size > prev.Size:
+				// The only remaining option is next.Size > prev.Size. This might be valid so we verify the consistency proof.
+				if err := proof.VerifyConsistency(rfc6962.DefaultHasher, prev.Size, next.Size, cProof, prev.Hash, next.Hash); err != nil {
+					// Complain if the checkpoints aren't consistent.
+					return nil, ErrInvalidProof
+				}
+
+			default:
+				// This should never occur, but if it does, fail safe.
+				slog.ErrorContext(ctx, "unexpected state in Update", slog.String("origin", w.logVerifier.Name()), slog.Any("prev", prev), slog.Any("next", next))
+				return nil, fmt.Errorf("unexpected state: prev.Size=%d, next.Size=%d", prev.Size, next.Size)
+			}
+
+			// All checks complete, we're satisfied with the new checkpoint and will sign it.
+			signed, sigs, err := w.signChkpt(nextNote)
+			if err != nil {
+				retSize, retSigs = 0, nil
 				return nil, fmt.Errorf("couldn't sign input checkpoint: %v", err)
 			}
-			retSize, retSigs = 0, sigs
+
+			retSize, retSigs = next.Size, sigs
 			return signed, nil
-		}
-
-		// The only remaining option is next.Size > prev.Size. This might be
-		// valid so we verify the consistency proofs.
-		if err := proof.VerifyConsistency(rfc6962.DefaultHasher, prev.Size, next.Size, cProof, prev.Hash, next.Hash); err != nil {
-			// Complain if the checkpoints aren't consistent.
-			return nil, ErrInvalidProof
-		}
-		// If the consistency proof is good we store the witness cosigned nextRaw.
-		signed, sigs, err := w.signChkpt(nextNote)
-		if err != nil {
-			retSize, retSigs = 0, nil
-			return nil, fmt.Errorf("couldn't sign input checkpoint: %v", err)
-		}
-
-		retSize, retSigs = 0, sigs
-		return signed, nil
-	})
-	return retSigs, retSize, err
+		})
+		return retSigs, retSize, err
 	})
 }
 

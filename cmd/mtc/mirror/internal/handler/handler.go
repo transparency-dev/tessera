@@ -63,11 +63,10 @@ func addCheckpoint(m Mirror) http.HandlerFunc {
 			return
 		}
 
-		sc, body, contentType, err := handleUpdate(r.Context(), m, origin, oldSize, cp, proof)
+		sc, body, contentType, err := handleCheckpointUpdate(r.Context(), m, origin, oldSize, cp, proof)
 		if err != nil {
-			status := http.StatusInternalServerError
 			slog.InfoContext(r.Context(), "Witness update failed", slog.Any("error", err.Error()))
-			w.WriteHeader(status)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
@@ -83,10 +82,10 @@ func addCheckpoint(m Mirror) http.HandlerFunc {
 	}
 }
 
-// handleUpdate submits the provided checkpoint to the witness and interprets any errors which may result.
+// handleCheckpointUpdate submits the provided checkpoint to the witness and interprets any errors which may result.
 //
 // Returns an appropriate HTTP status code, response body, and Content Type representing the outcome.
-func handleUpdate(ctx context.Context, m Mirror, origin string, oldSize uint64, cp []byte, proof [][]byte) (int, []byte, string, error) {
+func handleCheckpointUpdate(ctx context.Context, m Mirror, origin string, oldSize uint64, cp []byte, proof [][]byte) (int, []byte, string, error) {
 	sigs, trustedSize, updateErr := m.AddCheckpoint(ctx, origin, oldSize, proof, cp)
 	// Finally, handle any "soft" error from the update:
 	if updateErr != nil {
@@ -117,27 +116,28 @@ func handleUpdate(ctx context.Context, m Mirror, origin string, oldSize uint64, 
 // - a previous size line,
 // - zero or more consistency proof lines,
 // - and an empty line,
-// - followed by a [checkpoint][].
+// - followed by a checkpoint.
 func parseBody(r io.Reader) (string, uint64, [][]byte, []byte, error) {
 	b := bufio.NewReader(r)
-	sizeLine, _, err := b.ReadLine()
+	sizeLine, err := b.ReadString('\n')
 	if err != nil {
 		return "", 0, nil, nil, err
 	}
 	var size uint64
-	if n, err := fmt.Sscanf(string(sizeLine), "old %d", &size); err != nil || n != 1 {
+	if n, err := fmt.Sscanf(strings.TrimSuffix(sizeLine, "\n"), "old %d", &size); err != nil || n != 1 {
 		return "", 0, nil, nil, err
 	}
 	proof := [][]byte{}
 	for {
-		l, _, err := b.ReadLine()
+		l, err := b.ReadString('\n')
 		if err != nil {
 			return "", 0, nil, nil, err
 		}
+		l = strings.TrimSuffix(l, "\n")
 		if len(l) == 0 {
 			break
 		}
-		hash, err := base64.StdEncoding.DecodeString(string(l))
+		hash, err := base64.StdEncoding.DecodeString(l)
 		if err != nil {
 			return "", 0, nil, nil, err
 		}
@@ -149,7 +149,7 @@ func parseBody(r io.Reader) (string, uint64, [][]byte, []byte, error) {
 	}
 	s := strings.SplitN(string(cp), "\n", 2)
 	if len(s) != 2 {
-		return "", 0, nil, nil, err
+		return "", 0, nil, nil, errors.New("invalid checkpoint")
 	}
 
 	origin := s[0]

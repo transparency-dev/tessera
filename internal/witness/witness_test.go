@@ -31,8 +31,8 @@ import (
 
 var (
 	// https://go.dev/play/p/FVJgyhl7URt to regenerate any messages if needed.
-	mPK       = "monkeys+db4d9f7e+AULaJMvTtDLHPUcUrjdDad9vDlh/PTfC2VV60JUtCfWT"
-	mSK       = "PRIVATE+KEY+monkeys+db4d9f7e+ATWIAF3yVBG+Hv1rZFQoNt/BaURkLPtOFMAM2HrEeIr6"
+	mPK = "monkeys+db4d9f7e+AULaJMvTtDLHPUcUrjdDad9vDlh/PTfC2VV60JUtCfWT"
+	mSK = "PRIVATE+KEY+monkeys+db4d9f7e+ATWIAF3yVBG+Hv1rZFQoNt/BaURkLPtOFMAM2HrEeIr6"
 	// wPK       = "witness+f13a86db+AdYV1Ztajd9BvyjP2HgpwrqYL6TjOwIjGMOq8Bu42xbN"
 	wSK       = "PRIVATE+KEY+witness+f13a86db+AaLa/dfyBhyo/m0Z7WCi98ENVZWtrP8pxgRNrx7tIWiA"
 	mInit     = []byte("monkeys\n5\n41smjBUiAU70EtKlT6lIOIYtRTYxYXsDB+XHfcvu/BE=\n\n— monkeys 202fftzGl3LVoqjXfwCFZZXs8I+5G22+Ek2K0AOyBuSJ/8/CZawNF+6fNlTKOCd622pbzJNkkJFWuw9DbicZCkEx9AY=\n")
@@ -43,7 +43,6 @@ var (
 		dh("89d0f753f66a290c483b39cd5e9eafb12021293395fad3d4a2ad053cfbcfdc9e", 32),
 		dh("29e40bb79c966f4c6fe96aff6f30acfce5f3e8d84c02215175d6e018a5dee833", 32),
 	}
-
 )
 
 type logOpts struct {
@@ -107,23 +106,23 @@ func mustCreateCheckpoint(t *testing.T, sk string, origin string, size uint64, r
 
 func TestUpdate(t *testing.T) {
 	for _, test := range []struct {
-		desc      string
-		origin    string
-		initC     []byte
-		oldSize   uint64
-		newC      []byte
-		pf        [][]byte
-		wantUpdate    bool
-		wantError error
+		desc       string
+		origin     string
+		initC      []byte
+		oldSize    uint64
+		newC       []byte
+		pf         [][]byte
+		wantUpdate bool
+		wantError  error
 	}{
 		{
-			desc:    "vanilla consistency happy path",
-			origin:  "monkeys",
-			initC:   mustCreateCheckpoint(t, mSK, "monkeys", 5, dh("e35b268c1522014ef412d2a54fa94838862d453631617b0307e5c77dcbeefc11", 32)),
-			oldSize: 5,
-			newC:    mNext,
-			pf:      consProof,
-			wantUpdate:  true,
+			desc:       "vanilla consistency happy path",
+			origin:     "monkeys",
+			initC:      mustCreateCheckpoint(t, mSK, "monkeys", 5, dh("e35b268c1522014ef412d2a54fa94838862d453631617b0307e5c77dcbeefc11", 32)),
+			oldSize:    5,
+			newC:       mNext,
+			pf:         consProof,
+			wantUpdate: true,
 		}, {
 			desc:      "oldSize doesn't match current state",
 			origin:    "monkeys",
@@ -141,12 +140,12 @@ func TestUpdate(t *testing.T) {
 			// Proof should be empty for oldSize=zero.
 			wantError: ErrInvalidProof,
 		}, {
-			desc:    "vanilla resubmit known CP",
-			origin:  "monkeys",
-			initC:   mustCreateCheckpoint(t, mSK, "monkeys", 5, dh("e35b268c1522014ef412d2a54fa94838862d453631617b0307e5c77dcbeefc11", 32)),
-			oldSize: 5,
-			newC:    mustCreateCheckpoint(t, mSK, "monkeys", 5, dh("e35b268c1522014ef412d2a54fa94838862d453631617b0307e5c77dcbeefc11", 32)),
-			wantUpdate:  true,
+			desc:       "vanilla resubmit known CP",
+			origin:     "monkeys",
+			initC:      mustCreateCheckpoint(t, mSK, "monkeys", 5, dh("e35b268c1522014ef412d2a54fa94838862d453631617b0307e5c77dcbeefc11", 32)),
+			oldSize:    5,
+			newC:       mustCreateCheckpoint(t, mSK, "monkeys", 5, dh("e35b268c1522014ef412d2a54fa94838862d453631617b0307e5c77dcbeefc11", 32)),
+			wantUpdate: true,
 		}, {
 			desc:      "resubmit known CP with changed root",
 			origin:    "monkeys",
@@ -222,10 +221,9 @@ func newPersistence() *testPersistence {
 }
 
 type testPersistence struct {
-	mu          sync.RWMutex
+	mu         sync.RWMutex
 	checkpoint []byte
 }
-
 
 func (p *testPersistence) latest(_ context.Context) ([]byte, error) {
 	p.mu.RLock()
