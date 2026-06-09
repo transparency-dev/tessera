@@ -1,6 +1,6 @@
 module github.com/transparency-dev/tessera
 
-go 1.26.4
+go 1.25.8
 
 require (
 	cloud.google.com/go/spanner v1.91.0
@@ -14,7 +14,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.23
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.103.3
 	github.com/aws/smithy-go v1.27.1
-	github.com/bitfield/script v0.24.2
+	github.com/bitfield/script v0.24.1
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
