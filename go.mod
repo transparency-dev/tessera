@@ -2,7 +2,7 @@ module github.com/transparency-dev/tessera
 
 go 1.25.8
 
-toolchain go1.25.8
+toolchain go1.25.11
 
 require (
 	cloud.google.com/go/spanner v1.91.0
