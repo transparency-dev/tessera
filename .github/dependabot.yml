@@ -2,6 +2,9 @@ version: 2
 updates:
 - package-ecosystem: gomod
   directory: /
+  ignore:
+    - dependency-name: "go"
+      versions: ["> 1.25"]
   groups:
     all-go-deps:
       patterns:
