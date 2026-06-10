@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package mirror
+package handler
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
-	"maps"
 	"sync"
 
 	"github.com/transparency-dev/tessera"
@@ -29,33 +29,33 @@ var (
 	ErrUnknownLog = errors.New("unknown log origin")
 )
 
-// New creates a new Mirror from the provided map of origins to mirror target.
-func New(targets map[string]Target) *Mirror {
-	m := &Mirror{
-		targets: maps.Clone(targets),
+// NewMirrorMux creates a new MirrorMux from the provided map of origins to mirror targets.
+func NewMirrorMux() *MirrorMux {
+	return &MirrorMux{
+		targets: make(map[string]MirrorTarget),
 	}
-	return m
 }
 
-// Mirror is the backend for the tlog-mirror HTTP service.
-//
-// Mirror is mostly a multiplexer over the various log targets. It knows about
-// the configured logs and routes requests to the appropriate target.
-type Mirror struct {
-	lock    sync.RWMutex
-	targets map[string]Target
-}
-
-func (m *Mirror) AddCheckpoint(ctx context.Context, origin string, oldSize uint64, proof [][]byte, cpRaw []byte) ([]byte, uint64, error) {
-	t, err := m.target(origin)
-	if err != nil {
-		return nil, 0, err
+// AddTarget adds a new mirror target for the given origin.
+// It is an error to add a target for an origin that already has been added.
+func (m *MirrorMux) AddTarget(origin string, t MirrorTarget) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.targets[origin]; ok {
+		return fmt.Errorf("origin %q already added", origin)
 	}
-	slog.InfoContext(ctx, "AddCheckpoint", slog.String("origin", origin), slog.Uint64("old_size", oldSize), slog.Int("proof_len", len(proof)), slog.String("cp", string(cpRaw)))
-	return t.AddCheckpoint(ctx, oldSize, proof, cpRaw)
+	m.targets[origin] = t
+	return nil
 }
 
-func (m *Mirror) AddEntries(ctx context.Context, origin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error) {
+// MirrorMux is a backend for the tlog-mirror HTTP service that multiplexes incoming requests
+// over a set of target mirrors based on the log origin.
+type MirrorMux struct {
+	mu      sync.RWMutex
+	targets map[string]MirrorTarget // keyed by log origin.
+}
+
+func (m *MirrorMux) AddEntries(ctx context.Context, origin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error) {
 	t, err := m.target(origin)
 	if err != nil {
 		return nil, err
@@ -65,9 +65,9 @@ func (m *Mirror) AddEntries(ctx context.Context, origin string, uploadStart, upl
 }
 
 // target returns the target for the given origin, or ErrUnknownLog if it doesn't exist.
-func (m *Mirror) target(origin string) (Target, error) {
-	m.lock.RLock()
-	defer m.lock.RUnlock()
+func (m *MirrorMux) target(origin string) (MirrorTarget, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	r, ok := m.targets[origin]
 	if !ok {
 		return nil, ErrUnknownLog
@@ -75,10 +75,8 @@ func (m *Mirror) target(origin string) (Target, error) {
 	return r, nil
 }
 
-// Target describes the contract that a mirror target must satisfy.
-type Target interface {
-	// AddCheckpoint is a tlog-witness.
-	AddCheckpoint(ctx context.Context, oldSize uint64, proof [][]byte, cpRaw []byte) ([]byte, uint64, error)
+// MirrorTarget describes the contract that a mirror target must satisfy.
+type MirrorTarget interface {
 	// AddEntries adds verified consistent entries to the mirror.
 	AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error)
 }

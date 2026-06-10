@@ -22,25 +22,19 @@ import (
 
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
-	"github.com/transparency-dev/tessera/internal/witness"
+	"github.com/transparency-dev/witness/witness"
 	"golang.org/x/mod/sumdb/note"
 )
 
 // MirrorOptions holds mirror lifecycle settings for all storage implementations.
 type MirrorOptions struct {
-	logVerifier note.Verifier
 	signer      note.Signer
+	witness     *witness.Witness
 }
 
 // NewMirrorOptions creates a new options struct with defaults.
 func NewMirrorOptions() *MirrorOptions {
 	return &MirrorOptions{}
-}
-
-// WithLogVerifier configures the note.Verifier to use when verifying log checkpoints.
-func (o *MirrorOptions) WithLogVerifier(v note.Verifier) *MirrorOptions {
-	o.logVerifier = v
-	return o
 }
 
 // WithSigner configures the note.Signer to use when cosigning checkpoints.
@@ -49,9 +43,9 @@ func (o *MirrorOptions) WithSigner(s note.Signer) *MirrorOptions {
 	return o
 }
 
-// LogVerifier returns the configured note.Verifier.
-func (o *MirrorOptions) LogVerifier() note.Verifier {
-	return o.logVerifier
+func (o *MirrorOptions) WithWitness(w *witness.Witness) *MirrorOptions {
+	o.witness = w
+	return o
 }
 
 // Signer returns the configured note.Signer.
@@ -68,19 +62,17 @@ func (o *MirrorOptions) LeafHasher() func(bundle []byte) (leafHashes [][]byte, e
 }
 
 func (o *MirrorOptions) valid() error {
-	if o.logVerifier == nil {
-		return errors.New("invalid MirrorOptions: WithLogVerifier must be set")
-	}
 	if o.signer == nil {
 		return errors.New("invalid MirrorOptions: WithSigner must be set")
+	}
+	if o.witness == nil {
+		return errors.New("invalid MirrorOptions: WithWitness must be set")
 	}
 	return nil
 }
 
 // mirrorWriter describes the contract for storage implementation required to support the mirroring lifecycle.
 type MirrorWriter interface {
-	// MirrorWriters must also implement the contract for storing witness data.
-	witness.Persistence
 	// IntegrateBundles integrates bundles of log entries, starting at the given index, into the local tree.
 	// Returns the size of the tree and its new root hash if successful.
 	IntegrateBundles(ctx context.Context, from uint64, bundles iter.Seq[api.EntryBundle]) (uint64, []byte, error)
@@ -115,17 +107,8 @@ func NewMirrorTarget(ctx context.Context, d Driver, opts *MirrorOptions) (*Mirro
 	if err != nil {
 		return nil, fmt.Errorf("failed to init MirrorTarget lifecycle: %v", err)
 	}
-	w, err := witness.New(ctx, witness.Opts{
-		Persistence: mw,
-		Signers:     []note.Signer{opts.signer},
-		LogVerifier: opts.logVerifier,
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create witness: %v", err)
-	}
 	return &MirrorTarget{
-		witness: w,
+		witness: opts.witness,
 		writer:  mw,
 		reader:  r,
 	}, nil
@@ -135,16 +118,6 @@ func NewMirrorTarget(ctx context.Context, d Driver, opts *MirrorOptions) (*Mirro
 type MirrorPackage struct {
 	Entries [][]byte
 	Proof   [][]byte
-}
-
-// AddCheckpoint attempt to register a new checkpoint from the configured log, updating the local latest consistent view if possible.
-//
-// Returns a cosignature for the checkpoint.
-// If unsuccessful, returns an error describing the reason for the failure, and, if that reason is a conflict, returns the size of the current consistent view.
-//
-// TODO(al): something, something, pending checkpoints.
-func (mt *MirrorTarget) AddCheckpoint(ctx context.Context, oldSize uint64, proof [][]byte, cp []byte) (cosig []byte, wantSize uint64, err error) {
-	return mt.witness.Update(ctx, oldSize, cp, proof)
 }
 
 // AddEntries processes a stream of entry packages, verifies subtree consistency proofs,
