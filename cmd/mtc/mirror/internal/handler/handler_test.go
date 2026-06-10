@@ -17,7 +17,6 @@ package handler
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"net/http"
@@ -27,54 +26,6 @@ import (
 	"github.com/transparency-dev/tessera"
 )
 
-type mockMirror struct {
-	addCheckpointFunc func(ctx context.Context, logOrigin string, oldSize uint64, proof [][]byte, cp []byte) ([]byte, uint64, error)
-	addEntriesFunc    func(ctx context.Context, logOrigin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error)
-}
-
-func (m *mockMirror) AddCheckpoint(ctx context.Context, logOrigin string, oldSize uint64, proof [][]byte, cp []byte) ([]byte, uint64, error) {
-	if m.addCheckpointFunc != nil {
-		return m.addCheckpointFunc(ctx, logOrigin, oldSize, proof, cp)
-	}
-	return nil, 0, nil
-}
-
-func (m *mockMirror) AddEntries(ctx context.Context, logOrigin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error) {
-	if m.addEntriesFunc != nil {
-		return m.addEntriesFunc(ctx, logOrigin, uploadStart, uploadEnd, ticket, next)
-	}
-	return []byte("— dummy-cosig\n"), nil
-}
-
-func TestAddCheckpoint(t *testing.T) {
-	const cpOld = 100
-
-	mock := &mockMirror{
-		addCheckpointFunc: func(ctx context.Context, logOrigin string, oldSize uint64, proof [][]byte, cp []byte) ([]byte, uint64, error) {
-			if oldSize != cpOld {
-				return nil, cpOld, fmt.Errorf("want oldSize %d, got %d", cpOld, oldSize)
-			}
-			if len(proof) != 1 {
-				return nil, cpOld, fmt.Errorf("want 1 proof hash, got %d", len(proof))
-			}
-			return nil, 0, nil
-		},
-	}
-	h := New(mock)
-
-	cp := "example-log\n123\nSGVsbG8sIHdvcmxkIQ==\n\n"
-	proofHash := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	body := fmt.Sprintf("old %d\n%s\n\n%s", cpOld, proofHash, cp)
-
-	req := httptest.NewRequest(http.MethodPost, "/add-checkpoint", bytes.NewBufferString(body))
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("want status 200, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
 func TestAddEntries(t *testing.T) {
 	const (
 		testOrigin      = "example-log"
@@ -83,11 +34,8 @@ func TestAddEntries(t *testing.T) {
 		testUploadEnd   = 110
 	)
 
-	mock := &mockMirror{
-		addEntriesFunc: func(ctx context.Context, logOrigin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error) {
-			if logOrigin != testOrigin {
-				return nil, fmt.Errorf("want logOrigin %s, got %s", testOrigin, logOrigin)
-			}
+	mock := &mockTarget{
+		addEntriesFunc: func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error) {
 			if uploadStart != testUploadStart || uploadEnd != testUploadEnd {
 				return nil, fmt.Errorf("want range %d-%d, got %d-%d", testUploadStart, testUploadEnd, uploadStart, uploadEnd)
 			}
@@ -110,7 +58,11 @@ func TestAddEntries(t *testing.T) {
 			return []byte("— test-cosig\n"), nil
 		},
 	}
-	h := New(mock)
+	mux := NewMirrorMux()
+	if err := mux.AddTarget(testOrigin, mock); err != nil {
+		t.Fatalf("AddTarget() failed: %v", err)
+	}
+	h := New(mux, nil)
 
 	var body bytes.Buffer
 
@@ -142,4 +94,15 @@ func TestAddEntries(t *testing.T) {
 	if !bytes.Contains(w.Body.Bytes(), []byte("— test-cosig\n")) {
 		t.Errorf("response does not contain expected cosignature: %s", w.Body.String())
 	}
+}
+
+type mockTarget struct {
+	addEntriesFunc    func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error)
+}
+
+func (m *mockTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error) {
+	if m.addEntriesFunc != nil {
+		return m.addEntriesFunc(ctx, uploadStart, uploadEnd, ticket, next)
+	}
+	return []byte("— dummy-cosig\n"), nil
 }
