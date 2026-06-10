@@ -131,12 +131,12 @@ type Client struct {
 }
 
 // NewClient creates a new Client with the provided options.
-func NewClient(_ context.Context, opts Options) (*Client, error) {
+func NewClient(_ context.Context, opts *Options) (*Client, error) {
 	if err := opts.validate(); err != nil {
 		return nil, err
 	}
 
-	return &Client{opts: &opts}, nil
+	return &Client{opts: opts}, nil
 }
 
 // ErrConflict is returned by tlog-mirror client operations when the mirror returns a 409 Conflict.
