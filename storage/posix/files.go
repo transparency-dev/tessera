@@ -445,27 +445,7 @@ func (lrs *logResourceStorage) writeTile(ctx context.Context, level, index uint6
 		return err
 	}
 
-	if partial == 0 {
-		partials, err := filepath.Glob(fmt.Sprintf("%s.p/*", tPath))
-		if err != nil {
-			return fmt.Errorf("failed to list partial tiles for clean up; %w", err)
-		}
-		// Clean up old partial tiles by symlinking them to the new full tile.
-		for _, p := range partials {
-			klog.V(2).Infof("relink partial %s to %s", p, tPath)
-			// We have to do a little dance here to get POSIX atomicity:
-			// 1. Create a new temporary symlink to the full tile
-			// 2. Rename the temporary symlink over the top of the old partial tile
-			tmp := fmt.Sprintf("%s.link", tPath)
-			_ = os.Remove(tmp)
-			if err := os.Symlink(tPath, tmp); err != nil {
-				return fmt.Errorf("failed to create temp link to full tile: %w", err)
-			}
-			if err := os.Rename(tmp, p); err != nil {
-				return fmt.Errorf("failed to rename temp link over partial tile: %w", err)
-			}
-		}
-	}
+
 
 	posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("writeTile")))
 	return nil
