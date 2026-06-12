@@ -28,7 +28,8 @@ require (
 	github.com/muesli/termenv v0.16.0
 	github.com/rivo/tview v0.42.0
 	github.com/transparency-dev/formats v0.1.1
-	github.com/transparency-dev/merkle v0.0.2
+	github.com/transparency-dev/merkle v0.0.3-0.20240919113952-3c979d16ee14
+	github.com/transparency-dev/witness v0.0.0-20260611105320-36c93e78a380
 	go.opentelemetry.io/contrib/detectors/aws/ec2/v2 v2.5.1
 	go.opentelemetry.io/contrib/detectors/aws/ecs v1.44.0
 	go.opentelemetry.io/contrib/detectors/gcp v1.44.0
@@ -88,6 +89,7 @@ require (
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.68.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
+	k8s.io/klog/v2 v2.140.0 // indirect
 	mvdan.cc/sh/v3 v3.7.0 // indirect
 )
 
