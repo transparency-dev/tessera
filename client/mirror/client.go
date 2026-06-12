@@ -23,6 +23,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -190,20 +191,15 @@ func parseConflict(r io.Reader) error {
 // pushEntries streams entry packages and their proofs to the mirror's /add-entries endpoint.
 // It returns the mirror's cosignatures on success.
 func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte) ([]byte, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	pr, pw := io.Pipe()
 	defer func() {
 		_ = pr.Close()
 	}()
 
-	go func() {
-		gw := gzip.NewWriter(pw)
-		defer func() {
-			_ = gw.Close()
-			_ = pw.Close()
-		}()
-
-		// TODO(roger2hk): Implement streaming entries.
-	}()
+	go c.streamEntries(ctx, uploadStart, uploadEnd, ticket, pw)
 
 	u, err := c.opts.mirrorURL.Parse("add-entries")
 	if err != nil {
@@ -242,6 +238,97 @@ func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64,
 	}
 
 	return cosigs, nil
+}
+
+// streamEntries serializes, compresses, and writes the log origin, upload range, ticket,
+// and the corresponding entry packages with their proofs to the pipe writer.
+// It closes the pipe writer with an error if any operation fails, or nil on success.
+func (c *Client) streamEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, pw *io.PipeWriter) {
+	gw := gzip.NewWriter(pw)
+	defer func() {
+		_ = gw.Close()
+		_ = pw.Close()
+	}()
+
+	// 2 bytes, encoding a big-endian uint16: log_origin_size
+	if err := binary.Write(gw, binary.BigEndian, uint16(len(c.opts.logOrigin))); err != nil {
+		_ = pw.CloseWithError(err)
+		return
+	}
+	// log_origin_size bytes, containing the log origin: log_origin
+	if _, err := gw.Write([]byte(c.opts.logOrigin)); err != nil {
+		_ = pw.CloseWithError(err)
+		return
+	}
+	// 8 bytes, encoding a big-endian uint64: upload_start
+	if err := binary.Write(gw, binary.BigEndian, uploadStart); err != nil {
+		_ = pw.CloseWithError(err)
+		return
+	}
+	// 8 bytes, encoding a big-endian uint64: upload_end
+	if err := binary.Write(gw, binary.BigEndian, uploadEnd); err != nil {
+		_ = pw.CloseWithError(err)
+		return
+	}
+	// 2 bytes, encoding a big-endian uint16: ticket_size
+	if err := binary.Write(gw, binary.BigEndian, uint16(len(ticket))); err != nil {
+		_ = pw.CloseWithError(err)
+		return
+	}
+	// ticket_size bytes, containing an opaque ticket value
+	if len(ticket) > 0 {
+		if _, err := gw.Write(ticket); err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+	}
+	// A sequence of entry packages
+	curr := uploadStart
+	for curr < uploadEnd {
+		pkgEnd := min(uploadEnd, (curr/256+1)*256)
+		numEntries := pkgEnd - curr
+
+		bundleIndex := curr / 256
+		bundle, err := client.GetEntryBundle(ctx, c.opts.bundleFetcher, bundleIndex, uploadEnd)
+		if err != nil {
+			_ = pw.CloseWithError(fmt.Errorf("failed to fetch entry bundle %d: %w", bundleIndex, err))
+			return
+		}
+
+		startIdx := curr % 256
+		endIdx := startIdx + numEntries
+
+		for i := startIdx; i < endIdx; i++ {
+			entry := bundle.Entries[i]
+			if err := binary.Write(gw, binary.BigEndian, uint16(len(entry))); err != nil {
+				_ = pw.CloseWithError(err)
+				return
+			}
+			if _, err := gw.Write(entry); err != nil {
+				_ = pw.CloseWithError(err)
+				return
+			}
+		}
+
+		proof, err := c.opts.packageProver(ctx, curr, pkgEnd)
+		if err != nil {
+			_ = pw.CloseWithError(fmt.Errorf("failed to generate proof [%d, %d): %w", curr, pkgEnd, err))
+			return
+		}
+
+		if err := binary.Write(gw, binary.BigEndian, uint8(len(proof))); err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		for _, h := range proof {
+			if _, err := gw.Write(h); err != nil {
+				_ = pw.CloseWithError(err)
+				return
+			}
+		}
+
+		curr = pkgEnd
+	}
 }
 
 // pushCheckpoint sends a new checkpoint and its consistency proof to the mirror's /add-checkpoint endpoint.
