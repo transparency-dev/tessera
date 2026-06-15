@@ -15,9 +15,6 @@
 package handler
 
 import (
-	"bufio"
-	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -27,7 +24,7 @@ import (
 	"strings"
 
 	"github.com/transparency-dev/tessera"
-	"github.com/transparency-dev/tessera/internal/witness"
+	"github.com/transparency-dev/witness/witness"
 )
 
 const (
@@ -38,125 +35,15 @@ const (
 	maxTicketSize = 1<<16 - 1
 )
 
-// Mirror is the interface that the handler uses to interact with the mirror's state.
-type Mirror interface {
-	AddCheckpoint(ctx context.Context, origin string, oldSize uint64, proof [][]byte, cp []byte) ([]byte, uint64, error)
-	AddEntries(ctx context.Context, origin string, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error)
-}
-
-// New returns a new http.Handler for the mirror service.
-func New(m Mirror) http.Handler {
+// New returns a new http.Handler for the tlog-mirror service, based on the provided mux and witness.
+func New(m *MirrorMux, w *witness.Witness) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /add-checkpoint", addCheckpoint(m))
+	mux.HandleFunc("POST /add-checkpoint", witness.NewHTTPHandler(w).AddCheckpoint)
 	mux.HandleFunc("POST /add-entries", addEntries(m))
 	return mux
 }
 
-func addCheckpoint(m Mirror) http.HandlerFunc {
-	const maxRequestBodyBytes = 64 << 10
-
-	return func(w http.ResponseWriter, r *http.Request) {
-		origin, oldSize, proof, cp, err := parseBody(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
-		if err != nil {
-			slog.InfoContext(r.Context(), "Invalid witness request", slog.Any("error", err.Error()))
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-
-		sc, body, contentType, err := handleCheckpointUpdate(r.Context(), m, origin, oldSize, cp, proof)
-		if err != nil {
-			slog.InfoContext(r.Context(), "Witness update failed", slog.Any("error", err.Error()))
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		if contentType != "" {
-			w.Header().Add("Content-Type", contentType)
-		}
-		w.WriteHeader(sc)
-		if len(body) > 0 {
-			if _, err := w.Write(body); err != nil {
-				slog.InfoContext(r.Context(), "Witness failed to write response", slog.Any("error", err.Error()))
-			}
-		}
-	}
-}
-
-// handleCheckpointUpdate submits the provided checkpoint to the witness and interprets any errors which may result.
-//
-// Returns an appropriate HTTP status code, response body, and Content Type representing the outcome.
-func handleCheckpointUpdate(ctx context.Context, m Mirror, origin string, oldSize uint64, cp []byte, proof [][]byte) (int, []byte, string, error) {
-	sigs, trustedSize, updateErr := m.AddCheckpoint(ctx, origin, oldSize, proof, cp)
-	// Finally, handle any "soft" error from the update:
-	if updateErr != nil {
-		switch {
-		case errors.Is(updateErr, witness.ErrCheckpointStale):
-			return http.StatusConflict, fmt.Appendf(nil, "%d\n", trustedSize), "text/x.tlog.size", nil
-		case errors.Is(updateErr, witness.ErrUnknownLog):
-			return http.StatusNotFound, nil, "", nil
-		case errors.Is(updateErr, witness.ErrNoValidSignature):
-			return http.StatusForbidden, nil, "", nil
-		case errors.Is(updateErr, witness.ErrOldSizeInvalid):
-			return http.StatusBadRequest, nil, "", nil
-		case errors.Is(updateErr, witness.ErrInvalidProof):
-			return http.StatusUnprocessableEntity, nil, "", nil
-		case errors.Is(updateErr, witness.ErrRootMismatch):
-			return http.StatusConflict, nil, "", nil
-		default:
-			return http.StatusInternalServerError, nil, "", updateErr
-		}
-	}
-
-	return http.StatusOK, sigs, "", nil
-}
-
-// parseBody reads the incoming request and parses into constituent parts.
-//
-// The request body MUST be a sequence of
-// - a previous size line,
-// - zero or more consistency proof lines,
-// - and an empty line,
-// - followed by a checkpoint.
-func parseBody(r io.Reader) (string, uint64, [][]byte, []byte, error) {
-	b := bufio.NewReader(r)
-	sizeLine, err := b.ReadString('\n')
-	if err != nil {
-		return "", 0, nil, nil, err
-	}
-	var size uint64
-	if n, err := fmt.Sscanf(strings.TrimSuffix(sizeLine, "\n"), "old %d", &size); err != nil || n != 1 {
-		return "", 0, nil, nil, err
-	}
-	proof := [][]byte{}
-	for {
-		l, err := b.ReadString('\n')
-		if err != nil {
-			return "", 0, nil, nil, err
-		}
-		l = strings.TrimSuffix(l, "\n")
-		if len(l) == 0 {
-			break
-		}
-		hash, err := base64.StdEncoding.DecodeString(l)
-		if err != nil {
-			return "", 0, nil, nil, err
-		}
-		proof = append(proof, hash)
-	}
-	cp, err := io.ReadAll(b)
-	if err != nil {
-		return "", 0, nil, nil, err
-	}
-	s := strings.SplitN(string(cp), "\n", 2)
-	if len(s) != 2 {
-		return "", 0, nil, nil, errors.New("invalid checkpoint")
-	}
-
-	origin := s[0]
-	return origin, size, proof, cp, nil
-}
-
-func addEntries(m Mirror) http.HandlerFunc {
+func addEntries(m *MirrorMux) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// SPEC: The request body MUST have Content-Type of application/octet-stream ...
 		if t := strings.ToLower(r.Header.Get("Content-Type")); t != "application/octet-stream" {
