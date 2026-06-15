@@ -410,15 +410,28 @@ func TestNewClientValidation(t *testing.T) {
 
 // fakeMirror is a mock implementation of a tlog-mirror compliant server.
 type fakeMirror struct {
-	t                   *testing.T
-	origin              string
-	ticket              []byte
-	targetCheckpoint    []byte
-	expectedCosigs      []byte
-	numEntries          int
-	proofHashes         [][]byte
-	addEntriesStatus    int
-	addCheckpointStatus int
+	t                      *testing.T
+	origin                 string
+	ticket                 []byte
+	targetCheckpoint       []byte
+	expectedCosigs         []byte
+	numEntries             int
+	proofHashes            [][]byte
+	addEntriesStatus       int
+	addCheckpointStatus    int
+	initialPendingSize     uint64
+	initialNextEntry       uint64
+	initialStatus          int
+	addEntriesExpectations []addEntriesExpectation
+	addEntriesCallCount    int
+}
+
+type addEntriesExpectation struct {
+	start  uint64
+	end    uint64
+	ticket []byte
+	status int
+	body   string // used if status == StatusConflict
 }
 
 // newFakeMirror returns a fakeMirror initialized with default mock options for testing.
@@ -497,20 +510,47 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if start == 0 && end == 0 {
-			w.WriteHeader(http.StatusConflict)
-			ticketB64 := base64.StdEncoding.EncodeToString(fm.ticket)
-			_, _ = fmt.Fprintf(w, "0\n0\n%s\n", ticketB64)
+			status := http.StatusConflict
+			if fm.initialStatus != 0 {
+				status = fm.initialStatus
+			}
+			if status == http.StatusConflict || status == http.StatusAccepted {
+				w.Header().Set("Content-Type", "text/x.tlog.mirror-info")
+			}
+			w.WriteHeader(status)
+			if status == http.StatusConflict {
+				ticketB64 := base64.StdEncoding.EncodeToString(fm.ticket)
+				_, _ = fmt.Fprintf(w, "%d\n%d\n%s\n", fm.initialPendingSize, fm.initialNextEntry, ticketB64)
+			}
 			return
 		}
 
-		if start != 0 || end != uint64(fm.numEntries) {
-			fm.t.Errorf("got start/end = %d/%d, want 0/%d", start, end, fm.numEntries)
-		}
-		if !bytes.Equal(gotTicket, fm.ticket) {
-			fm.t.Errorf("got ticket = %q, want %q", string(gotTicket), string(fm.ticket))
+		var exp addEntriesExpectation
+		if len(fm.addEntriesExpectations) > 0 {
+			idx := fm.addEntriesCallCount
+			if idx >= len(fm.addEntriesExpectations) {
+				idx = len(fm.addEntriesExpectations) - 1
+			}
+			exp = fm.addEntriesExpectations[idx]
+			fm.addEntriesCallCount++
+		} else {
+			exp = addEntriesExpectation{
+				start:  0,
+				end:    uint64(fm.numEntries),
+				ticket: fm.ticket,
+				status: fm.addEntriesStatus,
+			}
 		}
 
-		for i := range fm.numEntries {
+		if start != exp.start || end != exp.end {
+			fm.t.Errorf("got start/end = %d/%d, want %d/%d", start, end, exp.start, exp.end)
+		}
+		if !bytes.Equal(gotTicket, exp.ticket) {
+			fm.t.Errorf("got ticket = %q, want %q", string(gotTicket), string(exp.ticket))
+		}
+
+		numExpectedEntries := int(end - start)
+		for i := range numExpectedEntries {
 			var entryLen uint16
 			if err := binary.Read(gr, binary.BigEndian, &entryLen); err != nil {
 				fm.t.Errorf("failed to read entry %d length: %v", i, err)
@@ -523,7 +563,7 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			expectedEntry := []byte(fmt.Sprintf("entry-%d", i))
+			expectedEntry := fmt.Appendf(nil, "entry-%d", i+int(start))
 			if !bytes.Equal(entry, expectedEntry) {
 				fm.t.Errorf("entry %d = %q, want %q", i, string(entry), string(expectedEntry))
 			}
@@ -550,8 +590,14 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		if fm.addEntriesStatus != http.StatusOK {
-			w.WriteHeader(fm.addEntriesStatus)
+		if exp.status != http.StatusOK {
+			if exp.status == http.StatusConflict || exp.status == http.StatusAccepted {
+				w.Header().Set("Content-Type", "text/x.tlog.mirror-info")
+			}
+			w.WriteHeader(exp.status)
+			if exp.status == http.StatusConflict || exp.status == http.StatusAccepted {
+				_, _ = w.Write([]byte(exp.body))
+			}
 			return
 		}
 
@@ -570,9 +616,34 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		expectedBody := fmt.Sprintf("old 0\n\n%s", string(fm.targetCheckpoint))
-		if string(bodyBytes) != expectedBody {
-			fm.t.Errorf("body = %q, want %q", string(bodyBytes), expectedBody)
+		lines := bytes.SplitN(bodyBytes, []byte("\n\n"), 2)
+		if len(lines) != 2 {
+			fm.t.Errorf("invalid checkpoint request body format")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		header := lines[0]
+		bodyCheckpoint := lines[1]
+
+		headerLines := bytes.Split(header, []byte("\n"))
+		if len(headerLines) < 1 {
+			fm.t.Errorf("empty header in checkpoint request")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var oldSize uint64
+		if _, err := fmt.Sscanf(string(headerLines[0]), "old %d", &oldSize); err != nil {
+			fm.t.Errorf("invalid old size header: %q", string(headerLines[0]))
+		}
+		if oldSize != fm.initialPendingSize {
+			fm.t.Errorf("oldSize = %d, want %d", oldSize, fm.initialPendingSize)
+		}
+		if oldSize > 0 && len(headerLines) <= 1 {
+			fm.t.Errorf("expected consistency proof lines in header")
+		}
+
+		if !bytes.Equal(bodyCheckpoint, fm.targetCheckpoint) {
+			fm.t.Errorf("body checkpoint = %q, want %q", string(bodyCheckpoint), string(fm.targetCheckpoint))
 		}
 		if fm.addCheckpointStatus != http.StatusOK {
 			w.WriteHeader(fm.addCheckpointStatus)
@@ -631,15 +702,196 @@ func TestSync(t *testing.T) {
 
 	c, err := NewClient(context.Background(), opts)
 	if err != nil {
-		t.Fatalf("NewClient() failed: %v", err)
+		t.Fatalf("NewClient() = _, %v, want _, nil", err)
 	}
 
 	cosigs, err := c.Sync(context.Background(), fm.targetCheckpoint, uint64(fm.numEntries))
 	if err != nil {
-		t.Fatalf("Sync() failed: %v", err)
+		t.Fatalf("Sync() = _, %v, want _, nil", err)
 	}
 
 	if !bytes.Equal(cosigs, fm.expectedCosigs) {
-		t.Errorf("Sync() returned cosigs = %q, want %q", string(cosigs), string(fm.expectedCosigs))
+		t.Errorf("Sync() = %q, want %q", string(cosigs), string(fm.expectedCosigs))
+	}
+}
+
+func TestSync_ErrorsAndEdgeCases(t *testing.T) {
+	origin := "test-origin"
+
+	tests := []struct {
+		desc                   string
+		initialPendingSize     uint64
+		initialNextEntry       uint64
+		initialStatus          int
+		addEntriesExpectations []addEntriesExpectation
+		addCheckpointStatus    int
+		tileFetcher            client.TileFetcherFunc
+		wantErr                string
+	}{
+		{
+			desc:               "initial status query returns unexpected success",
+			initialPendingSize: 0,
+			initialNextEntry:   0,
+			initialStatus:      http.StatusOK,
+			wantErr:            "unexpected success when querying mirror status with size 0",
+		},
+		{
+			desc:               "initial status query returns generic error",
+			initialPendingSize: 0,
+			initialNextEntry:   0,
+			initialStatus:      http.StatusInternalServerError,
+			wantErr:            "failed to retrieve mirror status",
+		},
+		{
+			desc:               "consistency proof fails",
+			initialPendingSize: 1,
+			initialNextEntry:   1,
+			tileFetcher: func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
+				return nil, errors.New("tile fetcher error")
+			},
+			wantErr: "failed to generate consistency proof",
+		},
+		{
+			desc:               "consistency proof succeeds and checkpoint push succeeds",
+			initialPendingSize: 1,
+			initialNextEntry:   1,
+			tileFetcher: func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
+				if p == 5 {
+					return make([]byte, 5*32), nil
+				}
+				return nil, fmt.Errorf("unexpected tile request: level=%d, index=%d, p=%d", level, index, p)
+			},
+			addEntriesExpectations: []addEntriesExpectation{
+				{
+					start:  1,
+					end:    5,
+					ticket: []byte("ticket-value"),
+					status: http.StatusOK,
+				},
+			},
+		},
+		{
+			desc:                "pushing new checkpoint fails",
+			initialPendingSize:  1,
+			initialNextEntry:    1,
+			addCheckpointStatus: http.StatusInternalServerError,
+			tileFetcher: func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
+				if p == 5 {
+					return make([]byte, 5*32), nil
+				}
+				return nil, fmt.Errorf("unexpected tile request: level=%d, index=%d, p=%d", level, index, p)
+			},
+			wantErr: "failed to push new checkpoint",
+		},
+		{
+			desc: "entry upload fails with generic error",
+			addEntriesExpectations: []addEntriesExpectation{
+				{
+					start:  0,
+					end:    5,
+					ticket: []byte("ticket-value"),
+					status: http.StatusInternalServerError,
+				},
+			},
+			wantErr: "sync failed during entry upload",
+		},
+		{
+			desc:               "entry upload encounters conflict and retries successfully",
+			initialPendingSize: 0,
+			initialNextEntry:   0,
+			addEntriesExpectations: []addEntriesExpectation{
+				{
+					start:  0,
+					end:    5,
+					ticket: []byte("ticket-value"),
+					status: http.StatusConflict,
+					body:   "5\n2\ndGlja2V0LW5ldw==\n", // pending size = 5, next entry = 2, ticket = "ticket-new"
+				},
+				{
+					start:  2,
+					end:    5,
+					ticket: []byte("ticket-new"),
+					status: http.StatusOK,
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.desc, func(t *testing.T) {
+			fm := newFakeMirror(t, origin)
+			fm.initialPendingSize = tc.initialPendingSize
+			fm.initialNextEntry = tc.initialNextEntry
+			fm.initialStatus = tc.initialStatus
+			fm.addEntriesExpectations = tc.addEntriesExpectations
+			if tc.addCheckpointStatus != 0 {
+				fm.addCheckpointStatus = tc.addCheckpointStatus
+			}
+
+			server := httptest.NewServer(fm)
+			defer server.Close()
+
+			u, err := url.Parse(server.URL + "/")
+			if err != nil {
+				t.Fatalf("failed to parse server URL: %v", err)
+			}
+
+			tf := tc.tileFetcher
+			if tf == nil {
+				tf = func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
+					return nil, errors.New("tile fetcher should not be called")
+				}
+			}
+
+			bundleFetcher := func(ctx context.Context, bundleIndex uint64, p uint8) ([]byte, error) {
+				var buf bytes.Buffer
+				for i := range fm.numEntries {
+					entry := fmt.Appendf(nil, "entry-%d", i)
+					_ = binary.Write(&buf, binary.BigEndian, uint16(len(entry)))
+					buf.Write(entry)
+				}
+				return buf.Bytes(), nil
+			}
+
+			mirrorCheckpointFetcher := func(ctx context.Context) ([]byte, error) {
+				return nil, errors.New("mirror checkpoint fetcher should not be called")
+			}
+
+			packageProver := func(ctx context.Context, start, end uint64) ([][]byte, error) {
+				return fm.proofHashes, nil
+			}
+
+			opts := NewOptions().
+				WithMirrorURL(u).
+				WithLogOrigin(origin).
+				WithTileFetcher(tf).
+				WithBundleFetcher(bundleFetcher).
+				WithMirrorCheckpointFetcher(mirrorCheckpointFetcher).
+				WithPackageProver(packageProver)
+
+			c, err := NewClient(context.Background(), opts)
+			if err != nil {
+				t.Fatalf("NewClient() = _, %v, want _, nil", err)
+			}
+
+			cosigs, err := c.Sync(context.Background(), fm.targetCheckpoint, uint64(fm.numEntries))
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("Sync() = _, nil, want error containing %q", tc.wantErr)
+				}
+				if !bytes.Contains([]byte(err.Error()), []byte(tc.wantErr)) {
+					t.Errorf("Sync() = _, %v, want error containing %q", err, tc.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Sync() = _, %v, want _, nil", err)
+			}
+
+			if !bytes.Equal(cosigs, fm.expectedCosigs) {
+				t.Errorf("Sync() = %q, want %q", string(cosigs), string(fm.expectedCosigs))
+			}
+		})
 	}
 }
