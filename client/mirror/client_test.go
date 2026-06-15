@@ -544,9 +544,13 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if start != exp.start || end != exp.end {
 			fm.t.Errorf("got start/end = %d/%d, want %d/%d", start, end, exp.start, exp.end)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		if !bytes.Equal(gotTicket, exp.ticket) {
 			fm.t.Errorf("got ticket = %q, want %q", string(gotTicket), string(exp.ticket))
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 
 		numExpectedEntries := int(end - start)
@@ -566,6 +570,8 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			expectedEntry := fmt.Appendf(nil, "entry-%d", i+int(start))
 			if !bytes.Equal(entry, expectedEntry) {
 				fm.t.Errorf("entry %d = %q, want %q", i, string(entry), string(expectedEntry))
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 		}
 
@@ -577,6 +583,8 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if int(numHashes) != len(fm.proofHashes) {
 			fm.t.Errorf("numHashes = %d, want %d", numHashes, len(fm.proofHashes))
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		for i, expectedHash := range fm.proofHashes {
 			gotHash := make([]byte, 32)
@@ -587,6 +595,8 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if !bytes.Equal(gotHash, expectedHash) {
 				fm.t.Errorf("hash %d = %x, want %x", i, gotHash, expectedHash)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 		}
 
@@ -626,7 +636,7 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		bodyCheckpoint := lines[1]
 
 		headerLines := bytes.Split(header, []byte("\n"))
-		if len(headerLines) < 1 {
+		if len(headerLines) == 0 {
 			fm.t.Errorf("empty header in checkpoint request")
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -634,16 +644,24 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var oldSize uint64
 		if _, err := fmt.Sscanf(string(headerLines[0]), "old %d", &oldSize); err != nil {
 			fm.t.Errorf("invalid old size header: %q", string(headerLines[0]))
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		if oldSize != fm.initialPendingSize {
 			fm.t.Errorf("oldSize = %d, want %d", oldSize, fm.initialPendingSize)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		if oldSize > 0 && len(headerLines) <= 1 {
 			fm.t.Errorf("expected consistency proof lines in header")
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 
 		if !bytes.Equal(bodyCheckpoint, fm.targetCheckpoint) {
 			fm.t.Errorf("body checkpoint = %q, want %q", string(bodyCheckpoint), string(fm.targetCheckpoint))
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		if fm.addCheckpointStatus != http.StatusOK {
 			w.WriteHeader(fm.addCheckpointStatus)
