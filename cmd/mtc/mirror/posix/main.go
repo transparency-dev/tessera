@@ -20,17 +20,25 @@ import (
 	"flag"
 	"net/http"
 	"os"
-
+	"path/filepath"
 	"log/slog"
 
+	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/mirror/internal/handler"
 	"github.com/transparency-dev/witness/witness"
+	"github.com/transparency-dev/witness/persistence/sqlite"
 	"golang.org/x/mod/sumdb/note"
 )
 
+const (
+	witnessDir = "witness"
+)
+
 var (
-	listenAddr = flag.String("listen_addr", ":8080", "The address to listen on for HTTP requests.")
+	listenAddr      = flag.String("listen_addr", ":8080", "The address to listen on for HTTP requests.")
+	storageDir      = flag.String("storage_dir", "", "Directory to store mirror data.")
+	witnessSignerPath = flag.String("witness_signer_path", "", "The path to the note-formatted witness signer secret key.")
 )
 
 func main() {
@@ -58,11 +66,33 @@ func main() {
 // witnessFromFlags returns a witness instance configured from the provided flags.
 // Exits if the witness could not be created.
 func witnessFromFlags(ctx context.Context) *witness.Witness {
-	 w, err := witness.New(ctx, witness.Opts{
-		Persistence: &fakePersistence{},
-		Signers:     []note.Signer{},
+	if *storageDir == "" {
+		slog.ErrorContext(ctx, "Storage directory not specified")
+		os.Exit(1)
+	}
+
+	wPath := filepath.Join(*storageDir, witnessDir)
+	if err := os.MkdirAll(wPath, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		slog.ErrorContext(ctx, "Failed to create witness directory", slog.String("path", wPath))
+		os.Exit(1)
+	}
+
+
+	// TODO(al): config.
+	v, err := fnote.NewVerifier("example.com/inmemorylog/0+7fd3f320+AXX8yEKexoMqBPPwG4pGAhhjo5CyiHLiJZ7p3jg0aJZM")
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to create note verifier", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	p := sqlite.New(sqlite.Opts{
+		Path: filepath.Join(wPath, "witness.db"),
+	})
+	w, err := witness.New(ctx, witness.Opts{
+		Persistence: p,
+		Signers:     witnessSignerFromFlags(ctx),
 		VerifierForLog: func(ctx context.Context, origin string) (note.Verifier, bool, error) {
-			return nil, false, errors.New("unimplemented")
+			return v, true, nil
 		},
 	})
 	if err != nil {
@@ -72,35 +102,6 @@ func witnessFromFlags(ctx context.Context) *witness.Witness {
 	return w	
 }
 
-// fakePersistence is a temporary witness persistence impl, and will be removed in due course.
-type fakePersistence struct {}
-
-// Init sets up the persistence layer. This should be idempotent,
-// and will be called once per process startup.
-func (f *fakePersistence) Init(ctx context.Context) error {
-	slog.InfoContext(ctx, "fake persistence: Init")
-	return nil
-}
-
-// Latest returns the latest checkpoint.
-// If no checkpoint exists, it must return nil.
-func (f *fakePersistence) Latest(ctx context.Context, origin string) ([]byte, error) {
-	slog.InfoContext(ctx, "fake persistence: Latest", slog.String("origin", origin))
-	return nil, nil
-}
-
-// Update allows for atomically updating the currently stored (if any)
-// checkpoint for the given origin.
-//
-// The provided function will be passed the currently stored checkpoint
-// for the provided log origin (or nil if no such checkpoint exists), and
-// should return the serialised form of the updated checkpoint, or an
-// error.
-func (f *fakePersistence) Update(ctx context.Context, origin string, update func([]byte) ([]byte, error)) error {
-	slog.InfoContext(ctx, "fake persistence: Update", slog.String("origin", origin))
-	return nil
-}
-
 // fakeTarget is a temporary mirror target impl, and will be removed in due course.
 type fakeTarget struct {}
 
@@ -108,4 +109,23 @@ func (f fakeTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint6
 	slog.InfoContext(ctx, "fake target: AddEntries", slog.Uint64("uploadStart", uploadStart), slog.Uint64("uploadEnd", uploadEnd))
 	return nil, nil
 }
+
+func witnessSignerFromFlags(ctx context.Context) []note.Signer {
+	if *witnessSignerPath == "" {
+		slog.WarnContext(ctx, "Witness cosigner not configured, add-checkpoint will not return cosigs")
+		return []note.Signer{}
+	}
+	r, err := os.ReadFile(*witnessSignerPath)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to read witness cosigner file", slog.String("path", *witnessSignerPath), slog.Any("error", err))
+		os.Exit(1)
+	}
+	s, err := fnote.NewSignerForCosignatureV1(string(r))
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to create cosigner", slog.String("path", *witnessSignerPath), slog.Any("error", err))
+		os.Exit(1)
+	}
+	return []note.Signer{s}
+}
+
 
