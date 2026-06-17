@@ -16,16 +16,19 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
-	"log/slog"
 
 	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
+	"github.com/transparency-dev/tessera/cmd/mtc/mirror/internal/config"
 	"github.com/transparency-dev/tessera/cmd/mtc/mirror/internal/handler"
+	"github.com/transparency-dev/witness/omniwitness"
 	"github.com/transparency-dev/witness/witness"
 	"github.com/transparency-dev/witness/persistence/sqlite"
 	"golang.org/x/mod/sumdb/note"
@@ -36,9 +39,10 @@ const (
 )
 
 var (
-	listenAddr      = flag.String("listen_addr", ":8080", "The address to listen on for HTTP requests.")
-	storageDir      = flag.String("storage_dir", "", "Directory to store mirror data.")
+	listenAddr        = flag.String("listen_addr", ":8080", "The address to listen on for HTTP requests.")
+	storageDir        = flag.String("storage_dir", "", "Directory to store mirror data.")
 	witnessSignerPath = flag.String("witness_signer_path", "", "The path to the note-formatted witness signer secret key.")
+	mirrorConfigPath  = flag.String("config_path", "", "The path to the mirror configuration file.")
 )
 
 func main() {
@@ -46,7 +50,7 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	ctx := context.Background()
 	
-	w, shutdown := witnessFromFlags(ctx)
+	w, wp, shutdown := witnessFromFlags(ctx)
 	defer func() {
 		if err := shutdown(); err != nil {
 			slog.ErrorContext(ctx, "Failed to shut down Witness", slog.Any("error", err))
@@ -54,9 +58,24 @@ func main() {
 	}()
 
 	mux := handler.NewMirrorMux()
-	if err := mux.AddTarget("example.com/log", &fakeTarget{}); err != nil {
-		slog.ErrorContext(ctx, "Failed to add target", slog.Any("error", err))
-		os.Exit(1)
+	cfg := mirrorConfigFromFlags(ctx)
+	for _, l := range cfg.Logs {
+		v, err := fnote.NewVerifier(l.VKey)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to create verifier", slog.String("vkey", l.VKey), slog.Any("error", err))
+			os.Exit(1)
+		}
+		origin := v.Name()
+		if err := mux.AddTarget(origin, &fakeTarget{}); err != nil {
+			slog.ErrorContext(ctx, "Failed to add target", slog.String("origin", origin), slog.Any("error", err))
+			os.Exit(1)
+		}
+		if err := wp.AddLogs(ctx, []omniwitness.Log{
+			{Origin: origin, VKey: l.VKey},
+		}); err != nil {
+			slog.ErrorContext(ctx, "Failed to add target log to witness", slog.String("origin", origin), slog.Any("error", err))
+			os.Exit(1)
+		}
 	}
 
 	h := handler.New(mux, w)
@@ -68,49 +87,64 @@ func main() {
 	}
 }
 
+func mirrorConfigFromFlags(ctx context.Context) config.Config {
+	if *mirrorConfigPath == "" {
+		slog.ErrorContext(ctx, "Mirror config path not specified")
+		os.Exit(1)
+	}
+	data, err := os.ReadFile(*mirrorConfigPath)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to read mirror config file", slog.String("path", *mirrorConfigPath), slog.Any("error", err))
+		os.Exit(1)
+	}
+	var cfg config.Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		slog.ErrorContext(ctx, "Failed to unmarshal mirror config", slog.Any("error", err))
+		os.Exit(1)
+	}
+	return cfg
+}
+
 // witnessFromFlags returns a witness instance configured from the provided flags.
 // Exits if the witness could not be created.
 //
 // The returned shutdown func should be called once the witness is no longer in use.
-func witnessFromFlags(ctx context.Context) (*witness.Witness, func() error) {
-	if *storageDir == "" {
-		slog.ErrorContext(ctx, "Storage directory not specified")
-		os.Exit(1)
-	}
-
-	wPath := filepath.Join(*storageDir, witnessDir)
-	if err := os.MkdirAll(wPath, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-		slog.ErrorContext(ctx, "Failed to create witness directory", slog.String("path", wPath))
-		os.Exit(1)
-	}
-
-	// TODO(al): config.
-	v, err := fnote.NewVerifier("example.com/inmemorylog/0+7fd3f320+AXX8yEKexoMqBPPwG4pGAhhjo5CyiHLiJZ7p3jg0aJZM")
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to create note verifier", slog.Any("error", err))
-		os.Exit(1)
-	}
-
+func witnessFromFlags(ctx context.Context) (*witness.Witness, *sqlite.Persistence, func() error) {
+ 	if *storageDir == "" {
+ 		slog.ErrorContext(ctx, "Storage directory not specified")
+ 		os.Exit(1)
+ 	}
+ 
+ 	wPath := filepath.Join(*storageDir, witnessDir)
+ 	if err := os.MkdirAll(wPath, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+ 		slog.ErrorContext(ctx, "Failed to create witness directory", slog.String("path", wPath))
+ 		os.Exit(1)
+ 	}
+ 
 	p, shutdown, err := sqlite.New(ctx, sqlite.Opts{
-		Path: filepath.Join(wPath, "witness.db"),
-	})
+ 		Path: filepath.Join(wPath, "witness.db"),
+ 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create witness persistence", slog.String("path", wPath), slog.Any("error", err))
 		os.Exit(1)
 	}
 
-	w, err := witness.New(ctx, witness.Opts{
-		Persistence: p,
-		Signers:     witnessSignerFromFlags(ctx),
+ 	w, err := witness.New(ctx, witness.Opts{
+ 		Persistence: p,
+ 		Signers:     witnessSignerFromFlags(ctx),
 		VerifierForLog: func(ctx context.Context, origin string) (note.Verifier, bool, error) {
-			return v, true, nil
+			log, ok, err := p.Log(ctx, origin)
+			if err != nil || !ok {
+				return nil, false, err
+			}
+			return log.Verifier, true, nil
 		},
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create witness", slog.Any("error", err))
 		os.Exit(1)
 	}
-	return w, shutdown
+	return w, p, shutdown
 }
 
 // fakeTarget is a temporary mirror target impl, and will be removed in due course.
