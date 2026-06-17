@@ -46,7 +46,12 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	ctx := context.Background()
 	
-	w := witnessFromFlags(ctx)
+	w, shutdown := witnessFromFlags(ctx)
+	defer func() {
+		if err := shutdown(); err != nil {
+			slog.ErrorContext(ctx, "Failed to shut down Witness", slog.Any("error", err))
+		}
+	}()
 
 	mux := handler.NewMirrorMux()
 	if err := mux.AddTarget("example.com/log", &fakeTarget{}); err != nil {
@@ -65,7 +70,9 @@ func main() {
 
 // witnessFromFlags returns a witness instance configured from the provided flags.
 // Exits if the witness could not be created.
-func witnessFromFlags(ctx context.Context) *witness.Witness {
+//
+// The returned shutdown func should be called once the witness is no longer in use.
+func witnessFromFlags(ctx context.Context) (*witness.Witness, func() error) {
 	if *storageDir == "" {
 		slog.ErrorContext(ctx, "Storage directory not specified")
 		os.Exit(1)
@@ -77,7 +84,6 @@ func witnessFromFlags(ctx context.Context) *witness.Witness {
 		os.Exit(1)
 	}
 
-
 	// TODO(al): config.
 	v, err := fnote.NewVerifier("example.com/inmemorylog/0+7fd3f320+AXX8yEKexoMqBPPwG4pGAhhjo5CyiHLiJZ7p3jg0aJZM")
 	if err != nil {
@@ -85,9 +91,14 @@ func witnessFromFlags(ctx context.Context) *witness.Witness {
 		os.Exit(1)
 	}
 
-	p := sqlite.New(sqlite.Opts{
+	p, shutdown, err := sqlite.New(ctx, sqlite.Opts{
 		Path: filepath.Join(wPath, "witness.db"),
 	})
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to create witness persistence", slog.String("path", wPath), slog.Any("error", err))
+		os.Exit(1)
+	}
+
 	w, err := witness.New(ctx, witness.Opts{
 		Persistence: p,
 		Signers:     witnessSignerFromFlags(ctx),
@@ -99,7 +110,7 @@ func witnessFromFlags(ctx context.Context) *witness.Witness {
 		slog.ErrorContext(ctx, "Failed to create witness", slog.Any("error", err))
 		os.Exit(1)
 	}
-	return w	
+	return w, shutdown
 }
 
 // fakeTarget is a temporary mirror target impl, and will be removed in due course.
