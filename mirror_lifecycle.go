@@ -15,13 +15,19 @@
 package tessera
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
+	"log/slog"
 
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
+	"github.com/transparency-dev/tessera/internal/parse"
 	"golang.org/x/mod/sumdb/note"
 )
 
@@ -133,12 +139,144 @@ type MirrorPackage struct {
 // AddEntries processes a stream of entry packages, verifies subtree consistency proofs,
 // and durably commits entries to the log.
 //
-// Returns the next required entry index, a recent pending checkpoint size, an opaque ticket for future invocations, and, optionally, a cosignature over a pending checkpoint whose size matches uploadEnd if one exists.
-func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*MirrorPackage, error)) (uint64, uint64, []byte, []byte, error) {
-	return 0, 0, nil, nil, errors.New("unimplemented")
+// Returns the next required entry index, a recent pending checkpoint size, an opaque
+// ticket for future invocations, and, optionally, a cosignature over a pending checkpoint
+// whose size matches uploadEnd if one exists.
+func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticketBytes []byte, next func() (*MirrorPackage, error)) (nextEntry uint64, pendingSize uint64, newTicket []byte, cosigs []byte, err error) {
+	curIntegratedSize, err := mt.reader.IntegratedSize(ctx)
+	if err != nil {
+		return 0, 0, nil, nil, fmt.Errorf("failed to read integrated size: %w", err)
+	}
+	var t *ticket
+	if t, err = mt.openTicket(ctx, ticketBytes); err != nil {
+		// Invalid or empty ticket, return a new one.
+		pendingCP, err := mt.cpSource(ctx)
+		if err != nil {
+			return 0, 0, nil, nil, fmt.Errorf("failed to get pending checkpoint: %v", err)
+		}
+		if len(pendingCP) == 0 {
+			return 0, 0, nil, nil, ErrNoPendingCheckpoint
+		}
+		t = &ticket{
+			PendingCP: pendingCP,
+		}
+		ticketBytes, err = mt.sealTicket(ctx, t)
+		if err != nil {
+			return 0, 0, nil, nil, fmt.Errorf("failed to create ticket: %v", err)
+		}
+
+		// If the client didn't provide a [valid] ticket, then we don't have a pending
+		// checkpoint to validate against, so we return a new ticket with the
+		// current checkpoint.
+		_, pendingSize, _, err := parse.CheckpointUnsafe(t.PendingCP)
+		if err != nil {
+			slog.ErrorContext(ctx, "Invalid pending checkpoint from source", slog.String("pending_checkpoint", string(t.PendingCP)), slog.String("error", err.Error()))
+			return 0, 0, nil, nil, fmt.Errorf("failed to parse pending checkpoint while creating ticket: %v", err)
+		}
+		return curIntegratedSize, pendingSize, ticketBytes, nil, ErrConflict
+	}
+
+	var pendingRoot []byte
+	_, pendingSize, pendingRoot, err = parse.CheckpointUnsafe(t.PendingCP)
+	if err != nil {
+		slog.ErrorContext(ctx, "Invalid pending checkpoint in ticket", slog.String("pending_checkpoint", string(t.PendingCP)), slog.String("error", err.Error()))
+		return 0, 0, nil, nil, fmt.Errorf("failed to parse pending checkpoint from ticket: %v", err)
+	}
+
+	// Handle 409 Conflicts:
+	//    - Zero-request check: If upload_start == 0 and upload_end == 0, the client is
+	//      requesting initial mirror information.
+	//    - upload_end:
+	//      * MUST be equal to the tree size of a known pending checkpoint value.
+	//      * MUST NOT be less than the mirror checkpoint's tree size.
+	//    - upload_start:
+	//      * MUST NOT be greater than the mirror's next expected entry index.
+	//      * MUST NOT be too far below the mirror's next entry index.
+	if (uploadStart == 0 && uploadEnd == 0) ||
+		(uploadEnd != pendingSize || uploadEnd < curIntegratedSize) ||
+		(uploadStart > curIntegratedSize) {
+		// TODO(al): add flexibility about re-writing some entries
+		return curIntegratedSize, pendingSize, ticketBytes, nil, ErrConflict
+	}
+
+
+	bi := func(yield func(api.EntryBundle) bool) {
+		for {
+			pkg, err := next()
+			if err != nil {
+				if err == io.EOF {
+					return
+				}
+				// TODO(al): handle this
+				slog.WarnContext(ctx, "NextPackage returned an error", slog.String("error", err.Error()))
+				return
+			}
+
+			// TODO(al): verify entries+proof under checkpoint (Failure -> 422 Unprocessable Entity).
+
+			if !yield(api.EntryBundle{Entries: pkg.Entries}) {
+				return
+			}
+		}
+	}
+
+	// TODO(al): Check uploadStart is aligned to EntryBundleWidth.
+	bundleIdx := uploadStart/layout.EntryBundleWidth
+
+	nextEntry, newRoot, err := mt.writer.IntegrateBundles(ctx, bundleIdx, bi)
+	switch {
+	case err != nil:
+		return 0, 0, nil, nil, err
+	case nextEntry == pendingSize:
+		if !bytes.Equal(pendingRoot, newRoot) {
+			slog.ErrorContext(ctx, "CORRUPTION DETECTED - pending root != calculated root", slog.String("calculated_root", hex.EncodeToString(newRoot)), slog.String("pending_checkpoint", string(t.PendingCP)))
+			return 0, 0, nil, nil, errors.New("internal error")
+		}
+		// This is a complete upload.
+		// TODO(al): 
+		// 		- cosign the pending checkpoint,
+		// 		- publish it IFF we not overwriting a larger checkpoint
+		// 		- If published, then return the cosig(s) to the caller.
+		return nextEntry, pendingSize, nil, []byte("— test cosig\n"), nil
+	case nextEntry > pendingSize:
+		// TODO(al): ticket is stale, probably need to update the ticket?
+		slog.WarnContext(ctx, "nextEntry > pendingSize", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingSize))
+		return nextEntry, pendingSize, ticketBytes, nil, nil
+	default:
+		// Incomplete upload, return an updated ticket with the current checkpoint.
+		return nextEntry, pendingSize, ticketBytes, nil, nil
+	}
 }
 
 // IntegratedSize returns the size of the current integrated log.
 func (mt *MirrorTarget) IntegratedSize(ctx context.Context) (uint64, error) {
 	return mt.reader.IntegratedSize(ctx)
 }
+
+// ticket is the underlying structure of an add-entries ticket.
+type ticket struct {
+	// PendingCP holds the raw pending checkpoint bytes.
+	PendingCP []byte
+}
+
+func (mt *MirrorTarget) sealTicket(ctx context.Context, t *ticket) ([]byte, error) {
+	out := bytes.Buffer{}
+	if err := gob.NewEncoder(&out).Encode(t); err != nil {
+		return nil, fmt.Errorf("ticket encoding failed: %v", err)
+	}
+	// TODO(al): harden ticket & bind to this particular log mirror.
+	return out.Bytes(), nil
+}
+
+func (mt *MirrorTarget) openTicket(ctx context.Context, ticketBytes []byte) (*ticket, error) {
+	if len(ticketBytes) == 0 {
+		return nil, errors.New("empty ticket")
+	}
+	// TODO(al): harden ticket & verify it's for this particular log mirror.
+	var t ticket
+	if err := gob.NewDecoder(bytes.NewReader(ticketBytes)).Decode(&t); err != nil {
+		return nil, fmt.Errorf("ticket decoding failed: %v", err)
+	}
+	return &t, nil
+}
+	
