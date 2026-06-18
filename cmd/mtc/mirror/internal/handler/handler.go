@@ -76,20 +76,23 @@ func addEntries(m *MirrorMux) http.HandlerFunc {
 		default:
 			// Log unknown encodings and treat as malformed request
 			slog.WarnContext(r.Context(), "Unknown Content-Encoding", slog.String("encoding", ce))
-			http.Error(w, fmt.Sprintf("unsupported content encoding %q", ce), http.StatusBadRequest)
+			http.Error(w, "Unsupported content encoding", http.StatusBadRequest)
 			return
 		}
 		req, err := parseAddEntriesPreamble(reader)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to parse header: %v", err), http.StatusBadRequest)
+			http.Error(w, "Failed to parse request preamble", http.StatusBadRequest)
 			return
 		}
 
-		cosigs, err := m.AddEntries(r.Context(), req.logOrigin, req.uploadStart, req.uploadEnd, req.ticket, req.NextPackage)
-		if err != nil {
-			// TODO(al): Handle various errors and respond accordingly.
-			slog.ErrorContext(r.Context(), "AddEntries failed", slog.Any("error", err))
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		_, _, _, cosigs, err := m.AddEntries(r.Context(), req.logOrigin, req.uploadStart, req.uploadEnd, req.ticket, req.NextPackage)
+		switch {
+		case errors.Is(err, ErrUnknownLog):
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		case err != nil:
+			slog.ErrorContext(r.Context(), "Failed to add entries", slog.String("origin", req.logOrigin), slog.Any("err", err))
+			http.Error(w, "Failed to add entries", http.StatusInternalServerError)
 			return
 		}
 
