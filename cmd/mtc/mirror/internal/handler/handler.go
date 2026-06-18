@@ -15,6 +15,7 @@
 package handler
 
 import (
+	"compress/gzip"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -45,12 +46,40 @@ func New(m *MirrorMux, w *witness.Witness) http.Handler {
 
 func addEntries(m *MirrorMux) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// SPEC: When sending responses, mirrors SHOULD send an Accept-Encoding header that includes gzip
+		w.Header().Add("Accept-Encoding", "gzip")
+
 		// SPEC: The request body MUST have Content-Type of application/octet-stream ...
 		if t := strings.ToLower(r.Header.Get("Content-Type")); t != "application/octet-stream" {
 			http.Error(w, fmt.Sprintf("invalid Content-Type %q", t), http.StatusBadRequest)
 			return
 		}
-		req, err := parseAddEntriesPreamble(r.Body)
+		defer func() {
+			_ = r.Body.Close()
+		}()
+		// SPEC: Mirrors MUST support receiving Content-Encoding: gzip in add-entries requests
+		reader := r.Body
+		switch ce := strings.ToLower(r.Header.Get("Content-Encoding")); ce {
+		case "":
+			// No Content-Encoding header, nothing to do.
+			break
+		case "gzip":
+			var err error
+			reader, err = gzip.NewReader(reader)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("invalid gzip request body: %v", err), http.StatusBadRequest)
+				return
+			}
+			defer func() {
+				_ = reader.Close()
+			}()
+		default:
+			// Log unknown encodings and treat as malformed request
+			slog.WarnContext(r.Context(), "Unknown Content-Encoding", slog.String("encoding", ce))
+			http.Error(w, fmt.Sprintf("unsupported content encoding %q", ce), http.StatusBadRequest)
+			return
+		}
+		req, err := parseAddEntriesPreamble(reader)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("failed to parse header: %v", err), http.StatusBadRequest)
 			return

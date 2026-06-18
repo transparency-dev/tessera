@@ -16,11 +16,14 @@ package handler
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/transparency-dev/tessera"
@@ -64,35 +67,95 @@ func TestAddEntries(t *testing.T) {
 	}
 	h := New(mux, nil)
 
-	var body bytes.Buffer
+	var rawBody bytes.Buffer
 
 	// Write preamble
-	_ = binary.Write(&body, binary.BigEndian, uint16(len(testOrigin)))
-	_, _ = body.WriteString(testOrigin)
-	_ = binary.Write(&body, binary.BigEndian, uint64(testUploadStart))
-	_ = binary.Write(&body, binary.BigEndian, uint64(testUploadEnd))
-	_ = binary.Write(&body, binary.BigEndian, uint16(len(testTicket)))
-	_, _ = body.WriteString(testTicket)
+	_ = binary.Write(&rawBody, binary.BigEndian, uint16(len(testOrigin)))
+	_, _ = rawBody.WriteString(testOrigin)
+	_ = binary.Write(&rawBody, binary.BigEndian, uint64(testUploadStart))
+	_ = binary.Write(&rawBody, binary.BigEndian, uint64(testUploadEnd))
+	_ = binary.Write(&rawBody, binary.BigEndian, uint16(len(testTicket)))
+	_, _ = rawBody.WriteString(testTicket)
 
 	// Write entry package
 	for i := range testUploadEnd - testUploadStart {
 		entry := fmt.Appendf(nil, "entry-%d", i)
-		_ = binary.Write(&body, binary.BigEndian, uint16(len(entry)))
-		_, _ = body.Write(entry)
+		_ = binary.Write(&rawBody, binary.BigEndian, uint16(len(entry)))
+		_, _ = rawBody.Write(entry)
 	}
-	_ = body.WriteByte(1)               // num proof hashes
-	_, _ = body.Write(make([]byte, 32)) // 1 hash
+	_ = rawBody.WriteByte(1)               // num proof hashes
+	_, _ = rawBody.Write(make([]byte, 32)) // 1 hash
+	validPayload := rawBody.Bytes()
 
-	req := httptest.NewRequest(http.MethodPost, "/add-entries", &body)
-	req.Header.Add("Content-Type", "application/octet-stream")
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("want status 200, got %d: %s", w.Code, w.Body.String())
+	tests := []struct {
+		name       string
+		encoding   string
+		body       func() io.Reader
+		wantStatus int
+		wantCosig  bool
+	}{
+		{
+			name:     "uncompressed",
+			encoding: "",
+			body: func() io.Reader {
+				return bytes.NewReader(validPayload)
+			},
+			wantStatus: http.StatusOK,
+			wantCosig:  true,
+		},
+		{
+			name:     "gzip",
+			encoding: "gzip",
+			body: func() io.Reader {
+				var b bytes.Buffer
+				zw := gzip.NewWriter(&b)
+				_, _ = zw.Write(validPayload)
+				_ = zw.Close()
+				return &b
+			},
+			wantStatus: http.StatusOK,
+			wantCosig:  true,
+		},
+		{
+			name:     "invalid gzip",
+			encoding: "gzip",
+			body: func() io.Reader {
+				return strings.NewReader("not-a-gzip-stream")
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:     "unsupported encoding",
+			encoding: "br",
+			body: func() io.Reader {
+				return strings.NewReader("dummy")
+			},
+			wantStatus: http.StatusBadRequest,
+		},
 	}
-	if !bytes.Contains(w.Body.Bytes(), []byte("— test-cosig\n")) {
-		t.Errorf("response does not contain expected cosignature: %s", w.Body.String())
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/add-entries", tc.body())
+			req.Header.Add("Content-Type", "application/octet-stream")
+			if tc.encoding != "" {
+				req.Header.Add("Content-Encoding", tc.encoding)
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+
+			if w.Code != tc.wantStatus {
+				t.Errorf("want status %d, got %d: %s", tc.wantStatus, w.Code, w.Body.String())
+			}
+			if tc.wantCosig {
+				if !bytes.Contains(w.Body.Bytes(), []byte("— test-cosig\n")) {
+					t.Errorf("response does not contain expected cosignature: %s", w.Body.String())
+				}
+				if got := w.Header().Get("Accept-Encoding"); got != "gzip" {
+					t.Errorf("want Accept-Encoding gzip, got %q", got)
+				}
+			}
+		})
 	}
 }
 
