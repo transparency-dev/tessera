@@ -16,6 +16,7 @@ package handler
 
 import (
 	"compress/gzip"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -85,19 +86,59 @@ func addEntries(m *MirrorMux) http.HandlerFunc {
 			return
 		}
 
-		_, _, _, cosigs, err := m.AddEntries(r.Context(), req.logOrigin, req.uploadStart, req.uploadEnd, req.ticket, req.NextPackage)
+		nextEntry, pendingSize, ticket, cosigs, err := m.AddEntries(r.Context(), req.logOrigin, req.uploadStart, req.uploadEnd, req.ticket, req.NextPackage)
 		switch {
 		case errors.Is(err, ErrUnknownLog):
+			// SPEC: If log_origin is not a known log, the mirror MUST respond with a "404 Not Found" HTTP status code.
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
+
+		case errors.Is(err, tessera.ErrConflict):
+			// SPEC: When sending a "409 Conflict" or "202 Accepted" response, the response body MUST have a Content-Type of text/x.tlog.mirror-info and consist of three lines, each followed by a newline (U+000A):
+			// The tree size of a valid pending checkpoint, in decimal
+			// The next entry, in decimal
+			// An opaque, possibly zero length, ticket value, encoded in base64
+			w.Header().Set("Content-Type", "text/x.tlog.mirror-info")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = fmt.Fprintf(w, "%d\n%d\n%s\n", pendingSize, nextEntry, base64.StdEncoding.EncodeToString(ticket))
+			return
+
+		case errors.Is(err, tessera.ErrNoPendingCheckpoint):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+
 		case err != nil:
 			slog.ErrorContext(r.Context(), "Failed to add entries", slog.String("origin", req.logOrigin), slog.Any("err", err))
 			http.Error(w, "Failed to add entries", http.StatusInternalServerError)
 			return
-		}
 
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write(cosigs)
+		case nextEntry == pendingSize:
+			// SPEC: If next_entry == upload_end, and no cosignatures are provided by the mirror, 
+			// the mirror MUST respond with a "200 OK" status code and an empty response body.
+			// If next_entry == upload_end, and cosignatures are provided by the mirror, 
+			// the mirror MUST respond with a "200 OK" status code and the cosignatures.
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(cosigs) // We don't care about failures here.
+			return
+
+		case nextEntry == req.uploadStart:
+			// SPEC: If no entry package was authenticated and saved before the body ended (for example, the request header itself was malformed, or the first package's bytes were truncated mid-package), the mirror MUST respond with a "400 Bad Request" HTTP status code.
+			http.Error(w, "truncated or malformed body: no entry packages saved", http.StatusBadRequest)
+			return
+
+		case nextEntry > req.uploadStart:
+			// SPEC: If at least one entry package was authenticated and saved, but the mirror has not yet received all packages covering [upload_start, upload_end), the mirror MUST respond with a "202 Accepted" response carrying the advanced next entry.
+			w.Header().Set("Content-Type", "text/x.tlog.mirror-info")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = fmt.Fprintf(w, "%d\n%d\n%s\n", pendingSize, nextEntry, base64.StdEncoding.EncodeToString(ticket)) // We don't care about failures here.
+			return
+
+		default:
+			// This should never happen.
+			slog.ErrorContext(r.Context(), "LOGIC ERROR: invalid state", slog.Uint64("nextEntry", nextEntry), slog.Uint64("uploadStart", req.uploadStart), slog.Uint64("pendingSize", pendingSize))
+			http.Error(w, "invalid state", http.StatusInternalServerError)
+			return
+		}
 	}
 }
 

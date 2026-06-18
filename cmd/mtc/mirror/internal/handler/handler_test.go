@@ -18,7 +18,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -169,3 +171,120 @@ func (m *mockTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint
 	}
 	return uploadEnd, 0, nil, nil, nil
 }
+
+func TestAddEntries_StatusCodes(t *testing.T) {
+	const (
+		testOrigin = "example-log"
+		testUploadStart = 10
+		testUploadEnd = 20
+		testNextIdx = 100
+		testPendingSize = 200
+		testNewTicket = "ticket-bytes"
+		testCosig = "— test-cosig\n"
+	)
+
+	for _, test := range []struct {
+		name       string
+		origin     string
+		mockTarget *mockTarget
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:   "200 ok",
+			origin: testOrigin,
+			mockTarget: &mockTarget{
+				addEntriesFunc: func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (uint64, uint64, []byte, []byte, error) {
+					return testPendingSize, testPendingSize, []byte(testNewTicket), []byte(testCosig), nil
+				},
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   testCosig,
+		}, {
+			name:   "202 partial upload",
+			origin: testOrigin,
+			mockTarget: &mockTarget{
+				addEntriesFunc: func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (uint64, uint64, []byte, []byte, error) {
+					return testUploadStart + 5, testPendingSize, []byte(testNewTicket), nil, nil
+				},
+			},
+			wantStatus: http.StatusAccepted,
+			wantBody:   fmt.Sprintf("%d\n%d\n%s\n", testPendingSize, testUploadStart+5, base64.StdEncoding.EncodeToString([]byte(testNewTicket))),
+		}, {
+			name:   "400 no pending checkpoint",
+			origin: testOrigin,
+			mockTarget: &mockTarget{
+				addEntriesFunc: func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (uint64, uint64, []byte, []byte, error) {
+					return 0, 0, nil, nil, tessera.ErrNoPendingCheckpoint
+				},
+			},
+			wantStatus: http.StatusBadRequest,
+		}, {
+			name:   "400 truncated body (no entries saved)",
+			origin: testOrigin,
+			mockTarget: &mockTarget{
+				addEntriesFunc: func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (uint64, uint64, []byte, []byte, error) {
+					return uploadStart, testPendingSize, nil, nil, nil
+				},
+			},
+			wantStatus: http.StatusBadRequest,
+		}, {
+			name:       "404 unknown log",
+			origin:     "unknown-origin",
+			mockTarget: &mockTarget{},
+			wantStatus: http.StatusNotFound,
+		}, {
+			name:   "409 conflict",
+			origin: testOrigin,
+			mockTarget: &mockTarget{
+				addEntriesFunc: func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (uint64, uint64, []byte, []byte, error) {
+					return testNextIdx, testPendingSize, []byte(testNewTicket), nil, tessera.ErrConflict
+				},
+			},
+			wantStatus: http.StatusConflict,
+			wantBody:   fmt.Sprintf("%d\n%d\n%s\n", testPendingSize, testNextIdx, base64.StdEncoding.EncodeToString([]byte(testNewTicket))),
+		}, {
+			name:   "500 internal server error",
+			origin: testOrigin,
+			mockTarget: &mockTarget{
+				addEntriesFunc: func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (uint64, uint64, []byte, []byte, error) {
+					return 0, 0, nil, nil, errors.New("db explosion")
+				},
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+	}{
+		t.Run(test.name, func(t *testing.T) {
+			mux := NewMirrorMux()
+			_ = mux.AddTarget(testOrigin, test.mockTarget)
+			h := New(mux, nil)
+
+			var rawBody bytes.Buffer
+			_ = binary.Write(&rawBody, binary.BigEndian, uint16(len(test.origin)))
+			_, _ = rawBody.WriteString(test.origin)
+			_ = binary.Write(&rawBody, binary.BigEndian, uint64(testUploadStart))
+			_ = binary.Write(&rawBody, binary.BigEndian, uint64(testUploadEnd))
+			_ = binary.Write(&rawBody, binary.BigEndian, uint16(0))
+
+			req := httptest.NewRequest(http.MethodPost, "/add-entries", &rawBody)
+			req.Header.Add("Content-Type", "application/octet-stream")
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+
+			if w.Code != test.wantStatus {
+				t.Errorf("want status %d, got %d: %s", test.wantStatus, w.Code, w.Body.String())
+			}
+			if test.wantStatus == http.StatusConflict || test.wantStatus == http.StatusAccepted {
+				if got := w.Header().Get("Content-Type"); got != "text/x.tlog.mirror-info" {
+					t.Errorf("want Content-Type text/x.tlog.mirror-info, got %q", got)
+				}
+			}
+			if test.wantBody != "" {
+				if got := w.Body.String(); got != test.wantBody {
+					t.Errorf("want body %q, got %q", test.wantBody, got)
+				}
+			}
+		})
+	}
+}
+

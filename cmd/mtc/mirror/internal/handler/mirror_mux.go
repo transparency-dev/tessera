@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	// ErrUnknownLog is returned when a request is made for an unknown log origin.
+	// ErrUnknownLog is returned when a requested log is unknown to the mirror
 	ErrUnknownLog = errors.New("unknown log origin")
 )
 
@@ -61,6 +61,7 @@ func (m *MirrorMux) AddEntries(ctx context.Context, origin string, uploadStart, 
 		return 0, 0, nil, nil, err
 	}
 	slog.InfoContext(ctx, "AddEntries", slog.String("origin", origin), slog.Uint64("start", uploadStart), slog.Uint64("end", uploadEnd))
+
 	return t.AddEntries(ctx, uploadStart, uploadEnd, ticket, next)
 }
 
@@ -77,6 +78,6 @@ func (m *MirrorMux) target(origin string) (MirrorTarget, error) {
 
 // MirrorTarget describes the contract that a mirror target must satisfy.
 type MirrorTarget interface {
-	// AddEntries adds provided entries into its tree after verifying subtree consistency proofs.
+	// AddEntries adds verified consistent entries to the mirror.
 	AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (nextIdx uint64, curSize uint64, newTicket []byte, cosigs []byte, err error)
 }

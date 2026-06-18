@@ -25,6 +25,15 @@ import (
 	"golang.org/x/mod/sumdb/note"
 )
 
+var (
+	// ErrConflict is returned when the requested upload range conflicts with the
+	// current state of the log.
+	ErrConflict          = errors.New("tree size conflict")
+	// ErrNoPendingCheckpoint is returned when a pending checkpoint cannot be
+	// determined.
+	ErrNoPendingCheckpoint = errors.New("no pending checkpoint")
+)
+
 // MirrorOptions holds mirror lifecycle settings for all storage implementations.
 type MirrorOptions struct {
 	signer   note.Signer
