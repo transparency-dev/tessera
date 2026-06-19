@@ -15,15 +15,19 @@ For real load-testing applications, especially headless runs as part of a CI pip
 
 ## Usage
 
-Example usage to test a deployment of `cmd/conformance/posix`:
+First, store the hammer log test private key:
+
+```shell
+echo "PRIVATE+KEY+example.com/log/testdata+3232599a+BhO1aBkQITKqnLpM1tkZqj6H7+WU506YqBVlOhyrTO+j" > /tmp/hammer-log.key
+```
+
+Example usage to test a deployment of `cmd/mtc/mirror/posix` server:
 
 ```shell
 go run ./internal/mirror/hammer \
-  --log_public_key=transparency.dev/tessera/example+ae330e15+ASf4/L1zE859VqlfQgGzKy34l91Gl8W6wfwp+vKP62DW \
-  --log_url=http://localhost:2024 \
-  --max_read_ops=1024 \
-  --num_readers_random=128 \
-  --num_readers_full=128 \
+  --mirror_url=http://localhost:8080 \
+  --storage_dir=/tmp/hammer-log \
+  --log_private_key=/tmp/hammer-log.key \
   --num_writers=256 \
   --max_write_ops=42
 ```
@@ -34,9 +38,9 @@ If the timeout of 1 minute is reached first, then it exits with an exit code of 
 
 ```shell
 go run ./internal/mirror/hammer \
-  --log_public_key=transparency.dev/tessera/example+ae330e15+ASf4/L1zE859VqlfQgGzKy34l91Gl8W6wfwp+vKP62DW \
-  --log_url=http://localhost:2024 \
-  --max_read_ops=0 \
+  --mirror_url=http://localhost:8080 \
+  --storage_dir=/tmp/hammer-log \
+  --log_private_key=/tmp/hammer-log.key \
   --num_writers=512 \
   --max_write_ops=512 \
   --max_runtime=1m \

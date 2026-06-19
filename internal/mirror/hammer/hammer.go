@@ -23,6 +23,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -31,7 +32,8 @@ import (
 	"github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
-	"github.com/transparency-dev/tessera/internal/hammer/loadtest"
+	"github.com/transparency-dev/tessera/client/mirror"
+	"github.com/transparency-dev/tessera/internal/mirror/hammer/loadtest"
 	"github.com/transparency-dev/tessera/storage/posix"
 	"golang.org/x/net/http2"
 
@@ -39,20 +41,14 @@ import (
 )
 
 func init() {
-	flag.Var(&logURL, "log_url", "Log storage root URL (can be specified multiple times), e.g. https://log.server/and/path/")
-	flag.Var(&writeLogURL, "write_log_url", "Root URL for writing to a log (can be specified multiple times), e.g. https://log.server/and/path/ (optional, defaults to log_url)")
+	flag.Var(&mirrorURL, "mirror_url", "Root URL for writing to a mirror (can be specified multiple times), e.g. https://log.server/and/path/ (optional, defaults to log_url)")
 }
 
 var (
-	logURL      multiStringFlag
-	writeLogURL multiStringFlag
+	mirrorURL multiStringFlag
 
 	storageDir = flag.String("storage_dir", "", "Root directory to store log data")
 	logPrivKey = flag.String("log_private_key", "", "Location of private key file")
-
-	maxReadOpsPerSecond = flag.Int("max_read_ops", 20, "The maximum number of read operations per second")
-	numReadersRandom    = flag.Int("num_readers_random", 4, "The number of readers looking for random leaves")
-	numReadersFull      = flag.Int("num_readers_full", 4, "The number of readers downloading the whole log")
 
 	maxWriteOpsPerSecond = flag.Int("max_write_ops", 0, "The maximum number of write operations per second")
 	numWriters           = flag.Int("num_writers", 0, "The number of independent write tasks to run")
@@ -81,8 +77,8 @@ func main() {
 
 	hc = &http.Client{
 		Transport: &http.Transport{
-			MaxIdleConns:        *numWriters + *numReadersFull + *numReadersRandom,
-			MaxIdleConnsPerHost: *numWriters + *numReadersFull + *numReadersRandom,
+			MaxIdleConns:        *numWriters,
+			MaxIdleConnsPerHost: *numWriters,
 			DisableKeepAlives:   false,
 		},
 		Timeout: *httpTimeout,
@@ -153,15 +149,42 @@ func main() {
 		os.Exit(1)
 	}
 
+	// TODO(roger2hk): Move this into the internal/mirror/hammer/loadtest package.
+	// Sync log data to mirror servers.
+	for _, urlStr := range mirrorURL {
+		mURL, err := url.Parse(urlStr)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to parse write mirror URL", slog.String("url", urlStr), slog.Any("error", err))
+			os.Exit(1)
+		}
+		mOpts := mirror.NewOptions().
+			WithMirrorURL(mURL).
+			WithHTTPClient(hc).
+			WithLogOrigin(s.Verifier().Name()).
+			WithTileFetcher(logReader.ReadTile).
+			WithBundleFetcher(logReader.ReadEntryBundle).
+			WithMirrorCheckpointFetcher(func(ctx context.Context) ([]byte, error) {
+				return nil, nil
+			}).
+			WithPackageProver(dummyPackageProver)
+		mc, err := mirror.NewClient(ctx, mOpts)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to create mirror client", slog.String("url", urlStr), slog.Any("error", err))
+			os.Exit(1)
+		}
+
+		go runMirrorSync(ctx, tracker, mc, mURL)
+	}
+
 	ha := loadtest.NewHammerAnalyser(func() uint64 { return tracker.Latest().Size })
 	ha.Run(ctx)
 
 	gen := newLeafGenerator(tracker.Latest().Size, *leafMinSize, *dupChance)
 	opts := loadtest.HammerOpts{
-		MaxReadOpsPerSecond:  *maxReadOpsPerSecond,
+		MaxReadOpsPerSecond:  0,
 		MaxWriteOpsPerSecond: *maxWriteOpsPerSecond,
-		NumReadersRandom:     *numReadersRandom,
-		NumReadersFull:       *numReadersFull,
+		NumReadersRandom:     0,
+		NumReadersFull:       0,
 		NumWriters:           *numWriters,
 	}
 	hammer := loadtest.NewHammer(tracker, logReader.ReadEntryBundle, leafWriter, gen, ha.SeqLeafChan, ha.ErrChan, opts)
@@ -300,4 +323,36 @@ func getKeyFile(path string) (string, error) {
 		return "", fmt.Errorf("failed to read key file: %w", err)
 	}
 	return string(k), nil
+}
+
+// TODO(roger2hk): Replace with the subtree consistency proof from merkle repo.
+func dummyPackageProver(_ context.Context, _ uint64, _ uint64) ([][]byte, error) {
+	return nil, nil
+}
+
+// runMirrorSync syncs the source log to a mirror server.
+func runMirrorSync(ctx context.Context, tracker *client.LogStateTracker, mClient *mirror.Client, mURL *url.URL) {
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
+	var lastSyncedSize uint64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			latest := tracker.Latest()
+			if latest.Size == lastSyncedSize {
+				continue
+			}
+			slog.InfoContext(ctx, "Syncing source log to mirror", slog.Uint64("size", latest.Size), slog.String("mirror", mURL.String()))
+			latestRaw := tracker.LatestRaw()
+			cosigs, err := mClient.Sync(ctx, latestRaw, latest.Size)
+			if err != nil {
+				slog.ErrorContext(ctx, "Failed to sync to mirror", slog.String("mirror", mURL.String()), slog.Any("error", err))
+				continue
+			}
+			slog.InfoContext(ctx, "Successfully synced to mirror", slog.Uint64("size", latest.Size), slog.String("mirror", mURL.String()), slog.Int("cosigs_len", len(cosigs)))
+			lastSyncedSize = latest.Size
+		}
+	}
 }
