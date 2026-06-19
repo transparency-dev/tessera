@@ -16,26 +16,23 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"io"
 	"math/rand/v2"
 	"net"
 	"net/http"
-	"net/http/httptrace"
-	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/internal/hammer/loadtest"
-	"golang.org/x/mod/sumdb/note"
+	"github.com/transparency-dev/tessera/storage/posix"
 	"golang.org/x/net/http2"
 
 	"log/slog"
@@ -50,7 +47,8 @@ var (
 	logURL      multiStringFlag
 	writeLogURL multiStringFlag
 
-	logPubKey = flag.String("log_public_key", os.Getenv("TILES_LOG_PUBLIC_KEY"), "Public key for the log. This is defaulted to the environment variable TILES_LOG_PUBLIC_KEY")
+	storageDir = flag.String("storage_dir", "", "Root directory to store log data")
+	logPrivKey = flag.String("log_private_key", "", "Location of private key file")
 
 	maxReadOpsPerSecond = flag.Int("max_read_ops", 20, "The maximum number of read operations per second")
 	numReadersRandom    = flag.Int("num_readers_random", 4, "The number of readers looking for random leaves")
@@ -108,21 +106,42 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	logSigV, err := note.NewVerifier(*logPubKey)
+	// Gather the info needed for reading/writing checkpoints.
+	s := getSignerOrDie(ctx)
+
+	// Create the Tessera POSIX storage, using the directory from the --storage_dir flag.
+	driver, err := posix.New(ctx, posix.Config{Path: *storageDir})
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to create verifier", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to construct storage", slog.Any("error", err))
 		os.Exit(1)
 	}
 
-	r := mustCreateReaders(ctx, logURL)
-	if len(writeLogURL) == 0 {
-		writeLogURL = logURL
+	appender, shutdown, logReader, err := tessera.NewAppender(ctx, driver, tessera.NewAppendOptions().
+		WithCheckpointSigner(s).
+		WithCheckpointInterval(time.Second).
+		WithCheckpointRepublishInterval(time.Minute).
+		WithBatching(tessera.DefaultBatchMaxSize, time.Second))
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to create new appender", slog.Any("error", err))
+		os.Exit(1)
 	}
-	w := mustCreateWriters(ctx, writeLogURL)
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			slog.ErrorContext(ctx, "Failed to shutdown appender", slog.Any("error", err))
+		}
+	}()
+
+	leafWriter := func(ctx context.Context, newLeaf []byte) (uint64, error) {
+		idx, err := appender.Add(ctx, tessera.NewEntry(newLeaf))()
+		if err != nil {
+			return 0, fmt.Errorf("failed to add leaf: %v", err)
+		}
+		return idx.Index, nil
+	}
 
 	var cpRaw []byte
-	cons := client.UnilateralConsensus(r.ReadCheckpoint)
-	tracker, err := client.NewLogStateTracker(ctx, r.ReadTile, cpRaw, logSigV, logSigV.Name(), cons)
+	cons := client.UnilateralConsensus(logReader.ReadCheckpoint)
+	tracker, err := client.NewLogStateTracker(ctx, logReader.ReadTile, cpRaw, s.Verifier(), s.Verifier().Name(), cons)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create LogStateTracker", slog.Any("error", err))
 		os.Exit(1)
@@ -145,7 +164,7 @@ func main() {
 		NumReadersFull:       *numReadersFull,
 		NumWriters:           *numWriters,
 	}
-	hammer := loadtest.NewHammer(tracker, r.ReadEntryBundle, w, gen, ha.SeqLeafChan, ha.ErrChan, opts)
+	hammer := loadtest.NewHammer(tracker, logReader.ReadEntryBundle, leafWriter, gen, ha.SeqLeafChan, ha.ErrChan, opts)
 
 	exitCode := 0
 	if *leafWriteGoal > 0 {
@@ -237,119 +256,6 @@ func newLeafGenerator(startSize uint64, minLeafSize int, dupChance float64) func
 	}
 }
 
-func mustCreateReaders(ctx context.Context, us []string) loadtest.LogReader {
-	r := []loadtest.LogReader{}
-	for _, u := range us {
-		if !strings.HasSuffix(u, "/") {
-			u += "/"
-		}
-		rURL, err := url.Parse(u)
-		if err != nil {
-			slog.ErrorContext(ctx, "Invalid log reader URL", slog.String("u", u), slog.Any("error", err))
-			os.Exit(1)
-		}
-
-		switch rURL.Scheme {
-		case "http", "https":
-			c, err := client.NewHTTPFetcher(rURL, hc)
-			if err != nil {
-				slog.ErrorContext(ctx, "Failed to create HTTP fetcher", slog.String("u", u), slog.Any("error", err))
-				os.Exit(1)
-			}
-			if *bearerToken != "" {
-				c.SetAuthorizationHeader(fmt.Sprintf("Bearer %s", *bearerToken))
-			}
-			r = append(r, c)
-		case "file":
-			r = append(r, client.FileFetcher{Root: rURL.Path})
-		default:
-			slog.ErrorContext(ctx, "Unsupported scheme on log URL", slog.String("scheme", rURL.Scheme))
-			os.Exit(1)
-		}
-	}
-	return loadtest.NewRoundRobinReader(r)
-}
-
-func mustCreateWriters(ctx context.Context, us []string) loadtest.LeafWriter {
-	w := []loadtest.LeafWriter{}
-	for _, u := range us {
-		if !strings.HasSuffix(u, "/") {
-			u += "/"
-		}
-		u += "add"
-		wURL, err := url.Parse(u)
-		if err != nil {
-			slog.ErrorContext(ctx, "Invalid log writer URL", slog.String("u", u), slog.Any("error", err))
-			os.Exit(1)
-		}
-		w = append(w, httpWriter(ctx, wURL, hc, *bearerTokenWrite))
-	}
-	return loadtest.NewRoundRobinWriter(w)
-}
-
-func httpWriter(ctx context.Context, u *url.URL, hc *http.Client, bearerToken string) loadtest.LeafWriter {
-	cTrace := &httptrace.ClientTrace{
-		GotConn: func(info httptrace.GotConnInfo) { slog.InfoContext(ctx, "connection established %#v") },
-	}
-	return func(ctx context.Context, newLeaf []byte) (uint64, error) {
-		req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(newLeaf))
-		if err != nil {
-			return 0, fmt.Errorf("failed to create request: %v", err)
-		}
-		if bearerToken != "" {
-			req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", bearerToken))
-		}
-		reqCtx := req.Context()
-		if slog.Default().Enabled(ctx, slog.LevelDebug) {
-			reqCtx = httptrace.WithClientTrace(req.Context(), cTrace)
-		}
-		resp, err := hc.Do(req.WithContext(reqCtx))
-		if err != nil {
-			return 0, fmt.Errorf("failed to write leaf: %v", err)
-		}
-		body, err := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if err != nil {
-			return 0, fmt.Errorf("failed to read body: %v", err)
-		}
-		switch resp.StatusCode {
-		case http.StatusOK:
-			if resp.Request.Method != http.MethodPost {
-				return 0, fmt.Errorf("write leaf was redirected to %s", resp.Request.URL)
-			}
-			// Continue below
-		case http.StatusServiceUnavailable, http.StatusBadGateway, http.StatusGatewayTimeout, http.StatusTooManyRequests:
-			// These status codes may indicate a delay before retrying, so handle that here:
-			time.Sleep(retryDelay(resp.Header.Get("Retry-After"), time.Second))
-
-			return 0, fmt.Errorf("log not available. Status code: %d. Body: %q %w", resp.StatusCode, body, loadtest.ErrRetry)
-		default:
-			return 0, fmt.Errorf("write leaf was not OK. Status code: %d. Body: %q", resp.StatusCode, body)
-		}
-		parts := bytes.Split(body, []byte("\n"))
-		index, err := strconv.ParseUint(string(parts[0]), 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("write leaf failed to parse response: %v", body)
-		}
-		return index, nil
-	}
-}
-
-func retryDelay(retryAfter string, defaultDur time.Duration) time.Duration {
-	if retryAfter == "" {
-		return defaultDur
-	}
-	d, err := time.Parse(http.TimeFormat, retryAfter)
-	if err == nil {
-		return time.Until(d)
-	}
-	s, err := strconv.Atoi(retryAfter)
-	if err == nil {
-		return time.Duration(s) * time.Second
-	}
-	return defaultDur
-}
-
 // multiStringFlag allows a flag to be specified multiple times on the command
 // line, and stores all of these values.
 type multiStringFlag []string
@@ -361,4 +267,37 @@ func (ms *multiStringFlag) String() string {
 func (ms *multiStringFlag) Set(w string) error {
 	*ms = append(*ms, w)
 	return nil
+}
+
+// Read log private key from file.
+func getSignerOrDie(ctx context.Context) *note.Signer {
+	var privKey string
+	var err error
+
+	if len(privKey) == 0 {
+		slog.ErrorContext(ctx, "Supply private key file path using --private_key")
+		os.Exit(1)
+	}
+
+	privKey, err = getKeyFile(*logPrivKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "Unable to get private key", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	s, err := note.NewSignerForCosignatureV1(privKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to instantiate signer", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	return s
+}
+
+func getKeyFile(path string) (string, error) {
+	k, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read key file: %w", err)
+	}
+	return string(k), nil
 }
