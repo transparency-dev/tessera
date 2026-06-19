@@ -28,11 +28,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/internal/hammer/loadtest"
 	"github.com/transparency-dev/tessera/storage/posix"
-	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/net/http2"
 
 	"log/slog"
@@ -47,9 +47,8 @@ var (
 	logURL      multiStringFlag
 	writeLogURL multiStringFlag
 
-	storageDir = flag.String("storage_dir", "", "Root directory to store log data.")
-	logPubKey  = flag.String("log_public_key", os.Getenv("TILES_LOG_PUBLIC_KEY"), "Public key for the log. This is defaulted to the environment variable TILES_LOG_PUBLIC_KEY")
-	logPrivKey = flag.String("log_private_key", os.Getenv("TILES_LOG_PRIVATE_KEY"), "Private key for the log. This is defaulted to the environment variable TILES_LOG_PRIVATE_KEY")
+	storageDir = flag.String("storage_dir", "", "Root directory to store log data")
+	logPrivKey = flag.String("log_private_key", "", "Location of private key file")
 
 	maxReadOpsPerSecond = flag.Int("max_read_ops", 20, "The maximum number of read operations per second")
 	numReadersRandom    = flag.Int("num_readers_random", 4, "The number of readers looking for random leaves")
@@ -108,7 +107,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Gather the info needed for reading/writing checkpoints.
-	s := getSignerOrDie()
+	s := getSignerOrDie(ctx)
 
 	// Create the Tessera POSIX storage, using the directory from the --storage_dir flag.
 	driver, err := posix.New(ctx, posix.Config{Path: *storageDir})
@@ -121,7 +120,7 @@ func main() {
 		WithCheckpointSigner(s).
 		WithCheckpointInterval(time.Second).
 		WithCheckpointRepublishInterval(time.Minute).
-		WithBatching(256, time.Second))
+		WithBatching(tessera.DefaultBatchMaxSize, time.Second))
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create new appender", slog.Any("error", err))
 		os.Exit(1)
@@ -132,18 +131,17 @@ func main() {
 		}
 	}()
 
-	logSigV, err := note.NewVerifier(*logPubKey)
-	if err != nil {
-		slog.ErrorContext(ctx, "failed to create verifier", slog.Any("error", err))
-		os.Exit(1)
+	leafWriter := func(ctx context.Context, newLeaf []byte) (uint64, error) {
+		idx, err := appender.Add(ctx, tessera.NewEntry(newLeaf))()
+		if err != nil {
+			return 0, fmt.Errorf("failed to add leaf: %v", err)
+		}
+		return idx.Index, nil
 	}
 
-	r := mustCreateLogReaders(ctx, logReader)
-	w := mustCreateLeafWriters(ctx, appender)
-
 	var cpRaw []byte
-	cons := client.UnilateralConsensus(r.ReadCheckpoint)
-	tracker, err := client.NewLogStateTracker(ctx, r.ReadTile, cpRaw, logSigV, logSigV.Name(), cons)
+	cons := client.UnilateralConsensus(logReader.ReadCheckpoint)
+	tracker, err := client.NewLogStateTracker(ctx, logReader.ReadTile, cpRaw, s.Verifier(), s.Verifier().Name(), cons)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create LogStateTracker", slog.Any("error", err))
 		os.Exit(1)
@@ -166,7 +164,7 @@ func main() {
 		NumReadersFull:       *numReadersFull,
 		NumWriters:           *numWriters,
 	}
-	hammer := loadtest.NewHammer(tracker, r.ReadEntryBundle, w, gen, ha.SeqLeafChan, ha.ErrChan, opts)
+	hammer := loadtest.NewHammer(tracker, logReader.ReadEntryBundle, leafWriter, gen, ha.SeqLeafChan, ha.ErrChan, opts)
 
 	exitCode := 0
 	if *leafWriteGoal > 0 {
@@ -258,24 +256,6 @@ func newLeafGenerator(startSize uint64, minLeafSize int, dupChance float64) func
 	}
 }
 
-func mustCreateLogReaders(_ context.Context, tesseraLogReader tessera.LogReader) loadtest.LogReader {
-	r := []loadtest.LogReader{}
-	r = append(r, tesseraLogReader)
-	return loadtest.NewRoundRobinReader(r)
-}
-
-func mustCreateLeafWriters(_ context.Context, tesseraAppender *tessera.Appender) loadtest.LeafWriter {
-	w := []loadtest.LeafWriter{}
-	w = append(w, func(ctx context.Context, newLeaf []byte) (uint64, error) {
-		idx, err := tesseraAppender.Add(ctx, tessera.NewEntry(newLeaf))()
-		if err != nil {
-			return 0, fmt.Errorf("failed to add leaf: %v", err)
-		}
-		return idx.Index, nil
-	})
-	return loadtest.NewRoundRobinWriter(w)
-}
-
 // multiStringFlag allows a flag to be specified multiple times on the command
 // line, and stores all of these values.
 type multiStringFlag []string
@@ -289,28 +269,28 @@ func (ms *multiStringFlag) Set(w string) error {
 	return nil
 }
 
-// Read log private key from file or environment variable.
-func getSignerOrDie() note.Signer {
+// Read log private key from file.
+func getSignerOrDie(ctx context.Context) *note.Signer {
 	var privKey string
 	var err error
-	if len(*logPrivKey) > 0 {
-		privKey, err = getKeyFile(*logPrivKey)
-		if err != nil {
-			slog.ErrorContext(context.Background(), "Unable to get private key", slog.Any("error", err))
-			os.Exit(1)
-		}
-	} else {
-		privKey = os.Getenv("TILES_LOG_PRIVATE_KEY")
-		if len(privKey) == 0 {
-			slog.ErrorContext(context.Background(), "Supply private key file path using --private_key or set TILES_LOG_PRIVATE_KEY environment variable")
-			os.Exit(1)
-		}
-	}
-	s, err := note.NewSigner(privKey)
-	if err != nil {
-		slog.ErrorContext(context.Background(), "Failed to instantiate signer", slog.Any("error", err))
+
+	if len(privKey) == 0 {
+		slog.ErrorContext(ctx, "Supply private key file path using --private_key")
 		os.Exit(1)
 	}
+
+	privKey, err = getKeyFile(*logPrivKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "Unable to get private key", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	s, err := note.NewSignerForCosignatureV1(privKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to instantiate signer", slog.Any("error", err))
+		os.Exit(1)
+	}
+
 	return s
 }
 
