@@ -38,27 +38,27 @@ func TestAddEntries(t *testing.T) {
 	)
 
 	mock := &mockTarget{
-		addEntriesFunc: func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error) {
+		addEntriesFunc: func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (nextIdx uint64, newSize uint64, newTicket []byte, cosigs []byte, err error) {
 			if uploadStart != testUploadStart || uploadEnd != testUploadEnd {
-				return nil, fmt.Errorf("want range %d-%d, got %d-%d", testUploadStart, testUploadEnd, uploadStart, uploadEnd)
+				return 0, 0, nil, nil, fmt.Errorf("want range %d-%d, got %d-%d", testUploadStart, testUploadEnd, uploadStart, uploadEnd)
 			}
 
 			pkg, err := next()
 			if err != nil {
-				return nil, fmt.Errorf("failed to read next package: %v", err)
+				return 0, 0, nil, nil, fmt.Errorf("failed to read next package: %v", err)
 			}
 			wantNumEntries := testUploadEnd - testUploadStart
 			if len(pkg.Entries) != wantNumEntries {
-				return nil, fmt.Errorf("want %d entries in first package, got %d", wantNumEntries, len(pkg.Entries))
+				return 0, 0, nil, nil, fmt.Errorf("want %d entries in first package, got %d", wantNumEntries, len(pkg.Entries))
 			}
 
 			// Try to read one more, expecting EOF
 			_, err = next()
 			if err == nil {
-				return nil, fmt.Errorf("expected EOF, got nil")
+				return 0, 0, nil, nil, fmt.Errorf("expected EOF, got nil")
 			}
 
-			return []byte("— test-cosig\n"), nil
+			return testUploadEnd, testUploadEnd, nil, []byte("— test-cosig\n"), nil
 		},
 	}
 	mux := NewMirrorMux()
@@ -160,12 +160,12 @@ func TestAddEntries(t *testing.T) {
 }
 
 type mockTarget struct {
-	addEntriesFunc    func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error)
+	addEntriesFunc func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (nextIdx uint64, curSize uint64, newTicket []byte, cosigs []byte, err error)
 }
 
-func (m *mockTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error) {
+func (m *mockTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (nextIdx uint64, curSize uint64, newTicket []byte, cosigs []byte, err error) {
 	if m.addEntriesFunc != nil {
 		return m.addEntriesFunc(ctx, uploadStart, uploadEnd, ticket, next)
 	}
-	return []byte("— dummy-cosig\n"), nil
+	return uploadEnd, 0, nil, nil, nil
 }

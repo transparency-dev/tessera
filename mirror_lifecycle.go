@@ -22,14 +22,13 @@ import (
 
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
-	"github.com/transparency-dev/witness/witness"
 	"golang.org/x/mod/sumdb/note"
 )
 
 // MirrorOptions holds mirror lifecycle settings for all storage implementations.
 type MirrorOptions struct {
-	signer      note.Signer
-	witness     *witness.Witness
+	signer   note.Signer
+	cpSource func(context.Context) ([]byte, error)
 }
 
 // NewMirrorOptions creates a new options struct with defaults.
@@ -43,8 +42,8 @@ func (o *MirrorOptions) WithSigner(s note.Signer) *MirrorOptions {
 	return o
 }
 
-func (o *MirrorOptions) WithWitness(w *witness.Witness) *MirrorOptions {
-	o.witness = w
+func (o *MirrorOptions) WithCheckpointSource(f func(context.Context) ([]byte, error)) *MirrorOptions {
+	o.cpSource = f
 	return o
 }
 
@@ -65,8 +64,8 @@ func (o *MirrorOptions) valid() error {
 	if o.signer == nil {
 		return errors.New("invalid MirrorOptions: WithSigner must be set")
 	}
-	if o.witness == nil {
-		return errors.New("invalid MirrorOptions: WithWitness must be set")
+	if o.cpSource == nil {
+		return errors.New("invalid MirrorOptions: WithCheckpointSource must be set")
 	}
 	return nil
 }
@@ -83,9 +82,10 @@ type MirrorWriter interface {
 // MirrorTarget is a high-level wrapper that manages the process of mirroring
 // a source log into a Tessera instance.
 type MirrorTarget struct {
-	witness *witness.Witness
-	writer  MirrorWriter
-	reader  LogReader
+	writer   MirrorWriter
+	reader   LogReader
+	cpSource func(context.Context) ([]byte, error)
+	signer   note.Signer
 }
 
 // NewMirrorTarget instantiates a new MirrorTarget for the given driver and options.
@@ -108,9 +108,10 @@ func NewMirrorTarget(ctx context.Context, d Driver, opts *MirrorOptions) (*Mirro
 		return nil, fmt.Errorf("failed to init MirrorTarget lifecycle: %v", err)
 	}
 	return &MirrorTarget{
-		witness: opts.witness,
-		writer:  mw,
-		reader:  r,
+		writer:   mw,
+		reader:   r,
+		cpSource: opts.cpSource,
+		signer:   opts.signer,
 	}, nil
 }
 
@@ -123,9 +124,9 @@ type MirrorPackage struct {
 // AddEntries processes a stream of entry packages, verifies subtree consistency proofs,
 // and durably commits entries to the log.
 //
-// TODO(al): Need to have integrated provided entries when we return so we can produce a signature.
-func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*MirrorPackage, error)) ([]byte, error) {
-	return nil, errors.New("unimplemented")
+// Returns the next required entry index, a recent pending checkpoint size, an opaque ticket for future invocations, and, optionally, a cosignature over a pending checkpoint whose size matches uploadEnd if one exists.
+func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*MirrorPackage, error)) (uint64, uint64, []byte, []byte, error) {
+	return 0, 0, nil, nil, errors.New("unimplemented")
 }
 
 // IntegratedSize returns the size of the current integrated log.

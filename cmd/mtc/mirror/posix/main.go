@@ -150,9 +150,9 @@ func witnessFromFlags(ctx context.Context) (*witness.Witness, *sqlite.Persistenc
 // fakeTarget is a temporary mirror target impl, and will be removed in due course.
 type fakeTarget struct {}
 
-func (f fakeTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) ([]byte, error) {
+func (f fakeTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (nextIdx uint64, curSize uint64, newTicket []byte, cosigs []byte, err error) {
 	slog.InfoContext(ctx, "fake target: AddEntries", slog.Uint64("uploadStart", uploadStart), slog.Uint64("uploadEnd", uploadEnd))
-	return nil, nil
+	return uploadEnd, 0, nil, nil, nil
 }
 
 func witnessSignerFromFlags(ctx context.Context) []note.Signer {
