@@ -332,6 +332,13 @@ func (lst *LogStateTracker) Latest() log.Checkpoint {
 	return lst.latestConsistent
 }
 
+// LatestRaw returns the raw bytes of the latest proven-consistent checkpoint.
+func (lst *LogStateTracker) LatestRaw() []byte {
+	lst.mu.RLock()
+	defer lst.mu.RUnlock()
+	return lst.latestConsistentRaw
+}
+
 // nodeCache hides the tiles abstraction away, and improves
 // performance by caching tiles it's seen.
 // Threadsafe.
