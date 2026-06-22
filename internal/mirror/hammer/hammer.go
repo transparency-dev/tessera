@@ -41,7 +41,7 @@ import (
 )
 
 func init() {
-	flag.Var(&mirrorURL, "mirror_url", "Root URL for writing to a mirror (can be specified multiple times), e.g. https://log.server/and/path/ (optional, defaults to log_url)")
+	flag.Var(&mirrorURL, "mirror_url", "Root URL for writing to a mirror (can be specified multiple times), e.g. https://log.server/and/path/")
 }
 
 var (
