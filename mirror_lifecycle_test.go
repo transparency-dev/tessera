@@ -175,7 +175,7 @@ func TestMirrorTarget_AddEntries_CompleteUpload(t *testing.T) {
 	}
 
 	nextEntry, pendingSize, _, cosigs, err := mt.AddEntries(ctx, testUploadStart, testUploadEnd, validTicket, func() (*MirrorPackage, error) {
-		return &MirrorPackage{Entries: [][]byte{[]byte("e1")}}, io.EOF
+		return nil, io.EOF
 	})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
