@@ -19,14 +19,17 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"net/url"
 
 	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/mirror/internal/config"
+	"github.com/transparency-dev/tessera/storage/posix"
 	"github.com/transparency-dev/tessera/cmd/mtc/mirror/internal/handler"
 	"github.com/transparency-dev/witness/omniwitness"
 	"github.com/transparency-dev/witness/witness"
@@ -41,7 +44,8 @@ const (
 var (
 	listenAddr        = flag.String("listen_addr", ":8080", "The address to listen on for HTTP requests.")
 	storageDir        = flag.String("storage_dir", "", "Directory to store mirror data.")
-	witnessSignerPath = flag.String("witness_signer_path", "", "The path to the note-formatted witness signer secret key.")
+	witnessCosignerPath = flag.String("witness_cosigner_path", "", "The path to the note-formatted witness cosigner secret key.")
+	mirrorCosignerPath  = flag.String("mirror_cosigner_path", "", "The path to the note-formatted mirror cosigner secret key.")
 	mirrorConfigPath  = flag.String("config_path", "", "The path to the mirror configuration file.")
 )
 
@@ -57,6 +61,8 @@ func main() {
 		}
 	}()
 
+	mirrorCosigner := mustCreateCosigner(ctx, *mirrorCosignerPath)
+
 	mux := handler.NewMirrorMux()
 	cfg := mirrorConfigFromFlags(ctx)
 	for _, l := range cfg.Logs {
@@ -65,11 +71,21 @@ func main() {
 			slog.ErrorContext(ctx, "Failed to create verifier", slog.String("vkey", l.VKey), slog.Any("error", err))
 			os.Exit(1)
 		}
+
 		origin := v.Name()
-		if err := mux.AddTarget(origin, &fakeTarget{}); err != nil {
-			slog.ErrorContext(ctx, "Failed to add target", slog.String("origin", origin), slog.Any("error", err))
+
+		// Create the mirror
+		t, err := newMirrorTarget(ctx, w, origin, mirrorCosigner)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to create mirror target", slog.String("origin", origin), slog.Any("error", err))
 			os.Exit(1)
 		}
+		if err := mux.AddTarget(origin, t); err != nil {
+			slog.ErrorContext(ctx, "Failed to add target to mux", slog.String("origin", origin), slog.Any("error", err))
+			os.Exit(1)
+		}
+
+		// Ensure log is known by the witness
 		if err := wp.AddLogs(ctx, []omniwitness.Log{
 			{Origin: origin, VKey: l.VKey},
 		}); err != nil {
@@ -87,6 +103,29 @@ func main() {
 	}
 }
 
+// newMirrorTarget creates a new POSIX driver and MirrorTarget for the given origin.
+//
+// The target directory for the driver is derived from the storage directory and the origin in accordance
+// with the `tlog-mirror` spec, allowing the root of the storage directory to be exported directly to read-only clients.
+func newMirrorTarget(ctx context.Context, w *witness.Witness, origin string, mirrorSigner note.Signer) (*tessera.MirrorTarget, error) {	
+		targetDir := filepath.Join(*storageDir, url.PathEscape(origin))
+		if err := os.MkdirAll(targetDir, 0o755); err != nil {
+			return nil, fmt.Errorf("mkdir %q: %v", targetDir, err)
+		}
+		d, err := posix.New(ctx, posix.Config{Path: targetDir})
+		if err != nil {
+			return nil, fmt.Errorf("posix.New: %v", err)
+		}
+		mOpts := tessera.NewMirrorOptions().
+				WithCheckpointSource(func(ctx context.Context) ([]byte, error) {
+					return w.GetCheckpoint(ctx, origin)
+				}).
+				WithSigner(mirrorSigner)
+		return tessera.NewMirrorTarget(ctx, d, mOpts)
+}
+
+// mirrorConfigFromFlags returns a mirror configuration loaded from the provided flags.
+// Exits if the mirror configuration could not be loaded.
 func mirrorConfigFromFlags(ctx context.Context) config.Config {
 	if *mirrorConfigPath == "" {
 		slog.ErrorContext(ctx, "Mirror config path not specified")
@@ -131,7 +170,7 @@ func witnessFromFlags(ctx context.Context) (*witness.Witness, *sqlite.Persistenc
 
  	w, err := witness.New(ctx, witness.Opts{
  		Persistence: p,
- 		Signers:     witnessSignerFromFlags(ctx),
+ 		Signers:     witnessCosignerFromFlags(ctx),
 		VerifierForLog: func(ctx context.Context, origin string) (note.Verifier, bool, error) {
 			log, ok, err := p.Log(ctx, origin)
 			if err != nil || !ok {
@@ -147,30 +186,30 @@ func witnessFromFlags(ctx context.Context) (*witness.Witness, *sqlite.Persistenc
 	return w, p, shutdown
 }
 
-// fakeTarget is a temporary mirror target impl, and will be removed in due course.
-type fakeTarget struct {}
-
-func (f fakeTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (nextIdx uint64, curSize uint64, newTicket []byte, cosigs []byte, err error) {
-	slog.InfoContext(ctx, "fake target: AddEntries", slog.Uint64("uploadStart", uploadStart), slog.Uint64("uploadEnd", uploadEnd))
-	return uploadEnd, 0, nil, nil, nil
-}
-
-func witnessSignerFromFlags(ctx context.Context) []note.Signer {
-	if *witnessSignerPath == "" {
+func witnessCosignerFromFlags(ctx context.Context) []note.Signer {
+	if *witnessCosignerPath == "" {
 		slog.WarnContext(ctx, "Witness cosigner not configured, add-checkpoint will not return cosigs")
 		return []note.Signer{}
 	}
-	r, err := os.ReadFile(*witnessSignerPath)
+	return []note.Signer{mustCreateCosigner(ctx, *witnessCosignerPath)}
+}
+
+func mustCreateCosigner(ctx context.Context, path string) note.Signer {
+	if path == "" {
+		slog.ErrorContext(ctx, "Cosigner key path not specified")
+		os.Exit(1)
+	}
+	r, err := os.ReadFile(path)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to read witness cosigner file", slog.String("path", *witnessSignerPath), slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to read cosigner key", slog.String("path", path), slog.Any("error", err))
 		os.Exit(1)
 	}
 	s, err := fnote.NewSignerForCosignatureV1(string(r))
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to create cosigner", slog.String("path", *witnessSignerPath), slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to create cosigner", slog.String("path", path), slog.Any("error", err))
 		os.Exit(1)
 	}
-	return []note.Signer{s}
+	return s
 }
 
 
