@@ -314,6 +314,7 @@ func (a *appender) sequenceBatch(ctx context.Context, entries []*tessera.Entry) 
 		// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
 		// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
 		a.s.mu.Lock()
+		defer a.s.mu.Unlock()
 		unlock, err := a.s.lockFile(ctx, treeStateLock)
 		if err != nil {
 			panic(err)
@@ -322,7 +323,6 @@ func (a *appender) sequenceBatch(ctx context.Context, entries []*tessera.Entry) 
 			if err := unlock(); err != nil {
 				panic(err)
 			}
-			a.s.mu.Unlock()
 		}()
 
 		size, _, err := a.s.readTreeState(ctx)
@@ -539,6 +539,7 @@ func (a *appender) initialise(ctx context.Context) error {
 	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
 	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
 	a.s.mu.Lock()
+	defer a.s.mu.Unlock()
 	unlock, err := a.s.lockFile(ctx, treeStateLock)
 	if err != nil {
 		panic(err)
@@ -547,7 +548,6 @@ func (a *appender) initialise(ctx context.Context) error {
 		if err := unlock(); err != nil {
 			panic(err)
 		}
-		a.s.mu.Unlock()
 	}()
 
 	if err := a.s.ensureVersion(compatibilityVersion); err != nil {
@@ -997,6 +997,7 @@ func (m *MigrationStorage) initialise(ctx context.Context) error {
 	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
 	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
 	m.s.mu.Lock()
+	defer m.s.mu.Unlock()
 	unlock, err := m.s.lockFile(ctx, treeStateLock)
 	if err != nil {
 		panic(err)
@@ -1005,7 +1006,6 @@ func (m *MigrationStorage) initialise(ctx context.Context) error {
 		if err := unlock(); err != nil {
 			panic(err)
 		}
-		m.s.mu.Unlock()
 	}()
 
 	if err := m.s.ensureVersion(compatibilityVersion); err != nil {
@@ -1042,6 +1042,7 @@ func (m *MigrationStorage) buildTree(ctx context.Context, targetSize uint64) err
 	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
 	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
 	m.s.mu.Lock()
+	defer m.s.mu.Unlock()
 	unlock, err := m.s.lockFile(ctx, treeStateLock)
 	if err != nil {
 		panic(err)
@@ -1050,7 +1051,6 @@ func (m *MigrationStorage) buildTree(ctx context.Context, targetSize uint64) err
 		if err := unlock(); err != nil {
 			panic(err)
 		}
-		m.s.mu.Unlock()
 	}()
 
 	size, _, err := m.s.readTreeState(ctx)
@@ -1148,16 +1148,17 @@ func (m *MirrorWriter) initialise(ctx context.Context) error {
 	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
 	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
 	m.s.mu.Lock()
+	defer m.s.mu.Unlock()
 	unlock, err := m.s.lockFile(ctx, treeStateLock)
 	if err != nil {
-		return fmt.Errorf("failed to lock tree state: %v", err)
+		// Oh dear, panic Mr Mainwaring!
+		panic(fmt.Errorf("failed to lock tree state: %v", err))
 	}
 	defer func() {
 		if err := unlock(); err != nil {
 			// Oh dear, panic Mr Mainwaring!
 			panic(fmt.Errorf("failed to unlock tree state: %v", err))
 		}
-		m.s.mu.Unlock()
 	}()
 
 	if err := m.s.ensureVersion(compatibilityVersion); err != nil {

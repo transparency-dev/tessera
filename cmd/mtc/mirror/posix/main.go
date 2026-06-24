@@ -44,8 +44,8 @@ const (
 var (
 	listenAddr        = flag.String("listen_addr", ":8080", "The address to listen on for HTTP requests.")
 	storageDir        = flag.String("storage_dir", "", "Directory to store mirror data.")
-	witnessSignerPath = flag.String("witness_signer_path", "", "The path to the note-formatted witness signer secret key.")
-	mirrorSignerPath  = flag.String("mirror_signer_path", "", "The path to the note-formatted mirror signer secret key.")
+	witnessCosignerPath = flag.String("witness_cosigner_path", "", "The path to the note-formatted witness cosigner secret key.")
+	mirrorCosignerPath  = flag.String("mirror_cosigner_path", "", "The path to the note-formatted mirror cosigner secret key.")
 	mirrorConfigPath  = flag.String("config_path", "", "The path to the mirror configuration file.")
 )
 
@@ -61,7 +61,7 @@ func main() {
 		}
 	}()
 
-	mirrorSigner := mustCreateSigner(ctx, *mirrorSignerPath)
+	mirrorCosigner := mustCreateCosigner(ctx, *mirrorCosignerPath)
 
 	mux := handler.NewMirrorMux()
 	cfg := mirrorConfigFromFlags(ctx)
@@ -75,7 +75,7 @@ func main() {
 		origin := v.Name()
 
 		// Create the mirror
-		t, err := newMirrorTarget(ctx, w, origin, mirrorSigner)
+		t, err := newMirrorTarget(ctx, w, origin, mirrorCosigner)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to create mirror target", slog.String("origin", origin), slog.Any("error", err))
 			os.Exit(1)
@@ -109,7 +109,7 @@ func main() {
 // with the `tlog-mirror` spec, allowing the root of the storage directory to be exported directly to read-only clients.
 func newMirrorTarget(ctx context.Context, w *witness.Witness, origin string, mirrorSigner note.Signer) (*tessera.MirrorTarget, error) {	
 		targetDir := filepath.Join(*storageDir, url.PathEscape(origin))
-		if err := os.MkdirAll(targetDir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		if err := os.MkdirAll(targetDir, 0o755); err != nil {
 			return nil, fmt.Errorf("mkdir %q: %v", targetDir, err)
 		}
 		d, err := posix.New(ctx, posix.Config{Path: targetDir})
@@ -170,7 +170,7 @@ func witnessFromFlags(ctx context.Context) (*witness.Witness, *sqlite.Persistenc
 
  	w, err := witness.New(ctx, witness.Opts{
  		Persistence: p,
- 		Signers:     witnessSignerFromFlags(ctx),
+ 		Signers:     witnessCosignerFromFlags(ctx),
 		VerifierForLog: func(ctx context.Context, origin string) (note.Verifier, bool, error) {
 			log, ok, err := p.Log(ctx, origin)
 			if err != nil || !ok {
@@ -186,22 +186,22 @@ func witnessFromFlags(ctx context.Context) (*witness.Witness, *sqlite.Persistenc
 	return w, p, shutdown
 }
 
-func witnessSignerFromFlags(ctx context.Context) []note.Signer {
-	if *witnessSignerPath == "" {
-		slog.WarnContext(ctx, "cosigner not configured, add-checkpoint will not return cosigs")
+func witnessCosignerFromFlags(ctx context.Context) []note.Signer {
+	if *witnessCosignerPath == "" {
+		slog.WarnContext(ctx, "Witness cosigner not configured, add-checkpoint will not return cosigs")
 		return []note.Signer{}
 	}
-	return []note.Signer{mustCreateSigner(ctx, *witnessSignerPath)}
+	return []note.Signer{mustCreateCosigner(ctx, *witnessCosignerPath)}
 }
 
-func mustCreateSigner(ctx context.Context, path string) note.Signer {
+func mustCreateCosigner(ctx context.Context, path string) note.Signer {
 	if path == "" {
-		slog.ErrorContext(ctx, "Signer path not specified")
+		slog.ErrorContext(ctx, "Cosigner key path not specified")
 		os.Exit(1)
 	}
 	r, err := os.ReadFile(path)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to read cosigner file", slog.String("path", path), slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to read cosigner key", slog.String("path", path), slog.Any("error", err))
 		os.Exit(1)
 	}
 	s, err := fnote.NewSignerForCosignatureV1(string(r))
