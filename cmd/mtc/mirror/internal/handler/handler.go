@@ -76,13 +76,14 @@ func addEntries(m *MirrorMux) http.HandlerFunc {
 			}()
 		default:
 			// Log unknown encodings and treat as malformed request
-			slog.WarnContext(r.Context(), "Unknown Content-Encoding", slog.String("encoding", ce))
+			slog.DebugContext(r.Context(), "Unknown Content-Encoding", slog.String("encoding", ce))
 			http.Error(w, "Unsupported content encoding", http.StatusBadRequest)
 			return
 		}
 		req, err := parseAddEntriesPreamble(reader)
 		if err != nil {
-			http.Error(w, "Failed to parse request preamble", http.StatusBadRequest)
+			slog.DebugContext(r.Context(), "Failed to parse request preamble", slog.Any("err", err))
+			http.Error(w, "Invalid request preamble", http.StatusBadRequest)
 			return
 		}
 
@@ -108,7 +109,7 @@ func addEntries(m *MirrorMux) http.HandlerFunc {
 			return
 
 		case err != nil:
-			slog.ErrorContext(r.Context(), "Failed to add entries", slog.String("origin", req.logOrigin), slog.Any("err", err))
+			slog.DebugContext(r.Context(), "Failed to add entries", slog.String("origin", req.logOrigin), slog.Any("err", err))
 			http.Error(w, "Failed to add entries", http.StatusInternalServerError)
 			return
 

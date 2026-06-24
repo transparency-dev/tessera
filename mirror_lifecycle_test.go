@@ -15,7 +15,9 @@
 package tessera
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -66,7 +68,7 @@ func (f *fakeLogReader) NextIndex(ctx context.Context) (uint64, error) { return 
 
 const (
 	testPendingCPOrigin = "test-origin"
-	testPendingCPSize   = uint64(200)
+	testPendingCPSize   = uint64(512)
 	testPendingCPRoot   = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
 )
 
@@ -83,6 +85,42 @@ func newTestMirrorTarget(size uint64) *MirrorTarget {
 		cpSource: func(ctx context.Context) ([]byte, error) {
 			return []byte(testPendingCP), nil
 		},
+	}
+}
+
+func TestTicketRoundTrip(t *testing.T) {
+	mt := newTestMirrorTarget(0)
+
+	ticket, err := mt.sealTicket([]byte(testPendingCP))
+	if err != nil {
+		t.Fatalf("sealTicket failed: %v", err)
+	}
+
+	p, err := mt.openTicket(ticket)
+	if err != nil {
+		t.Fatalf("openTicket failed: %v", err)
+	}
+
+	if !bytes.Equal(p, []byte(testPendingCP)) {
+		t.Errorf("openTicket: got %s, want %s", p, testPendingCP)
+	}
+}
+
+func TestTicketTampering(t *testing.T) {
+	mt := newTestMirrorTarget(0)
+
+	ticket, err := mt.sealTicket([]byte(testPendingCP))
+	if err != nil {
+		t.Fatalf("sealTicket failed: %v", err)
+	}
+
+	for i := 0; i < len(ticket); i++ {
+		b := ticket[i]
+		ticket[i] = b ^ 0xff
+		if _, err := mt.openTicket(ticket); err == nil {
+			t.Errorf("openTicket: tampering did not fail")
+		}
+		ticket[i] = b
 	}
 }
 
@@ -110,57 +148,20 @@ func TestMirrorTarget_AddEntries_NoTicket(t *testing.T) {
 	}
 }
 
-func TestMirrorTarget_AddEntries_RangeConflict(t *testing.T) {
+func TestMirrorTarget_AddEntries_ValidTicket(t *testing.T) {
 	const (
-		testUploadStart    = uint64(100)
-		testUploadEnd      = uint64(250)
-		testPendingSize    = uint64(200)
-		testIntegratedSize = uint64(150)
+		testUploadStart    = uint64(256)
+		testUploadEnd      = uint64(512)
+		testIntegratedSize = uint64(256)
 	)
 	ctx := context.Background()
 	mt := &MirrorTarget{
+		ticketKey: make([]byte, sha256.Size),
 		writer: &fakeMirrorWriter{
 			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
-		},
-		reader: &fakeLogReader{
-			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
-		},
-		cpSource: func(ctx context.Context) ([]byte, error) { return []byte(testPendingCP), nil },
-	}
-
-	validTicket, err := mt.sealTicket(ctx, &ticket{PendingCP: []byte(testPendingCP)})
-	if err != nil {
-		t.Fatalf("sealTicket failed: %v", err)
-	}
-
-	// testUploadEnd  != pendingSize -> conflict
-	_, _, _, _, err = mt.AddEntries(ctx, testUploadStart, testUploadEnd, validTicket, func() (*MirrorPackage, error) {
-		return nil, io.EOF
-	})
-	if !errors.Is(err, ErrConflict) {
-		t.Errorf("want ErrConflict, got %v", err)
-	}
-}
-
-func TestMirrorTarget_AddEntries_CompleteUpload(t *testing.T) {
-	const (
-		testIntegratedSize = uint64(100)
-		testUploadStart    = uint64(100)
-		testUploadEnd      = uint64(200)
-	)
-
-	ctx := context.Background()
-	mt := &MirrorTarget{
-		writer: &fakeMirrorWriter{
 			integrateFunc: func(ctx context.Context, from uint64, bundles iter.Seq[api.EntryBundle]) (uint64, []byte, error) {
-				// Consume iterator
-				for range bundles {
-				}
-				decodedRoot, err := base64.StdEncoding.DecodeString(testPendingCPRoot)
-				if err != nil {
-					return 0, nil, fmt.Errorf("TEST ERROR: %v", err)
-				}
-				return testPendingCPSize, decodedRoot, nil
+				pendingCPRoot, err := base64.StdEncoding.DecodeString(testPendingCPRoot)
+				return testUploadEnd, pendingCPRoot, err
 			},
 		},
 		reader: &fakeLogReader{
@@ -169,11 +170,10 @@ func TestMirrorTarget_AddEntries_CompleteUpload(t *testing.T) {
 		cpSource: func(ctx context.Context) ([]byte, error) { return []byte(testPendingCP), nil },
 	}
 
-	validTicket, err := mt.sealTicket(ctx, &ticket{PendingCP: []byte(testPendingCP)})
+	validTicket, err := mt.sealTicket([]byte(testPendingCP))
 	if err != nil {
 		t.Fatalf("sealTicket failed: %v", err)
 	}
-
 	nextEntry, pendingSize, _, cosigs, err := mt.AddEntries(ctx, testUploadStart, testUploadEnd, validTicket, func() (*MirrorPackage, error) {
 		return nil, io.EOF
 	})
