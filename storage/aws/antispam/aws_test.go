@@ -163,6 +163,35 @@ func TestAntispamPushbackRecovers(t *testing.T) {
 	t.Fatalf("pushBack remains true after 5 seconds despite being caught up!")
 }
 
+func TestAntispamIndexError(t *testing.T) {
+	ctx := t.Context()
+	if canSkipMySQLTest(t, ctx) {
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
+		t.Skip("MySQL not available, skipping test")
+	}
+	mustDropTables(t, ctx)
+	as, err := NewAntispam(ctx, *mySQLURI, AntispamOpts{
+		PushbackThreshold: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// DB should be empty, try to read an index and expect no index and no error.
+	i, err := as.index(t.Context(), []byte("hash"))
+	if i != nil || err != nil {
+		t.Fatalf("got %v, %v, want nil, nil", i, err)
+	}
+
+	// Close the DB, and try to read an index. Should see an error.
+	if err := as.dbPool.Close(); err != nil {
+		t.Fatalf("Failed to close DB: %v", err)
+	}
+	if _, err := as.index(t.Context(), []byte("hash")); err == nil {
+		t.Fatal("Got no error, want error")
+	}
+}
+
 // canSkipMySQLTest checks if the test MySQL db is available and, if not, if the test can be skipped.
 //
 // Use this method before every MySQL test, and if it returns true, skip the test.
