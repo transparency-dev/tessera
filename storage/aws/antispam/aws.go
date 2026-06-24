@@ -192,8 +192,11 @@ func (d *AntispamStorage) index(ctx context.Context, h []byte) (*uint64, error) 
 	row := d.dbPool.QueryRowContext(ctx, "SELECT idx FROM AntispamIDSeq WHERE h = ?", h)
 
 	var idx uint64
-	if err := row.Scan(&idx); err == sql.ErrNoRows {
-		return nil, nil
+	if err := row.Scan(&idx); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("error during scan: %v", err)
 	}
 	d.numHits.Add(1)
 	return &idx, nil
