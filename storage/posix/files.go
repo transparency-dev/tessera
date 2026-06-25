@@ -508,8 +508,6 @@ func (lrs *logResourceStorage) writeTile(ctx context.Context, level, index uint6
 			return err
 		}
 
-
-
 		posixOpsHistogram.Record(ctx, time.Since(now).Milliseconds(), metric.WithAttributes(opNameKey.String("writeTile")))
 		return nil
 	})
@@ -1111,7 +1109,6 @@ func (m *MigrationStorage) fetchLeafHashes(ctx context.Context, from, to, source
 	}
 	return lh, nil
 }
-
 
 // MirrorWriter creates a new POSIX storage for the MirrorTarget lifecycle mode.
 func (s *Storage) MirrorWriter(ctx context.Context, opts *tessera.MirrorOptions) (tessera.MirrorWriter, tessera.LogReader, error) {

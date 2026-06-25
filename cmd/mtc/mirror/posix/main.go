@@ -22,18 +22,18 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
-	"net/url"
 
 	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/mirror/internal/config"
-	"github.com/transparency-dev/tessera/storage/posix"
 	"github.com/transparency-dev/tessera/cmd/mtc/mirror/internal/handler"
+	"github.com/transparency-dev/tessera/storage/posix"
 	"github.com/transparency-dev/witness/omniwitness"
-	"github.com/transparency-dev/witness/witness"
 	"github.com/transparency-dev/witness/persistence/sqlite"
+	"github.com/transparency-dev/witness/witness"
 	"golang.org/x/mod/sumdb/note"
 )
 
@@ -42,18 +42,18 @@ const (
 )
 
 var (
-	listenAddr        = flag.String("listen_addr", ":8080", "The address to listen on for HTTP requests.")
-	storageDir        = flag.String("storage_dir", "", "Directory to store mirror data.")
+	listenAddr          = flag.String("listen_addr", ":8080", "The address to listen on for HTTP requests.")
+	storageDir          = flag.String("storage_dir", "", "Directory to store mirror data.")
 	witnessCosignerPath = flag.String("witness_cosigner_path", "", "The path to the note-formatted witness cosigner secret key.")
 	mirrorCosignerPath  = flag.String("mirror_cosigner_path", "", "The path to the note-formatted mirror cosigner secret key.")
-	mirrorConfigPath  = flag.String("config_path", "", "The path to the mirror configuration file.")
+	mirrorConfigPath    = flag.String("config_path", "", "The path to the mirror configuration file.")
 )
 
 func main() {
 	flag.Parse()
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	ctx := context.Background()
-	
+
 	w, wp, shutdown := witnessFromFlags(ctx)
 	defer func() {
 		if err := shutdown(); err != nil {
@@ -107,21 +107,21 @@ func main() {
 //
 // The target directory for the driver is derived from the storage directory and the origin in accordance
 // with the `tlog-mirror` spec, allowing the root of the storage directory to be exported directly to read-only clients.
-func newMirrorTarget(ctx context.Context, w *witness.Witness, origin string, mirrorSigner note.Signer) (*tessera.MirrorTarget, error) {	
-		targetDir := filepath.Join(*storageDir, url.PathEscape(origin))
-		if err := os.MkdirAll(targetDir, 0o755); err != nil {
-			return nil, fmt.Errorf("mkdir %q: %v", targetDir, err)
-		}
-		d, err := posix.New(ctx, posix.Config{Path: targetDir})
-		if err != nil {
-			return nil, fmt.Errorf("posix.New: %v", err)
-		}
-		mOpts := tessera.NewMirrorOptions().
-				WithCheckpointSource(func(ctx context.Context) ([]byte, error) {
-					return w.GetCheckpoint(ctx, origin)
-				}).
-				WithSigner(mirrorSigner)
-		return tessera.NewMirrorTarget(ctx, d, mOpts)
+func newMirrorTarget(ctx context.Context, w *witness.Witness, origin string, mirrorSigner note.Signer) (*tessera.MirrorTarget, error) {
+	targetDir := filepath.Join(*storageDir, url.PathEscape(origin))
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir %q: %v", targetDir, err)
+	}
+	d, err := posix.New(ctx, posix.Config{Path: targetDir})
+	if err != nil {
+		return nil, fmt.Errorf("posix.New: %v", err)
+	}
+	mOpts := tessera.NewMirrorOptions().
+		WithCheckpointSource(func(ctx context.Context) ([]byte, error) {
+			return w.GetCheckpoint(ctx, origin)
+		}).
+		WithSigner(mirrorSigner)
+	return tessera.NewMirrorTarget(ctx, d, mOpts)
 }
 
 // mirrorConfigFromFlags returns a mirror configuration loaded from the provided flags.
@@ -149,28 +149,28 @@ func mirrorConfigFromFlags(ctx context.Context) config.Config {
 //
 // The returned shutdown func should be called once the witness is no longer in use.
 func witnessFromFlags(ctx context.Context) (*witness.Witness, *sqlite.Persistence, func() error) {
- 	if *storageDir == "" {
- 		slog.ErrorContext(ctx, "Storage directory not specified")
- 		os.Exit(1)
- 	}
- 
- 	wPath := filepath.Join(*storageDir, witnessDir)
- 	if err := os.MkdirAll(wPath, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
- 		slog.ErrorContext(ctx, "Failed to create witness directory", slog.String("path", wPath))
- 		os.Exit(1)
- 	}
- 
+	if *storageDir == "" {
+		slog.ErrorContext(ctx, "Storage directory not specified")
+		os.Exit(1)
+	}
+
+	wPath := filepath.Join(*storageDir, witnessDir)
+	if err := os.MkdirAll(wPath, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		slog.ErrorContext(ctx, "Failed to create witness directory", slog.String("path", wPath))
+		os.Exit(1)
+	}
+
 	p, shutdown, err := sqlite.New(ctx, sqlite.Opts{
- 		Path: filepath.Join(wPath, "witness.db"),
- 	})
+		Path: filepath.Join(wPath, "witness.db"),
+	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create witness persistence", slog.String("path", wPath), slog.Any("error", err))
 		os.Exit(1)
 	}
 
- 	w, err := witness.New(ctx, witness.Opts{
- 		Persistence: p,
- 		Signers:     witnessCosignerFromFlags(ctx),
+	w, err := witness.New(ctx, witness.Opts{
+		Persistence: p,
+		Signers:     witnessCosignerFromFlags(ctx),
 		VerifierForLog: func(ctx context.Context, origin string) (note.Verifier, bool, error) {
 			log, ok, err := p.Log(ctx, origin)
 			if err != nil || !ok {
@@ -211,5 +211,3 @@ func mustCreateCosigner(ctx context.Context, path string) note.Signer {
 	}
 	return s
 }
-
-

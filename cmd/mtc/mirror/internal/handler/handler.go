@@ -113,9 +113,9 @@ func addEntries(m *MirrorMux) http.HandlerFunc {
 			return
 
 		case nextEntry == pendingSize:
-			// SPEC: If next_entry == upload_end, and no cosignatures are provided by the mirror, 
+			// SPEC: If next_entry == upload_end, and no cosignatures are provided by the mirror,
 			// the mirror MUST respond with a "200 OK" status code and an empty response body.
-			// If next_entry == upload_end, and cosignatures are provided by the mirror, 
+			// If next_entry == upload_end, and cosignatures are provided by the mirror,
 			// the mirror MUST respond with a "200 OK" status code and the cosignatures.
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(cosigs) // We don't care about failures here.

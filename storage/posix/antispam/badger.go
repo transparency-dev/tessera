@@ -99,7 +99,7 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 
 	bOpts := badger.DefaultOptions(badgerPath).
 		WithLogger(&slogger{}).
-		WithValueThreshold(1<<10).
+		WithValueThreshold(1 << 10).
 		WithCompression(options.None)
 
 	if opts.BadgerOptions != nil {
