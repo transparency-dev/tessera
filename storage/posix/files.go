@@ -1061,9 +1061,9 @@ func (m *MigrationStorage) buildTree(ctx context.Context, targetSize uint64) err
 		size = 0
 	}
 	m.curSize = size
-	slog.DebugContext(ctx, "Building", slog.Uint64("from", m.curSize))
+	slog.DebugContext(ctx, "Building", slog.Uint64("from", m.curSize), slog.Uint64("targetsize", targetSize))
 
-	lh, err := m.fetchLeafHashes(ctx, size, targetSize, targetSize)
+	lh, err := fetchLeafHashes(ctx, size, targetSize-size, targetSize, m.logStorage.ReadEntryBundle, m.bundleHasher)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			// We just don't have the bundle yet.
@@ -1085,18 +1085,22 @@ func (m *MigrationStorage) buildTree(ctx context.Context, targetSize uint64) err
 	return nil
 }
 
-func (m *MigrationStorage) fetchLeafHashes(ctx context.Context, from, to, sourceSize uint64) ([][]byte, error) {
+// fetchLeafHashes returns a slice of leaf hashes for the entries in the provided range [from, from+N), using the provided
+// functions to read from storage and hash entries.
+//
+// Returns the hashes in the order of the entries.
+func fetchLeafHashes(ctx context.Context, from, N, sourceSize uint64, readBundle func(context.Context, uint64, uint8) ([]byte, error), bundleHasher func(b []byte) ([][]byte, error)) ([][]byte, error) {
 	const maxBundles = 300
 
-	lh := make([][]byte, 0, maxBundles)
+	lh := make([][]byte, 0, maxBundles*layout.EntryBundleWidth)
 	n := 0
-	for ri := range layout.Range(from, to, sourceSize) {
-		b, err := m.logStorage.ReadEntryBundle(ctx, ri.Index, ri.Partial)
+	for ri := range layout.Range(from, N, sourceSize) {
+		b, err := readBundle(ctx, ri.Index, ri.Partial)
 		if err != nil {
 			return nil, fmt.Errorf("ReadEntryBundle(%d.%d): %w", ri.Index, ri.Partial, err)
 		}
 
-		bh, err := m.bundleHasher(b)
+		bh, err := bundleHasher(b)
 		if err != nil {
 			return nil, fmt.Errorf("bundleHasherFunc for bundle index %d: %v", ri.Index, err)
 		}
@@ -1182,7 +1186,9 @@ func (m *MirrorWriter) initialise(ctx context.Context) error {
 
 // marshalTlogEntryBundle returns a tlog-tiles compatible serialization of the provided entrybundle.
 func marshalTlogEntryBundle(b api.EntryBundle) ([]byte, error) {
-	// Max size we could possibly write out.
+	// Prealloc the max size we could possibly write out (about 16MB for a full bundle of max size entries).
+	// If this causes problems we may want to default this to some lower
+	// "reasonable" intermediate size, but not going to worry about that for now.
 	data := make([]byte, 0, len(b.Entries)*(2+1<<16))
 	for i, e := range b.Entries {
 		l := len(e)
@@ -1199,15 +1205,30 @@ func marshalTlogEntryBundle(b api.EntryBundle) ([]byte, error) {
 // Returns the new size and root hash of the tree if successful.
 func (m *MirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, bundles iter.Seq[api.EntryBundle]) (uint64, []byte, error) {
 	targetSize := bundleIdx * layout.EntryBundleWidth
+	seenPartialBundle := false
 	for b := range bundles {
-		p := len(b.Entries)
-		if p == layout.EntryBundleWidth {
-			p = 0
+		if seenPartialBundle {
+			// Seeing a partial bundle means that there should not be any further bundles to be processed.
+			return 0, nil, fmt.Errorf("unexpected bundle after partial at index %d", bundleIdx)
 		}
-		// tlog-mirror does not support any bundle serialization scheme other than tlog-tiles, so we just hard-code that here...
+
+		p := len(b.Entries)
+		switch p {
+		case 0:
+			return 0, nil, fmt.Errorf("zero-length entry bundle at index %d", bundleIdx)
+		case layout.EntryBundleWidth:
+			p = 0
+		default:
+			// This is a partial bundle, so we do not expect to see any further bundles from the iterator.
+			seenPartialBundle = true
+		}
+
+		// Serialise the bundle...
+		// Note that tlog-mirror does not support any bundle serialization scheme other than tlog-tiles, so we just hard-code
+		// that assumption here.
 		bundleData, err := marshalTlogEntryBundle(b)
 		if err != nil {
-			return 0, nil, fmt.Errorf("failed to marshal bundle index %d: %v", bundleIdx, err)
+			return 0, nil, fmt.Errorf("failed to marshal bundle at index %d: %v", bundleIdx, err)
 		}
 		// ...and then write it out.
 		if err := m.logStorage.writeBundle(ctx, bundleIdx, uint8(p), bundleData); err != nil {
@@ -1235,6 +1256,7 @@ func (m *MirrorWriter) buildTree(ctx context.Context, targetSize uint64) error {
 	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
 	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
 	m.s.mu.Lock()
+	defer m.s.mu.Unlock()
 	unlock, err := m.s.lockFile(ctx, treeStateLock)
 	if err != nil {
 		panic(err)
@@ -1243,7 +1265,6 @@ func (m *MirrorWriter) buildTree(ctx context.Context, targetSize uint64) error {
 		if err := unlock(); err != nil {
 			panic(err)
 		}
-		m.s.mu.Unlock()
 	}()
 
 	size, _, err := m.s.readTreeState(ctx)
@@ -1262,7 +1283,7 @@ func (m *MirrorWriter) buildTree(ctx context.Context, targetSize uint64) error {
 			return ctx.Err()
 		default:
 		}
-		lh, err := m.fetchLeafHashes(ctx, m.curSize, targetSize, targetSize)
+		lh, err := fetchLeafHashes(ctx, m.curSize, targetSize-m.curSize, targetSize, m.logStorage.ReadEntryBundle, m.bundleHasher)
 		if err != nil {
 			return fmt.Errorf("fetchLeafHashes(%d, %d): %v", m.curSize, targetSize, err)
 		}
@@ -1279,31 +1300,4 @@ func (m *MirrorWriter) buildTree(ctx context.Context, targetSize uint64) error {
 	}
 
 	return nil
-}
-
-func (m *MirrorWriter) fetchLeafHashes(ctx context.Context, from, to, sourceSize uint64) ([][]byte, error) {
-	const maxBundles = 300
-
-	lh := make([][]byte, 0, maxBundles)
-	n := 0
-	for ri := range layout.Range(from, to, sourceSize) {
-		b, err := m.logStorage.ReadEntryBundle(ctx, ri.Index, ri.Partial)
-		if err != nil {
-			return nil, fmt.Errorf("ReadEntryBundle(%d.%d): %w", ri.Index, ri.Partial, err)
-		}
-
-		bh, err := m.bundleHasher(b)
-		if err != nil {
-			return nil, fmt.Errorf("bundleHasherFunc for bundle index %d: %v", ri.Index, err)
-		}
-		if l := len(bh); l < int(ri.First+ri.N) {
-			return nil, fmt.Errorf("bundle index %d has fewer entries than expected (%d < %d)", ri.Index, l, ri.First+ri.N)
-		}
-		lh = append(lh, bh[ri.First:ri.First+ri.N]...)
-		n++
-		if n >= maxBundles {
-			break
-		}
-	}
-	return lh, nil
 }
