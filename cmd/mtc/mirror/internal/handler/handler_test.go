@@ -174,13 +174,13 @@ func (m *mockTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint
 
 func TestAddEntries_StatusCodes(t *testing.T) {
 	const (
-		testOrigin = "example-log"
+		testOrigin      = "example-log"
 		testUploadStart = 10
-		testUploadEnd = 20
-		testNextIdx = 100
+		testUploadEnd   = 20
+		testNextIdx     = 100
 		testPendingSize = 200
-		testNewTicket = "ticket-bytes"
-		testCosig = "— test-cosig\n"
+		testNewTicket   = "ticket-bytes"
+		testCosig       = "— test-cosig\n"
 	)
 
 	for _, test := range []struct {
@@ -253,7 +253,7 @@ func TestAddEntries_StatusCodes(t *testing.T) {
 			},
 			wantStatus: http.StatusInternalServerError,
 		},
-	}{
+	} {
 		t.Run(test.name, func(t *testing.T) {
 			mux := NewMirrorMux()
 			_ = mux.AddTarget(testOrigin, test.mockTarget)
@@ -287,4 +287,3 @@ func TestAddEntries_StatusCodes(t *testing.T) {
 		})
 	}
 }
-

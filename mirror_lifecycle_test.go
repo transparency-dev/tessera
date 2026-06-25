@@ -112,9 +112,9 @@ func TestMirrorTarget_AddEntries_NoTicket(t *testing.T) {
 
 func TestMirrorTarget_AddEntries_RangeConflict(t *testing.T) {
 	const (
-		testUploadStart = uint64(100)
-		testUploadEnd   = uint64(250)
-		testPendingSize = uint64(200)
+		testUploadStart    = uint64(100)
+		testUploadEnd      = uint64(250)
+		testPendingSize    = uint64(200)
 		testIntegratedSize = uint64(150)
 	)
 	ctx := context.Background()

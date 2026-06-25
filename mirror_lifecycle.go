@@ -34,7 +34,7 @@ import (
 var (
 	// ErrConflict is returned when the requested upload range conflicts with the
 	// current state of the log.
-	ErrConflict          = errors.New("tree size conflict")
+	ErrConflict = errors.New("tree size conflict")
 	// ErrNoPendingCheckpoint is returned when a pending checkpoint cannot be
 	// determined.
 	ErrNoPendingCheckpoint = errors.New("no pending checkpoint")
@@ -199,7 +199,6 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 		return curIntegratedSize, pendingSize, ticketBytes, nil, ErrConflict
 	}
 
-
 	bi := func(yield func(api.EntryBundle) bool) {
 		for {
 			pkg, err := next()
@@ -221,7 +220,7 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 	}
 
 	// TODO(al): Check uploadStart is aligned to EntryBundleWidth.
-	bundleIdx := uploadStart/layout.EntryBundleWidth
+	bundleIdx := uploadStart / layout.EntryBundleWidth
 
 	nextEntry, newRoot, err := mt.writer.IntegrateBundles(ctx, bundleIdx, bi)
 	switch {
@@ -233,7 +232,7 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 			return 0, 0, nil, nil, errors.New("internal error")
 		}
 		// This is a complete upload.
-		// TODO(al): 
+		// TODO(al):
 		// 		- cosign the pending checkpoint,
 		// 		- publish it IFF we not overwriting a larger checkpoint
 		// 		- If published, then return the cosig(s) to the caller.
@@ -279,4 +278,3 @@ func (mt *MirrorTarget) openTicket(ctx context.Context, ticketBytes []byte) (*ti
 	}
 	return &t, nil
 }
-	

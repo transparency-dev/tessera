@@ -183,7 +183,7 @@ func TestShutdownBehavior(t *testing.T) {
 			term := &terminator{
 				readCheckpoint: func(ctx context.Context) ([]byte, error) {
 					// Return a valid checkpoint string that parse.CheckpointUnsafe can parse.
-					return []byte(fmt.Sprintf("example.com\n%d\nqINS1GRFhWHwdkUeqLEoP4yEMkTBBzxBkGwGQlVlVcs=\n", test.cpSize)), nil
+					return fmt.Appendf(nil, "example.com\n%d\nqINS1GRFhWHwdkUeqLEoP4yEMkTBBzxBkGwGQlVlVcs=\n", test.cpSize), nil
 				},
 				shutdownTimeout: 10 * time.Millisecond,
 			}
