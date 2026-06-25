@@ -151,10 +151,19 @@ func overwrite(name string, d []byte) error {
 		if err != nil {
 			return fmt.Errorf("failed to create temp file: %w", err)
 		}
+		success := false
+		defer func() {
+			if !success {
+				if err := os.Remove(tmpName); err != nil {
+					slog.WarnContext(context.Background(), "Failed to remove temporary file", slog.String("tmpname", tmpName), slog.Any("error", err))
+				}
+			}
+		}()
 
 		if err := os.Rename(tmpName, name); err != nil {
 			return fmt.Errorf("failed to rename temporary file to target %q: %w", name, err)
 		}
+		success = true
 		return nil
 	})
 }
@@ -186,17 +195,31 @@ func createTemp(prefix string, d []byte) (name string, err error) {
 		}
 	}
 
+	tmpName := name
+	success := false
 	defer func() {
-		if errC := f.Close(); errC != nil && err == nil {
-			err = errC
+		if !success {
+			if err := os.Remove(tmpName); err != nil {
+				slog.WarnContext(context.Background(), "Failed to remove temporary file", slog.String("tmpname", tmpName), slog.Any("error", err))
+			}
+			name = ""
+		}
+	}()
+	defer func() {
+		if errC := f.Close(); errC != nil {
+			if err == nil {
+				err = errC
+			}
+			success = false
 		}
 	}()
 
-	if n, err := f.Write(d); err != nil {
-		return "", fmt.Errorf("failed to write to temporary file %q: %w", name, err)
+	if n, writeErr := f.Write(d); writeErr != nil {
+		return "", fmt.Errorf("failed to write to temporary file %q: %w", name, writeErr)
 	} else if l := len(d); n < l {
 		return "", fmt.Errorf("short write on %q, %d < %d", name, n, l)
 	}
 
+	success = true
 	return name, nil
 }
