@@ -1301,3 +1301,33 @@ func (m *MirrorWriter) buildTree(ctx context.Context, targetSize uint64) error {
 
 	return nil
 }
+
+func (m *MirrorWriter) UpdateCheckpoint(ctx context.Context, fn func(old []byte) ([]byte, error)) error {
+	// Double locking:
+	// - The mutex `Lock()` ensures that multiple concurrent calls to this function within a task are serialised.
+	// - The POSIX `lockFile()` ensures that distinct tasks are serialised.
+	m.s.mu.Lock()
+	defer m.s.mu.Unlock()
+	unlock, err := m.s.lockFile(ctx, publishLock)
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err := unlock(); err != nil {
+			panic(err)
+		}
+	}()
+
+	oldCP, err := m.logStorage.ReadCheckpoint(ctx)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("failed to read published checkpoint: %v", err)
+		}
+	}
+	newCP, err := fn(oldCP)
+	if err != nil {
+		return fmt.Errorf("update function returned error: %v", err)
+	}
+
+	return m.s.createOverwrite(layout.CheckpointPath, newCP)
+}

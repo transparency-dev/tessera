@@ -17,7 +17,6 @@ package tessera
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -25,12 +24,15 @@ import (
 	"iter"
 	"testing"
 
+	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera/api"
+	"golang.org/x/mod/sumdb/note"
 )
 
 type fakeMirrorWriter struct {
-	integrateFunc func(ctx context.Context, from uint64, bundles iter.Seq[api.EntryBundle]) (uint64, []byte, error)
-	sizeFunc      func(ctx context.Context) (uint64, error)
+	integrateFunc        func(ctx context.Context, from uint64, bundles iter.Seq[api.EntryBundle]) (uint64, []byte, error)
+	sizeFunc             func(ctx context.Context) (uint64, error)
+	updateCheckpointFunc func(ctx context.Context, f func(oldCP []byte) (newCP []byte, err error)) error
 }
 
 func (f *fakeMirrorWriter) IntegrateBundles(ctx context.Context, from uint64, bundles iter.Seq[api.EntryBundle]) (uint64, []byte, error) {
@@ -45,6 +47,13 @@ func (f *fakeMirrorWriter) IntegratedSize(ctx context.Context) (uint64, error) {
 		return f.sizeFunc(ctx)
 	}
 	return 0, nil
+}
+
+func (f *fakeMirrorWriter) UpdateCheckpoint(ctx context.Context, g func(oldCP []byte) (newCP []byte, err error)) error {
+	if f.updateCheckpointFunc != nil {
+		return f.updateCheckpointFunc(ctx, g)
+	}
+	return nil
 }
 
 type fakeLogReader struct {
@@ -70,26 +79,18 @@ const (
 	testPendingCPOrigin = "test-origin"
 	testPendingCPSize   = uint64(512)
 	testPendingCPRoot   = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+
+	testMirrorOrigin = "test-mirror-origin"
 )
 
-var testPendingCP = fmt.Sprintf("%s\n%d\n%s\n— test-sig\n", testPendingCPOrigin, testPendingCPSize, testPendingCPRoot)
-
-func newTestMirrorTarget(size uint64) *MirrorTarget {
-	return &MirrorTarget{
-		writer: &fakeMirrorWriter{
-			sizeFunc: func(ctx context.Context) (uint64, error) { return size, nil },
-		},
-		reader: &fakeLogReader{
-			sizeFunc: func(ctx context.Context) (uint64, error) { return size, nil },
-		},
-		cpSource: func(ctx context.Context) ([]byte, error) {
-			return []byte(testPendingCP), nil
-		},
-	}
-}
+var (
+	testLogSigner, testLogVerifier = mustGenerateKey(testPendingCPOrigin)
+	testMirrorSigner, _            = mustGenerateKey(testMirrorOrigin)
+	testPendingCP                  = mustSignCP(testPendingCPOrigin, testPendingCPSize, testPendingCPRoot, testLogSigner)
+)
 
 func TestTicketRoundTrip(t *testing.T) {
-	mt := newTestMirrorTarget(0)
+	mt := &MirrorTarget{}
 
 	ticket, err := mt.sealTicket([]byte(testPendingCP))
 	if err != nil {
@@ -107,7 +108,7 @@ func TestTicketRoundTrip(t *testing.T) {
 }
 
 func TestTicketTampering(t *testing.T) {
-	mt := newTestMirrorTarget(0)
+	mt := &MirrorTarget{}
 
 	ticket, err := mt.sealTicket([]byte(testPendingCP))
 	if err != nil {
@@ -129,7 +130,22 @@ func TestMirrorTarget_AddEntries_NoTicket(t *testing.T) {
 		testIntegratedSize = uint64(100)
 	)
 	ctx := context.Background()
-	mt := newTestMirrorTarget(testIntegratedSize)
+	mt := &MirrorTarget{
+		logVerifier: testLogVerifier,
+		signer:      testMirrorSigner,
+		writer: &fakeMirrorWriter{
+			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
+			updateCheckpointFunc: func(ctx context.Context, f func(oldCP []byte) (newCP []byte, err error)) error {
+				return nil
+			},
+		},
+		reader: &fakeLogReader{
+			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
+		},
+		cpSource: func(ctx context.Context) ([]byte, error) {
+			return []byte(testPendingCP), nil
+		},
+	}
 
 	nextEntry, pendingSize, newTicket, _, err := mt.AddEntries(ctx, 0, 0, nil, func() (*MirrorPackage, error) {
 		return nil, io.EOF
@@ -148,20 +164,27 @@ func TestMirrorTarget_AddEntries_NoTicket(t *testing.T) {
 	}
 }
 
-func TestMirrorTarget_AddEntries_ValidTicket(t *testing.T) {
+func TestMirrorTarget_AddEntries_CompleteUpload(t *testing.T) {
 	const (
-		testUploadStart    = uint64(256)
-		testUploadEnd      = uint64(512)
 		testIntegratedSize = uint64(256)
+		testUploadStart    = uint64(256)
+		testUploadEnd      = testPendingCPSize
 	)
+
 	ctx := context.Background()
+	var gotUpdatedCP []byte
 	mt := &MirrorTarget{
-		ticketKey: make([]byte, sha256.Size),
+		logVerifier: testLogVerifier,
+		signer:      testMirrorSigner,
 		writer: &fakeMirrorWriter{
-			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
 			integrateFunc: func(ctx context.Context, from uint64, bundles iter.Seq[api.EntryBundle]) (uint64, []byte, error) {
 				pendingCPRoot, err := base64.StdEncoding.DecodeString(testPendingCPRoot)
 				return testUploadEnd, pendingCPRoot, err
+			},
+			updateCheckpointFunc: func(ctx context.Context, f func(oldCP []byte) (newCP []byte, err error)) error {
+				cp, err := f(nil)
+				gotUpdatedCP = cp
+				return err
 			},
 		},
 		reader: &fakeLogReader{
@@ -178,7 +201,7 @@ func TestMirrorTarget_AddEntries_ValidTicket(t *testing.T) {
 		return nil, io.EOF
 	})
 	if err != nil {
-		t.Errorf("unexpected error: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if got, want := nextEntry, testUploadEnd; got != want {
 		t.Errorf("got %d, want %d", got, want)
@@ -189,4 +212,31 @@ func TestMirrorTarget_AddEntries_ValidTicket(t *testing.T) {
 	if len(cosigs) == 0 {
 		t.Errorf("got empty cosigs, want non-empty")
 	}
+	if wantCP := append([]byte(testPendingCP), cosigs...); !bytes.Equal(gotUpdatedCP, wantCP) {
+		t.Errorf("got updated CP %x, want %x", gotUpdatedCP, wantCP)
+	}
+}
+
+func mustGenerateKey(origin string) (note.Signer, note.Verifier) {
+	sk, vk, err := fnote.GenerateMLDSAKey(origin)
+	if err != nil {
+		panic(fmt.Errorf("Failed to generate key for %q: %v", origin, err))
+	}
+	s, err := fnote.NewSignerForCosignatureV1(sk)
+	if err != nil {
+		panic(fmt.Errorf("Failed to instantiate signer: %v", err))
+	}
+	v, err := fnote.NewVerifierForCosignatureV1(vk)
+	if err != nil {
+		panic(fmt.Errorf("Failed to instantiate verifier: %v", err))
+	}
+	return s, v
+}
+
+func mustSignCP(origin string, size uint64, root string, s note.Signer) []byte {
+	raw, err := note.Sign(&note.Note{Text: fmt.Sprintf("%s\n%d\n%s\n", origin, size, root)}, s)
+	if err != nil {
+		panic(fmt.Errorf("Failed to sign note: %v", err))
+	}
+	return raw
 }
