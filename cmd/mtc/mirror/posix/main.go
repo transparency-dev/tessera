@@ -47,11 +47,12 @@ var (
 	witnessCosignerPath = flag.String("witness_cosigner_path", "", "The path to the note-formatted witness cosigner secret key.")
 	mirrorCosignerPath  = flag.String("mirror_cosigner_path", "", "The path to the note-formatted mirror cosigner secret key.")
 	mirrorConfigPath    = flag.String("config_path", "", "The path to the mirror configuration file.")
+	slogLevel           = flag.Int("slog_level", 0, "The cut-off threshold for structured logging.")
 )
 
 func main() {
 	flag.Parse()
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 	ctx := context.Background()
 
 	w, wp, shutdown := witnessFromFlags(ctx)
@@ -75,7 +76,7 @@ func main() {
 		origin := v.Name()
 
 		// Create the mirror
-		t, err := newMirrorTarget(ctx, w, origin, mirrorCosigner)
+		t, err := newMirrorTarget(ctx, w, v, mirrorCosigner)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to create mirror target", slog.String("origin", origin), slog.Any("error", err))
 			os.Exit(1)
@@ -107,7 +108,9 @@ func main() {
 //
 // The target directory for the driver is derived from the storage directory and the origin in accordance
 // with the `tlog-mirror` spec, allowing the root of the storage directory to be exported directly to read-only clients.
-func newMirrorTarget(ctx context.Context, w *witness.Witness, origin string, mirrorSigner note.Signer) (*tessera.MirrorTarget, error) {
+func newMirrorTarget(ctx context.Context, w *witness.Witness, logVerifier note.Verifier, mirrorSigner note.Signer) (*tessera.MirrorTarget, error) {
+	origin := logVerifier.Name()
+
 	targetDir := filepath.Join(*storageDir, url.PathEscape(origin))
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir %q: %v", targetDir, err)
@@ -120,6 +123,7 @@ func newMirrorTarget(ctx context.Context, w *witness.Witness, origin string, mir
 		WithCheckpointSource(func(ctx context.Context) ([]byte, error) {
 			return w.GetCheckpoint(ctx, origin)
 		}).
+		WithLogVerifier(logVerifier).
 		WithSigner(mirrorSigner)
 	return tessera.NewMirrorTarget(ctx, d, mOpts)
 }
