@@ -141,7 +141,7 @@ func overwrite(name string, d []byte) error {
 	if err := mkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("failed to make directory structure: %w", err)
 	}
-	return syncDir(dir, func() error {
+	return syncDir(dir, func() (err error) {
 		dir, _ := filepath.Split(name)
 		if err := mkdirAll(dir, dirPerm); err != nil {
 			return fmt.Errorf("failed to make entries directory structure: %w", err)
@@ -151,19 +151,18 @@ func overwrite(name string, d []byte) error {
 		if err != nil {
 			return fmt.Errorf("failed to create temp file: %w", err)
 		}
-		success := false
 		defer func() {
-			if !success {
+			// This deletes any temporary files that we don't return to the user due to error.
+			if err != nil {
 				if err := os.Remove(tmpName); err != nil {
 					slog.WarnContext(context.Background(), "Failed to remove temporary file", slog.String("tmpname", tmpName), slog.Any("error", err))
 				}
 			}
 		}()
 
-		if err := os.Rename(tmpName, name); err != nil {
+		if err = os.Rename(tmpName, name); err != nil {
 			return fmt.Errorf("failed to rename temporary file to target %q: %w", name, err)
 		}
-		success = true
 		return nil
 	})
 }
@@ -196,9 +195,9 @@ func createTemp(prefix string, d []byte) (name string, err error) {
 	}
 
 	tmpName := name
-	success := false
 	defer func() {
-		if !success {
+		// This deletes any temporary files that we don't return to the user due to error.
+		if err != nil {
 			if err := os.Remove(tmpName); err != nil {
 				slog.WarnContext(context.Background(), "Failed to remove temporary file", slog.String("tmpname", tmpName), slog.Any("error", err))
 			}
@@ -210,7 +209,6 @@ func createTemp(prefix string, d []byte) (name string, err error) {
 			if err == nil {
 				err = errC
 			}
-			success = false
 		}
 	}()
 
@@ -220,6 +218,5 @@ func createTemp(prefix string, d []byte) (name string, err error) {
 		return "", fmt.Errorf("short write on %q, %d < %d", name, n, l)
 	}
 
-	success = true
 	return name, nil
 }
