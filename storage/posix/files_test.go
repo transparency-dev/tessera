@@ -511,3 +511,23 @@ func TestCreateTemp_ErrorReturns(t *testing.T) {
 		t.Fatal("Test timed out: createTemp is likely in an infinite loop")
 	}
 }
+func TestOverwrite_CleanupOnRenameFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target_dir")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	err := overwrite(targetDir, []byte("some data"))
+	if err == nil {
+		t.Fatal("expected overwrite to fail when target is a directory")
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != "target_dir" {
+			t.Errorf("found unexpected file/dir after failure: %s", entry.Name())
+		}
+	}
+}
