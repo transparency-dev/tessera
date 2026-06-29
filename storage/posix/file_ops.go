@@ -141,7 +141,7 @@ func overwrite(name string, d []byte) error {
 	if err := mkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("failed to make directory structure: %w", err)
 	}
-	return syncDir(dir, func() error {
+	return syncDir(dir, func() (err error) {
 		dir, _ := filepath.Split(name)
 		if err := mkdirAll(dir, dirPerm); err != nil {
 			return fmt.Errorf("failed to make entries directory structure: %w", err)
@@ -151,8 +151,16 @@ func overwrite(name string, d []byte) error {
 		if err != nil {
 			return fmt.Errorf("failed to create temp file: %w", err)
 		}
+		defer func() {
+			// This deletes any temporary files that we don't return to the user due to error.
+			if err != nil {
+				if err := os.Remove(tmpName); err != nil {
+					slog.WarnContext(context.Background(), "Failed to remove temporary file", slog.String("tmpname", tmpName), slog.Any("error", err))
+				}
+			}
+		}()
 
-		if err := os.Rename(tmpName, name); err != nil {
+		if err = os.Rename(tmpName, name); err != nil {
 			return fmt.Errorf("failed to rename temporary file to target %q: %w", name, err)
 		}
 		return nil
@@ -187,13 +195,24 @@ func createTemp(prefix string, d []byte) (name string, err error) {
 	}
 
 	defer func() {
-		if errC := f.Close(); errC != nil && err == nil {
-			err = errC
+		// This deletes any temporary files that we don't return to the user due to error.
+		if err != nil {
+			if err := os.Remove(name); err != nil {
+				slog.WarnContext(context.Background(), "Failed to remove temporary file", slog.String("name", name), slog.Any("error", err))
+			}
+			name = ""
+		}
+	}()
+	defer func() {
+		if errC := f.Close(); errC != nil {
+			if err == nil {
+				err = errC
+			}
 		}
 	}()
 
-	if n, err := f.Write(d); err != nil {
-		return "", fmt.Errorf("failed to write to temporary file %q: %w", name, err)
+	if n, writeErr := f.Write(d); writeErr != nil {
+		return "", fmt.Errorf("failed to write to temporary file %q: %w", name, writeErr)
 	} else if l := len(d); n < l {
 		return "", fmt.Errorf("short write on %q, %d < %d", name, n, l)
 	}
