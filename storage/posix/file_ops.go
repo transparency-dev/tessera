@@ -194,12 +194,11 @@ func createTemp(prefix string, d []byte) (name string, err error) {
 		}
 	}
 
-	tmpName := name
 	defer func() {
 		// This deletes any temporary files that we don't return to the user due to error.
 		if err != nil {
-			if err := os.Remove(tmpName); err != nil {
-				slog.WarnContext(context.Background(), "Failed to remove temporary file", slog.String("tmpname", tmpName), slog.Any("error", err))
+			if err := os.Remove(name); err != nil {
+				slog.WarnContext(context.Background(), "Failed to remove temporary file", slog.String("name", name), slog.Any("error", err))
 			}
 			name = ""
 		}
