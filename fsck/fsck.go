@@ -170,9 +170,9 @@ func (f *Fsck) Check(ctx context.Context) error {
 	return nil
 }
 
-// CheckpointRaw returns the raw checkpoint as bytes after the checkpoint was fetched.
+// Checkpoint returns the raw checkpoint as bytes after the checkpoint was fetched.
 // This checkpoint does not guarantee the tree integrity.
-func (f *Fsck) CheckpointRaw() []byte {
+func (f *Fsck) Checkpoint() []byte {
 	return f.checkpointRaw
 }
 
