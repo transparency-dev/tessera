@@ -22,8 +22,6 @@ import (
 	"strconv"
 	"strings"
 
-	"maps"
-
 	f_note "github.com/transparency-dev/formats/note"
 	"golang.org/x/mod/sumdb/note"
 )
@@ -37,9 +35,9 @@ type policyComponent interface {
 
 	// Endpoints returns the details required for updating a witness and checking the
 	// response. The returned result is a map from the URL that should be used to update
-	// the witness with a new checkpoint, to the value which is the verifier to check
+	// the witness with a new checkpoint, to the values which are the verifiers to check
 	// the response is well formed.
-	Endpoints() map[string]note.Verifier
+	Endpoints() map[string][]note.Verifier
 }
 
 // NewWitnessGroupFromPolicy creates a graph of witness objects that represents the
@@ -220,10 +218,10 @@ func (w Witness) Satisfied(cp []byte) bool {
 
 // Endpoints returns the details required for updating a witness and checking the
 // response. The returned result is a map from the URL that should be used to update
-// the witness with a new checkpoint, to the value which is the verifier to check
+// the witness with a new checkpoint, to the values which are the verifiers to check
 // the response is well formed.
-func (w Witness) Endpoints() map[string]note.Verifier {
-	return map[string]note.Verifier{w.URL: w.Key}
+func (w Witness) Endpoints() map[string][]note.Verifier {
+	return map[string][]note.Verifier{w.URL: {w.Key}}
 }
 
 // NewWitnessGroup creates a grouping of Witness or WitnessGroup with a configurable threshold
@@ -281,12 +279,14 @@ func (wg WitnessGroup) Satisfied(cp []byte) bool {
 
 // Endpoints returns the details required for updating a witness and checking the
 // response. The returned result is a map from the URL that should be used to update
-// the witness with a new checkpoint, to the value which is the verifier to check
+// the witness with a new checkpoint, to the values which are the verifiers to check
 // the response is well formed.
-func (wg WitnessGroup) Endpoints() map[string]note.Verifier {
-	endpoints := make(map[string]note.Verifier)
+func (wg WitnessGroup) Endpoints() map[string][]note.Verifier {
+	endpoints := make(map[string][]note.Verifier)
 	for _, c := range wg.Components {
-		maps.Copy(endpoints, c.Endpoints())
+		for u, vs := range c.Endpoints() {
+			endpoints[u] = append(endpoints[u], vs...)
+		}
 	}
 	return endpoints
 }
