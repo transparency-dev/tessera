@@ -53,7 +53,7 @@ type Fsck struct {
 
 	fsckTree *fsckTree
 
-	verifiedCheckpointRaw []byte
+	checkpointRaw []byte
 }
 
 type Opts struct {
@@ -92,7 +92,7 @@ func (f *Fsck) Check(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to fetch and verify checkpoint: %v", err)
 	}
-	f.verifiedCheckpointRaw = cpRaw
+	f.checkpointRaw = cpRaw
 
 	slog.InfoContext(ctx, "Fsck: checking log", slog.Uint64("size", cp.Size))
 
@@ -170,9 +170,10 @@ func (f *Fsck) Check(ctx context.Context) error {
 	return nil
 }
 
-// VerifiedCheckpointRaw returns the raw checkpoint as bytes after the checkpoint was fetched and verified.
-func (f *Fsck) VerifiedCheckpointRaw() []byte {
-	return f.verifiedCheckpointRaw
+// CheckpointRaw returns the raw checkpoint as bytes after the checkpoint was fetched.
+// This checkpoint does not guarantee the tree integrity.
+func (f *Fsck) CheckpointRaw() []byte {
+	return f.checkpointRaw
 }
 
 // Status represents the current status of an ongoing fsck check.
