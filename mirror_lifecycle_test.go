@@ -30,12 +30,12 @@ import (
 )
 
 type fakeMirrorWriter struct {
-	integrateFunc        func(ctx context.Context, from uint64, bundles iter.Seq[api.EntryBundle]) (uint64, []byte, error)
+	integrateFunc        func(ctx context.Context, from uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error)
 	sizeFunc             func(ctx context.Context) (uint64, error)
 	updateCheckpointFunc func(ctx context.Context, f func(oldCP []byte) (newCP []byte, err error)) error
 }
 
-func (f *fakeMirrorWriter) IntegrateBundles(ctx context.Context, from uint64, bundles iter.Seq[api.EntryBundle]) (uint64, []byte, error) {
+func (f *fakeMirrorWriter) IntegrateBundles(ctx context.Context, from uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
 	if f.integrateFunc != nil {
 		return f.integrateFunc(ctx, from, bundles)
 	}
@@ -177,7 +177,7 @@ func TestMirrorTarget_AddEntries_CompleteUpload(t *testing.T) {
 		logVerifier: testLogVerifier,
 		signer:      testMirrorSigner,
 		writer: &fakeMirrorWriter{
-			integrateFunc: func(ctx context.Context, from uint64, bundles iter.Seq[api.EntryBundle]) (uint64, []byte, error) {
+			integrateFunc: func(ctx context.Context, from uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
 				pendingCPRoot, err := base64.StdEncoding.DecodeString(testPendingCPRoot)
 				return testUploadEnd, pendingCPRoot, err
 			},
