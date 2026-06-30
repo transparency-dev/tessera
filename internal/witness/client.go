@@ -105,9 +105,9 @@ type WitnessGroup interface {
 
 	// Endpoints returns the details required for updating a witness and checking the
 	// response. The returned result is a map from the URL that should be used to update
-	// the witness with a new checkpoint, to the value which is the verifier to check
+	// the witness with a new checkpoint, to the values which are the verifiers to check
 	// the response is well formed.
-	Endpoints() map[string]note.Verifier
+	Endpoints() map[string][]note.Verifier
 }
 
 // NewWitnessGateway returns a WitnessGateway that will send out new checkpoints to witnesses
@@ -117,19 +117,42 @@ type WitnessGroup interface {
 func NewWitnessGateway(group WitnessGroup, client *http.Client, oldSize uint64, fetchTiles client.TileFetcherFunc) WitnessGateway {
 	endpoints := group.Endpoints()
 	witnesses := make([]*witnessClient, 0, len(endpoints))
-	for u, v := range endpoints {
-		witnesses = append(witnesses, &witnessClient{
-			client:   client,
-			url:      u,
-			verifier: v,
-			size:     oldSize,
-		})
+	for u, vs := range endpoints {
+		vs := dedupVerifiers(vs)
+		if len(vs) > 0 {
+			witnesses = append(witnesses, &witnessClient{
+				client:    client,
+				url:       u,
+				verifiers: vs,
+				size:      oldSize,
+			})
+		}
 	}
 	return WitnessGateway{
 		group:     group,
 		witnesses: witnesses,
 		fetchTile: fetchTiles,
 	}
+}
+
+// dedupVerifiers removes duplicate verifiers (identified by name and keyhash) from the given slice.
+// Returns a new slice containing the unique verifiers, the passed in slice isn't modified.
+func dedupVerifiers(vs []note.Verifier) []note.Verifier {
+	type verifierKey struct {
+		name string
+		hash uint32
+	}
+
+	seen := make(map[verifierKey]bool)
+	var dedup []note.Verifier
+	for _, v := range vs {
+		k := verifierKey{name: v.Name(), hash: v.KeyHash()}
+		if !seen[k] {
+			seen[k] = true
+			dedup = append(dedup, v)
+		}
+	}
+	return dedup
 }
 
 // WitnessGateway allows a log implementation to send out a checkpoint to witnesses.
@@ -266,10 +289,10 @@ func (pf *sharedConsistencyProofFetcher) ConsistencyProof(ctx context.Context, s
 // This is defaulted to zero on startup and calibrated after the first request, which is expected by the spec:
 // `If a client doesn't have information on the latest cosigned checkpoint, it MAY initially make a request with a old size of zero to obtain it`
 type witnessClient struct {
-	client   *http.Client
-	url      string
-	verifier note.Verifier
-	size     uint64
+	client    *http.Client
+	url       string
+	verifiers []note.Verifier
+	size      uint64
 }
 
 func (w *witnessClient) update(ctx context.Context, cp []byte, size uint64, fetchProof func(ctx context.Context, from, to uint64) ([][]byte, error)) ([]byte, error) {
@@ -279,7 +302,7 @@ func (w *witnessClient) update(ctx context.Context, cp []byte, size uint64, fetc
 			recursed = v.(uint)
 		}
 		if recursed >= maxUpdateRecursion {
-			return nil, fmt.Errorf("too many consecutive requests to witness %s", w.verifier.Name())
+			return nil, fmt.Errorf("too many consecutive requests to witness %s", w.verifiers[0].Name())
 		}
 
 		var proof [][]byte
@@ -292,7 +315,7 @@ func (w *witnessClient) update(ctx context.Context, cp []byte, size uint64, fetc
 		}
 
 		start := time.Now()
-		nameAttr := witnessNameKey.String(w.verifier.Name())
+		nameAttr := witnessNameKey.String(w.verifiers[0].Name())
 		witnessClientReqsTotal.Add(ctx, 1, metric.WithAttributes(nameAttr))
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.url, w.buildRequestBody(proof, cp))
@@ -324,11 +347,15 @@ func (w *witnessClient) update(ctx context.Context, cp []byte, size uint64, fetc
 			signed := make([]byte, len(cp)+len(rb))
 			copy(signed, cp)
 			copy(signed[len(cp):], rb)
-			if n, err := note.Open(signed, note.VerifierList(w.verifier)); err != nil {
-				return nil, fmt.Errorf("witness %q at %q replied with invalid signature: %q\nconstructed note: %q\nerror: %v", w.verifier.Name(), w.url, rb, string(signed), err)
+			if n, err := note.Open(signed, note.VerifierList(w.verifiers...)); err != nil {
+				return nil, fmt.Errorf("witness %q at %q replied with invalid signature: %q\nconstructed note: %q\nerror: %v", w.verifiers[0].Name(), w.url, rb, string(signed), err)
 			} else {
 				w.size = uint64(size)
-				return fmt.Appendf(nil, "— %s %s\n", n.Sigs[0].Name, n.Sigs[0].Base64), nil
+				var sigs []byte
+				for _, sig := range n.Sigs {
+					sigs = fmt.Appendf(sigs, "— %s %s\n", sig.Name, sig.Base64)
+				}
+				return sigs, nil
 			}
 		case http.StatusConflict:
 			// Two cases here: the first is a situation we can recover from, the second isn't.
