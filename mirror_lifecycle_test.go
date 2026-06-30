@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	fnote "github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/merkle"
 	"github.com/transparency-dev/tessera/api"
 	"golang.org/x/mod/sumdb/note"
 )
@@ -239,4 +240,118 @@ func mustSignCP(origin string, size uint64, root string, s note.Signer) []byte {
 		panic(fmt.Errorf("Failed to sign note: %v", err))
 	}
 	return raw
+}
+
+func TestMirrorTarget_AddEntries_VerifySubtreeProof(t *testing.T) {
+	const (
+		testIntegratedSize = uint64(256)
+		testUploadStart    = uint64(256)
+		testUploadEnd      = testPendingCPSize
+	)
+
+	pkg := &MirrorPackage{
+		Entries: [][]byte{[]byte("entry1"), []byte("entry2")},
+		Proof:   [][]byte{[]byte("proof1")},
+	}
+
+	for _, tc := range []struct {
+		name      string
+		verifyErr error
+		wantErr   error
+	}{
+		{
+			name:      "success",
+			verifyErr: nil,
+			wantErr:   nil,
+		},
+		{
+			name:      "proof verification failure",
+			verifyErr: errors.New("oh noes, proof verification failed"),
+			wantErr:   ErrInvalidProof,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			var verifyCalled bool
+			var gotStart, gotEnd, gotSize uint64
+			var gotProof [][]byte
+			var gotRoot []byte
+
+			mt := &MirrorTarget{
+				logVerifier: testLogVerifier,
+				signer:      testMirrorSigner,
+				writer: &fakeMirrorWriter{
+					integrateFunc: func(ctx context.Context, from uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
+						for _, err := range bundles {
+							if err != nil {
+								return 0, nil, err
+							}
+						}
+						pendingCPRoot, err := base64.StdEncoding.DecodeString(testPendingCPRoot)
+						return testUploadEnd, pendingCPRoot, err
+					},
+				},
+				reader: &fakeLogReader{
+					sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
+				},
+				cpSource: func(ctx context.Context) ([]byte, error) { return []byte(testPendingCP), nil },
+				verifySubtreeProof: func(hasher merkle.LogHasher, start, end, size uint64, proof [][]byte, subRoot, root []byte) error {
+					verifyCalled = true
+					gotStart = start
+					gotEnd = end
+					gotSize = size
+					gotProof = proof
+					gotRoot = root
+					return tc.verifyErr
+				},
+			}
+
+			validTicket, err := mt.sealTicket([]byte(testPendingCP))
+			if err != nil {
+				t.Fatalf("sealTicket failed: %v", err)
+			}
+
+			firstCall := true
+			nextFunc := func() (*MirrorPackage, error) {
+				if firstCall {
+					firstCall = false
+					return pkg, nil
+				}
+				return nil, io.EOF
+			}
+
+			_, _, _, _, err = mt.AddEntries(ctx, testUploadStart, testUploadEnd, validTicket, nextFunc)
+			if (err != nil) != (tc.wantErr != nil) {
+				t.Fatalf("got error: %v, want error: %v", err, tc.wantErr)
+			} else if err != nil && !errors.Is(err, tc.wantErr) {
+				t.Fatalf("unexpected error type: %v", err)
+			}
+
+			if !verifyCalled {
+				t.Errorf("verifySubtreeProof was not called")
+				return
+			}
+
+			if gotStart != testUploadStart {
+				t.Errorf("verifySubtreeProof start: got %d, want %d", gotStart, testUploadStart)
+			}
+			if want := testUploadStart + uint64(len(pkg.Entries)); gotEnd != want {
+				t.Errorf("verifySubtreeProof end: got %d, want %d", gotEnd, want)
+			}
+			if gotSize != testPendingCPSize {
+				t.Errorf("verifySubtreeProof size: got %d, want %d", gotSize, testPendingCPSize)
+			}
+			wantRoot, err := base64.StdEncoding.DecodeString(testPendingCPRoot)
+			if err != nil {
+				t.Fatalf("failed to decode root hash: %v", err)
+			}
+			if !bytes.Equal(gotRoot, wantRoot) {
+				t.Errorf("verifySubtreeProof root: got %x, want %x", gotRoot, wantRoot)
+			}
+			if len(gotProof) != 1 || !bytes.Equal(gotProof[0], pkg.Proof[0]) {
+				t.Errorf("verifySubtreeProof proof: got %x, want %x", gotProof, pkg.Proof)
+			}
+		})
+	}
 }
