@@ -16,13 +16,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 
@@ -38,7 +38,8 @@ import (
 )
 
 const (
-	witnessDir = "witness"
+	witnessDir = "private/witness"
+	mirrorsDir = "public/mirrors"
 )
 
 var (
@@ -111,7 +112,7 @@ func main() {
 func newMirrorTarget(ctx context.Context, w *witness.Witness, logVerifier note.Verifier, mirrorSigner note.Signer) (*tessera.MirrorTarget, error) {
 	origin := logVerifier.Name()
 
-	targetDir := filepath.Join(*storageDir, url.PathEscape(origin))
+	targetDir := filepath.Join(*storageDir, mirrorsDir, fmt.Sprintf("%0x", sha256.Sum256([]byte(origin))))
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir %q: %v", targetDir, err)
 	}
