@@ -111,10 +111,12 @@ func (o *MirrorOptions) valid() error {
 
 // mirrorWriter describes the contract for storage implementation required to support the mirroring lifecycle.
 type MirrorWriter interface {
-	// IntegrateBundles integrates bundles of log entries, starting at the given index, into the local tree.
+	// IntegrateBundles integrates bundles of log entries, starting at the given bundle index, into the local tree.
+	// Bundles are _always_ aligned on bundle boundaries.
+	//
 	// Returns the size of the tree and its new root hash if successful.
 	// If the provided iterator yields an error, the MirrorWriter MUST return it either directly, or wrapped so the caller can identify it.
-	IntegrateBundles(ctx context.Context, from uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error)
+	IntegrateBundles(ctx context.Context, fromBundleIdx uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error)
 	// IntegratedSize returns the size of the local integrated tree.
 	IntegratedSize(ctx context.Context) (uint64, error)
 
@@ -206,8 +208,6 @@ type MirrorPackage struct {
 // ticket for future invocations, and, optionally, a cosignature over a pending checkpoint
 // whose size matches uploadEnd if one exists.
 func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticketBytes []byte, next func() (*MirrorPackage, error)) (nextEntry uint64, pendingSize uint64, newTicket []byte, cosigs []byte, err error) {
-	// TODO(al) handle non-aligned uploadStart.
-
 	curIntegratedSize, err := mt.reader.IntegratedSize(ctx)
 	if err != nil {
 		return 0, 0, nil, nil, fmt.Errorf("failed to read integrated size: %w", err)
@@ -266,10 +266,8 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 		return curIntegratedSize, pendingCP.Size, ticketBytes, nil, ErrConflict
 	}
 
-	curStart := uploadStart
 	bundleIdx := uploadStart / layout.EntryBundleWidth
-
-	nextEntry, newRoot, err := mt.writer.IntegrateBundles(ctx, bundleIdx, mt.bundleIterator(ctx, next, curStart, pendingCP))
+	nextEntry, newRoot, err := mt.writer.IntegrateBundles(ctx, bundleIdx, mt.bundleIterator(ctx, next, uploadStart, pendingCP))
 	switch {
 	case err != nil:
 		return 0, 0, nil, nil, err
@@ -298,21 +296,52 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 	}
 }
 
-// bundleIterator returns an interator which yields MirrorPackages after verifying their subtree consistency with the provided pending checkpoint.
+// bundleIterator returns an interator which yields entry bundles after verifying their subtree consistency with the provided pending checkpoint.
+//
+// Yielded entry bundles are always aligned to bundle boundaries. Specifically, this means that if the provided start is _not_ bundle aligned, then we will
+// fetch entries from the bundle at start/256 and use those entries to left-pad the first yielded bundle.
 func (mt *MirrorTarget) bundleIterator(ctx context.Context, next func() (*MirrorPackage, error), start uint64, pendingCP *log.Checkpoint) func(func(*api.EntryBundle, error) bool) {
 	crf := compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}
 	return func(yield func(*api.EntryBundle, error) bool) {
+		// Check for unaligned upload start, and fetch entries from the start of the bundle to use to pad.
+		var padEntries [][]byte
+		if p := start % layout.EntryBundleWidth; p != 0 {
+			// non-aligned starting bundle
+			br, err := mt.reader.ReadEntryBundle(ctx, start/layout.EntryBundleWidth, uint8(p))
+			if err != nil {
+				yield(nil, fmt.Errorf("failed to read bundle containing uploadStart (%d): %v", start, err))
+				return
+			}
+			// Parse and clip, just in case we were returned data from a full tile.
+			b := &api.EntryBundle{}
+			if err := b.UnmarshalText(br); err != nil {
+				yield(nil, fmt.Errorf("failed to unmarshal bundle containing uploadStart (%d): %v", start, err))
+				return
+			}
+			padEntries = b.Entries[:p]
+			// SPEC: The subtree consistency proof is computed from the subtree defined by [rounded_start + i * 256, end), and the log
+			//       checkpoint with tree size upload_end
+			start &= ^uint64(0xff) // floor to bundle boundary
+		}
+
 		for {
 			pkg, err := next()
 			if err != nil {
 				if err == io.EOF {
 					return
 				}
-				// TODO(al): handle this
 				slog.WarnContext(ctx, "NextPackage returned an error", slog.String("error", err.Error()))
+				yield(nil, fmt.Errorf("failed to get next package: %w", err)) // Wrap to preserve err from next().
 				return
 			}
 
+			// Handle the case where the first mirror package is not bundle-aligned.
+			if len(padEntries) > 0 {
+				pkg.Entries = append(padEntries, pkg.Entries...)
+				padEntries = nil
+			}
+
+			// Build the subtree root so that we can verify the package proof.
 			cr := crf.NewEmptyRange(0)
 			for _, e := range pkg.Entries {
 				if err := cr.Append(rfc6962.DefaultHasher.HashLeaf(e), nil); err != nil {
@@ -320,7 +349,6 @@ func (mt *MirrorTarget) bundleIterator(ctx context.Context, next func() (*Mirror
 					return
 				}
 			}
-
 			subRoot, err := cr.GetRootHash(nil)
 			if err != nil {
 				yield(nil, fmt.Errorf("failed to get root of compact range: %v", err))

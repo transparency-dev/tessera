@@ -27,6 +27,7 @@ import (
 	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/merkle"
 	"github.com/transparency-dev/tessera/api"
+	"github.com/transparency-dev/tessera/api/layout"
 	"golang.org/x/mod/sumdb/note"
 )
 
@@ -178,7 +179,10 @@ func TestMirrorTarget_AddEntries_CompleteUpload(t *testing.T) {
 		logVerifier: testLogVerifier,
 		signer:      testMirrorSigner,
 		writer: &fakeMirrorWriter{
-			integrateFunc: func(ctx context.Context, from uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
+			integrateFunc: func(ctx context.Context, fromBundleIdx uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
+				if fromBundleIdx != testUploadStart/layout.EntryBundleWidth {
+					return 0, nil, fmt.Errorf("got from %d want %d", fromBundleIdx, testUploadStart/layout.EntryBundleWidth)
+				}
 				pendingCPRoot, err := base64.StdEncoding.DecodeString(testPendingCPRoot)
 				return testUploadEnd, pendingCPRoot, err
 			},
