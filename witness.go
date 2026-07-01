@@ -22,8 +22,6 @@ import (
 	"strconv"
 	"strings"
 
-	"maps"
-
 	f_note "github.com/transparency-dev/formats/note"
 	"golang.org/x/mod/sumdb/note"
 )
@@ -35,11 +33,11 @@ type policyComponent interface {
 	// witnesses involved in this policy component.
 	Satisfied(cp []byte) bool
 
-	// Endpoints returns the details required for updating a witness and checking the
+	// WitnessEndpoints returns the details required for updating a witness and checking the
 	// response. The returned result is a map from the URL that should be used to update
-	// the witness with a new checkpoint, to the value which is the verifier to check
+	// the witness with a new checkpoint, to the values which are the verifiers to check
 	// the response is well formed.
-	Endpoints() map[string]note.Verifier
+	WitnessEndpoints() map[string][]note.Verifier
 }
 
 // NewWitnessGroupFromPolicy creates a graph of witness objects that represents the
@@ -219,11 +217,19 @@ func (w Witness) Satisfied(cp []byte) bool {
 }
 
 // Endpoints returns the details required for updating a witness and checking the
-// response. The returned result is a map from the URL that should be used to update
-// the witness with a new checkpoint, to the value which is the verifier to check
-// the response is well formed.
+// response.
+//
+// Deprecated: Endpoints is deprecated, use WitnessEndpoints instead.
 func (w Witness) Endpoints() map[string]note.Verifier {
 	return map[string]note.Verifier{w.URL: w.Key}
+}
+
+// WitnessEndpoints returns the details required for updating a witness and checking the
+// response. The returned result is a map from the URL that should be used to update
+// the witness with a new checkpoint, to the values which are the verifiers to check
+// the response is well formed.
+func (w Witness) WitnessEndpoints() map[string][]note.Verifier {
+	return map[string][]note.Verifier{w.URL: {w.Key}}
 }
 
 // NewWitnessGroup creates a grouping of Witness or WitnessGroup with a configurable threshold
@@ -280,13 +286,39 @@ func (wg WitnessGroup) Satisfied(cp []byte) bool {
 }
 
 // Endpoints returns the details required for updating a witness and checking the
-// response. The returned result is a map from the URL that should be used to update
-// the witness with a new checkpoint, to the value which is the verifier to check
-// the response is well formed.
+// response.
+//
+// Deprecated: Endpoints is deprecated because it cannot handle policies with
+// multiple verifiers per endpoint (e.g. witnesses which return multiple signatures).
+// Use [WitnessEndpoints] instead.
 func (wg WitnessGroup) Endpoints() map[string]note.Verifier {
 	endpoints := make(map[string]note.Verifier)
 	for _, c := range wg.Components {
-		maps.Copy(endpoints, c.Endpoints())
+		for u, v := range c.WitnessEndpoints() {
+			if _, ok := endpoints[u]; ok {
+				panic(fmt.Errorf("the Endpoints func cannot safely handle witnesses which return multiple signatures, use WitnessEndpoints instead"))
+			}
+			switch l := len(v); {
+			case l > 1:
+				panic(fmt.Errorf("the Endpoints func cannot safely handle witnesses which return multiple signatures, use WitnessEndpoints instead"))
+			case l == 1:
+				endpoints[u] = v[0]
+			}
+		}
+	}
+	return endpoints
+}
+
+// WitnessEndpoints returns the details required for updating a witness and checking the
+// response. The returned result is a map from the URL that should be used to update
+// the witness with a new checkpoint, to the values which are the verifiers to check
+// the response is well formed.
+func (wg WitnessGroup) WitnessEndpoints() map[string][]note.Verifier {
+	endpoints := make(map[string][]note.Verifier)
+	for _, c := range wg.Components {
+		for u, vs := range c.WitnessEndpoints() {
+			endpoints[u] = append(endpoints[u], vs...)
+		}
 	}
 	return endpoints
 }

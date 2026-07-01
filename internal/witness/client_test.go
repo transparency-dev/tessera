@@ -39,13 +39,15 @@ import (
 )
 
 const (
-	logVkey    = "example.com/log/testdata+33d7b496+AeHTu4Q3hEIMHNqc6fASMsq3rKNx280NI+oO5xCFkkSx"
-	wit1Vkey   = "Wit1+55ee4561+AVhZSmQj9+SoL+p/nN0Hh76xXmF7QcHfytUrI1XfSClk"
-	wit1Skey   = "PRIVATE+KEY+Wit1+55ee4561+AeadRiG7XM4XiieCHzD8lxysXMwcViy5nYsoXURWGrlE"
-	wit2Vkey   = "Wit2+85ecc407+AWVbwFJte9wMQIPSnEnj4KibeO6vSIOEDUTDp3o63c2x"
-	wit2Skey   = "PRIVATE+KEY+Wit2+85ecc407+AfPTvxw5eUcqSgivo2vaiC7JPOMUZ/9baHPSDrWqgdGm"
-	witBadVkey = "WitBad+b82b4b16+AY5FLOcqxs5lD+OpC6cVTrxsyNJktaCGYHNfnE5vKBQX"
-	witBadSkey = "PRIVATE+KEY+WitBad+b82b4b16+AYSil2PKfSN1a0LhdbzmK1uXqDFZbp+P1OyR54k3gdJY"
+	logVkey     = "example.com/log/testdata+33d7b496+AeHTu4Q3hEIMHNqc6fASMsq3rKNx280NI+oO5xCFkkSx"
+	wit1Vkey    = "Wit1+55ee4561+AVhZSmQj9+SoL+p/nN0Hh76xXmF7QcHfytUrI1XfSClk"
+	wit1Skey    = "PRIVATE+KEY+Wit1+55ee4561+AeadRiG7XM4XiieCHzD8lxysXMwcViy5nYsoXURWGrlE"
+	wit2Vkey    = "Wit2+85ecc407+AWVbwFJte9wMQIPSnEnj4KibeO6vSIOEDUTDp3o63c2x"
+	wit2Skey    = "PRIVATE+KEY+Wit2+85ecc407+AfPTvxw5eUcqSgivo2vaiC7JPOMUZ/9baHPSDrWqgdGm"
+	wit2AltSKey = "PRIVATE+KEY+Wit2+36009101+ASWI6XB1l1/fPORsXVxCbMvxfrvh7bXtYkNNlD1NYe2H"
+	wit2AltVKey = "Wit2+112f0455+BCy8NYvyk7N1dkxNxgrI3YAJzQDc0FIfs0q7q8U/cwOF"
+	witBadVkey  = "WitBad+b82b4b16+AY5FLOcqxs5lD+OpC6cVTrxsyNJktaCGYHNfnE5vKBQX"
+	witBadSkey  = "PRIVATE+KEY+WitBad+b82b4b16+AYSil2PKfSN1a0LhdbzmK1uXqDFZbp+P1OyR54k3gdJY"
 )
 
 var (
@@ -59,9 +61,8 @@ func TestWitnessGateway_Update(t *testing.T) {
 	// The witnesses just sign the checkpoint with whatever key is requested, they don't check the body at all.
 	// An improvement on this would be to make the fake witnesses more realistic, but it's a non-trivial
 	// amount of code to add to this already long test!
-	var wit1 tessera.Witness
-	var wit2 tessera.Witness
-	var witBad tessera.Witness
+	var wit1, wit2, witBad, witMulti1, witMulti2 tessera.Witness
+	var witCalls atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w1u, err := url.Parse(wit1.URL)
 		if err != nil {
@@ -78,11 +79,18 @@ func TestWitnessGateway_Update(t *testing.T) {
 
 		switch r.URL.String() {
 		case w1u.Path:
+			witCalls.Add(1)
 			_, _ = w.Write(sigForSigner(t, cp, wit1Skey))
 		case w2u.Path:
+			witCalls.Add(1)
 			_, _ = w.Write(sigForSigner(t, cp, wit2Skey))
 		case wbu.Path:
+			witCalls.Add(1)
 			_, _ = w.Write([]byte("this is not a signature\n"))
+		case "/wit_multi/add-checkpoint":
+			witCalls.Add(1)
+			res := append(sigForSigner(t, cp, wit1Skey), sigForSigner(t, cp, wit2Skey)...)
+			_, _ = w.Write(res)
 		default:
 			t.Fatalf("Unknown case: %s", r.URL.String())
 		}
@@ -99,21 +107,31 @@ func TestWitnessGateway_Update(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	witMulti1, err = tessera.NewWitness(wit1Vkey, baseURL.JoinPath("wit_multi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	witMulti2, err = tessera.NewWitness(wit2Vkey, baseURL.JoinPath("wit_multi"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	witBad, err = tessera.NewWitness(witBadVkey, baseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	testCases := []struct {
-		desc     string
-		group    tessera.WitnessGroup
-		wantSigs int
-		wantErr  bool
+		desc             string
+		group            tessera.WitnessGroup
+		wantSigs         int
+		wantErr          bool
+		wantWitnessCalls func(actual int32) error
 	}{
 		{
-			desc:     "no witnesses",
-			group:    tessera.WitnessGroup{},
-			wantSigs: 0,
+			desc:             "no witnesses",
+			group:            tessera.WitnessGroup{},
+			wantSigs:         0,
+			wantWitnessCalls: exactly(0),
 		},
 		{
 			desc:     "one optional witness",
@@ -126,24 +144,34 @@ func TestWitnessGateway_Update(t *testing.T) {
 			wantSigs: 0,
 		},
 		{
-			desc:     "one required witness",
-			group:    tessera.NewWitnessGroup(1, wit1),
-			wantSigs: 1,
+			desc:             "one required witness",
+			group:            tessera.NewWitnessGroup(1, wit1),
+			wantSigs:         1,
+			wantWitnessCalls: exactly(1),
 		},
 		{
-			desc:     "one required witness out of 2",
-			group:    tessera.NewWitnessGroup(1, wit1, wit2),
-			wantSigs: 1,
+			desc:             "one required witness out of 2",
+			group:            tessera.NewWitnessGroup(1, wit1, wit2),
+			wantSigs:         1,
+			wantWitnessCalls: atLeast(1),
 		},
 		{
-			desc:     "two required witnesses",
-			group:    tessera.NewWitnessGroup(2, wit1, wit2),
-			wantSigs: 2,
+			desc:             "two required witnesses",
+			group:            tessera.NewWitnessGroup(2, wit1, wit2),
+			wantSigs:         2,
+			wantWitnessCalls: exactly(2),
 		},
 		{
-			desc:     "one required witness twice",
-			group:    tessera.NewWitnessGroup(2, wit1, wit1),
-			wantSigs: 1,
+			desc:             "one required witness twice",
+			group:            tessera.NewWitnessGroup(2, wit1, wit1),
+			wantSigs:         1,
+			wantWitnessCalls: exactly(1),
+		},
+		{
+			desc:             "two witnesses with same URL but different keys",
+			group:            tessera.NewWitnessGroup(2, witMulti1, witMulti2),
+			wantSigs:         2,
+			wantWitnessCalls: exactly(1),
 		},
 		{
 			desc:    "bad witness",
@@ -154,6 +182,7 @@ func TestWitnessGateway_Update(t *testing.T) {
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
 			ctx := t.Context()
+			witCalls.Store(0)
 
 			g := witness.NewWitnessGateway(tC.group, ts.Client(), 0, testLogTileFetcher)
 
@@ -171,7 +200,30 @@ func TestWitnessGateway_Update(t *testing.T) {
 			if len(n.Sigs)-1 < tC.wantSigs {
 				t.Errorf("wanted %d sigs but got %d", tC.wantSigs, len(n.Sigs)-1)
 			}
+			if tC.wantWitnessCalls != nil {
+				if err := tC.wantWitnessCalls(witCalls.Load()); err != nil {
+					t.Error(err)
+				}
+			}
 		})
+	}
+}
+
+func exactly(x int32) func(actual int32) error {
+	return func(actual int32) error {
+		if actual != x {
+			return fmt.Errorf("got %d calls, want %d", actual, x)
+		}
+		return nil
+	}
+}
+
+func atLeast(x int32) func(actual int32) error {
+	return func(actual int32) error {
+		if actual < x {
+			return fmt.Errorf("got %d calls, want at least %d", actual, x)
+		}
+		return nil
 	}
 }
 
