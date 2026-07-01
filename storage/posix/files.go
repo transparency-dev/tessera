@@ -1185,7 +1185,7 @@ func (m *MirrorWriter) initialise(ctx context.Context) error {
 }
 
 // marshalTlogEntryBundle returns a tlog-tiles compatible serialization of the provided entrybundle.
-func marshalTlogEntryBundle(b api.EntryBundle) ([]byte, error) {
+func marshalTlogEntryBundle(b *api.EntryBundle) ([]byte, error) {
 	// Prealloc the max size we could possibly write out (about 16MB for a full bundle of max size entries).
 	// If this causes problems we may want to default this to some lower
 	// "reasonable" intermediate size, but not going to worry about that for now.
@@ -1203,10 +1203,13 @@ func marshalTlogEntryBundle(b api.EntryBundle) ([]byte, error) {
 
 // IntegrateBundles integrates a sequence of entry bundles into the tree, starting at the provided bundle index bundleIdx.
 // Returns the new size and root hash of the tree if successful.
-func (m *MirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, bundles iter.Seq[api.EntryBundle]) (uint64, []byte, error) {
+func (m *MirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
 	targetSize := bundleIdx * layout.EntryBundleWidth
 	seenPartialBundle := false
-	for b := range bundles {
+	for b, err := range bundles {
+		if err != nil {
+			return 0, nil, err
+		}
 		if seenPartialBundle {
 			// Seeing a partial bundle means that there should not be any further bundles to be processed.
 			return 0, nil, fmt.Errorf("unexpected bundle after partial at index %d", bundleIdx)

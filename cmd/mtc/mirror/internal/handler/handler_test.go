@@ -244,6 +244,15 @@ func TestAddEntries_StatusCodes(t *testing.T) {
 			wantStatus: http.StatusConflict,
 			wantBody:   fmt.Sprintf("%d\n%d\n%s\n", testPendingSize, testNextIdx, base64.StdEncoding.EncodeToString([]byte(testNewTicket))),
 		}, {
+			name:   "422 unprocessable entity",
+			origin: testOrigin,
+			mockTarget: &mockTarget{
+				addEntriesFunc: func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (uint64, uint64, []byte, []byte, error) {
+					return testNextIdx, testPendingSize, []byte(testNewTicket), nil, tessera.ErrInvalidProof
+				},
+			},
+			wantStatus: http.StatusUnprocessableEntity,
+		}, {
 			name:   "500 internal server error",
 			origin: testOrigin,
 			mockTarget: &mockTarget{

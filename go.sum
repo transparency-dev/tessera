@@ -252,8 +252,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/transparency-dev/formats v0.1.1 h1:4bVHJc+KdBgpA1OJD1yjI+g0i5Z1graCppTMH8lWKJI=
 github.com/transparency-dev/formats v0.1.1/go.mod h1:qtZ8goRuJ8FTBG9c9+Bj0rn2rUG7eG/AUTkr+Aw3jFw=
-github.com/transparency-dev/merkle v0.0.3-0.20240919113952-3c979d16ee14 h1:K8JqF1HyGDXfTdDHtHe7VsIzeuFEcfLhioOXaupKB+Q=
-github.com/transparency-dev/merkle v0.0.3-0.20240919113952-3c979d16ee14/go.mod h1:EoKPjljyIALg1rldsJwRQVKOJO7sLd6eUqki19ruI80=
+github.com/transparency-dev/merkle v0.0.3-0.20260629095233-a1adddb6323b h1:0nbx2whxWqEycj3JKCMezPXiV6z5Q+L2tdZjLDP6AbE=
+github.com/transparency-dev/merkle v0.0.3-0.20260629095233-a1adddb6323b/go.mod h1:E+iHk6bS+tIgIJGD4TMeAjSjhQ9wPfL/ST4pXyITjdU=
 github.com/transparency-dev/witness v0.0.0-20260617164027-9332986a94a4 h1:fcZnSVJlnE3GCiqoxvTaiHNfj7iBWMs09ow6edxIKFo=
 github.com/transparency-dev/witness v0.0.0-20260617164027-9332986a94a4/go.mod h1:x7LGvt50B3F6lTIg1/R3q5RjjVHkHiaKB5GFB2p3+ms=
 github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e h1:JVG44RsyaB9T2KIHavMF/ppJZNG9ZpyihvCd0w101no=

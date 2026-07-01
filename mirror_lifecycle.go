@@ -34,6 +34,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/transparency-dev/formats/log"
+	"github.com/transparency-dev/merkle"
+	"github.com/transparency-dev/merkle/compact"
+	"github.com/transparency-dev/merkle/proof"
+	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
 	"golang.org/x/mod/sumdb/note"
@@ -46,6 +50,8 @@ var (
 	// ErrNoPendingCheckpoint is returned when a pending checkpoint cannot be
 	// determined.
 	ErrNoPendingCheckpoint = errors.New("no pending checkpoint")
+	// ErrInvalidProof is returned when a proof fails to verify.
+	ErrInvalidProof = errors.New("invalid proof")
 )
 
 // MirrorOptions holds mirror lifecycle settings for all storage implementations.
@@ -107,7 +113,8 @@ func (o *MirrorOptions) valid() error {
 type MirrorWriter interface {
 	// IntegrateBundles integrates bundles of log entries, starting at the given index, into the local tree.
 	// Returns the size of the tree and its new root hash if successful.
-	IntegrateBundles(ctx context.Context, from uint64, bundles iter.Seq[api.EntryBundle]) (uint64, []byte, error)
+	// If the provided iterator yields an error, the MirrorWriter MUST return it either directly, or wrapped so the caller can identify it.
+	IntegrateBundles(ctx context.Context, from uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error)
 	// IntegratedSize returns the size of the local integrated tree.
 	IntegratedSize(ctx context.Context) (uint64, error)
 
@@ -121,12 +128,13 @@ type MirrorWriter interface {
 
 // MirrorTarget manages the process of mirroring a source log into a Tessera instance.
 type MirrorTarget struct {
-	writer      MirrorWriter
-	reader      LogReader
-	cpSource    func(context.Context) ([]byte, error)
-	signer      note.Signer
-	logVerifier note.Verifier
-	ticketKey   []byte
+	writer             MirrorWriter
+	reader             LogReader
+	cpSource           func(context.Context) ([]byte, error)
+	signer             note.Signer
+	logVerifier        note.Verifier
+	verifySubtreeProof func(hasher merkle.LogHasher, start, end, size uint64, proof [][]byte, subRoot []byte, root []byte) error
+	ticketKey          []byte
 }
 
 // NewMirrorTarget instantiates a new MirrorTarget for the given driver and options.
@@ -153,12 +161,13 @@ func NewMirrorTarget(ctx context.Context, d Driver, opts *MirrorOptions) (*Mirro
 		return nil, fmt.Errorf("failed to derive ticket key: %v", err)
 	}
 	return &MirrorTarget{
-		writer:      mw,
-		reader:      r,
-		cpSource:    opts.cpSource,
-		signer:      opts.signer,
-		logVerifier: opts.logVerifier,
-		ticketKey:   tK,
+		writer:             mw,
+		reader:             r,
+		cpSource:           opts.cpSource,
+		signer:             opts.signer,
+		logVerifier:        opts.logVerifier,
+		verifySubtreeProof: proof.VerifySubtreeConsistency,
+		ticketKey:          tK,
 	}, nil
 }
 
@@ -253,33 +262,14 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 		(uploadEnd != pendingCP.Size || uploadEnd < curIntegratedSize) ||
 		(uploadStart > curIntegratedSize) {
 		// TODO(al): add flexibility about re-writing some entries
-		slog.ErrorContext(ctx, "Returning conflict", slog.Uint64("curIntegratedSize", curIntegratedSize), slog.Uint64("pendingSize", pendingSize), slog.Uint64("uploadStart", uploadStart), slog.Uint64("uploadEnd", uploadEnd))
+		slog.ErrorContext(ctx, "Returning conflict", slog.Uint64("curIntegratedSize", curIntegratedSize), slog.Uint64("pendingSize", pendingCP.Size), slog.Uint64("uploadStart", uploadStart), slog.Uint64("uploadEnd", uploadEnd))
 		return curIntegratedSize, pendingCP.Size, ticketBytes, nil, ErrConflict
 	}
 
-	bi := func(yield func(api.EntryBundle) bool) {
-		for {
-			pkg, err := next()
-			if err != nil {
-				if err == io.EOF {
-					return
-				}
-				// TODO(al): handle this
-				slog.WarnContext(ctx, "NextPackage returned an error", slog.String("error", err.Error()))
-				return
-			}
-
-			// TODO(al): verify entries+proof under checkpoint (Failure -> 422 Unprocessable Entity).
-
-			if !yield(api.EntryBundle{Entries: pkg.Entries}) {
-				return
-			}
-		}
-	}
-
+	curStart := uploadStart
 	bundleIdx := uploadStart / layout.EntryBundleWidth
 
-	nextEntry, newRoot, err := mt.writer.IntegrateBundles(ctx, bundleIdx, bi)
+	nextEntry, newRoot, err := mt.writer.IntegrateBundles(ctx, bundleIdx, mt.bundleIterator(ctx, next, curStart, pendingCP))
 	switch {
 	case err != nil:
 		return 0, 0, nil, nil, err
@@ -305,6 +295,53 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 		slog.WarnContext(ctx, "Incomplete upload", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingCP.Size))
 		// Incomplete upload, return an updated ticket with the current checkpoint.
 		return nextEntry, pendingCP.Size, ticketBytes, nil, nil
+	}
+}
+
+// bundleIterator returns an interator which yields MirrorPackages after verifying their subtree consistency with the provided pending checkpoint.
+func (mt *MirrorTarget) bundleIterator(ctx context.Context, next func() (*MirrorPackage, error), start uint64, pendingCP *log.Checkpoint) func(func(*api.EntryBundle, error) bool) {
+	crf := compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}
+	return func(yield func(*api.EntryBundle, error) bool) {
+		for {
+			pkg, err := next()
+			if err != nil {
+				if err == io.EOF {
+					return
+				}
+				// TODO(al): handle this
+				slog.WarnContext(ctx, "NextPackage returned an error", slog.String("error", err.Error()))
+				return
+			}
+
+			cr := crf.NewEmptyRange(0)
+			for _, e := range pkg.Entries {
+				if err := cr.Append(rfc6962.DefaultHasher.HashLeaf(e), nil); err != nil {
+					yield(nil, fmt.Errorf("failed to append hash to compact range: %v", err))
+					return
+				}
+			}
+
+			subRoot, err := cr.GetRootHash(nil)
+			if err != nil {
+				yield(nil, fmt.Errorf("failed to get root of compact range: %v", err))
+				return
+			}
+
+			// SPEC: For each entry package, it MUST authenticate the entries by verifying the subtree consistency proof:
+			// 				- First, it reconstructs the subtree hash based on the received entries and entries already in the log.
+			// 				- It then verifies the subtree consistency proof using this hash and the checkpoint at upload_end.
+			//			If this verification process fails, it MUST respond with a "422 Unprocessable Entity" HTTP status code and end processing.
+			if err := mt.verifySubtreeProof(rfc6962.DefaultHasher, start, start+uint64(len(pkg.Entries)), pendingCP.Size, pkg.Proof, subRoot, pendingCP.Hash); err != nil {
+				// Return ErrInvalidProof which the handler can turn into a 422 status.
+				yield(nil, fmt.Errorf("failed to verify subtree consistency: %w", ErrInvalidProof))
+				return
+			}
+			start += uint64(len(pkg.Entries))
+
+			if !yield(&api.EntryBundle{Entries: pkg.Entries}, nil) {
+				return
+			}
+		}
 	}
 }
 

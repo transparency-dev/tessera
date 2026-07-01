@@ -72,6 +72,7 @@ func addEntries(m *MirrorMux) http.HandlerFunc {
 				return
 			}
 			defer func() {
+				// Note that this only closes the gzip reader, it doesn't close the underlying HTTP body reader.
 				_ = reader.Close()
 			}()
 		default:
@@ -106,6 +107,12 @@ func addEntries(m *MirrorMux) http.HandlerFunc {
 
 		case errors.Is(err, tessera.ErrNoPendingCheckpoint):
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+
+		case errors.Is(err, tessera.ErrInvalidProof):
+			// SPEC: If this (subtree consistency proof) verification process fails, it MUST respond with a "422 Unprocessable Entity"
+			// HTTP status code and end processing.
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 
 		case err != nil:
