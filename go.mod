@@ -27,9 +27,9 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/muesli/termenv v0.16.0
 	github.com/rivo/tview v0.42.0
-	github.com/transparency-dev/formats v0.1.1
+	github.com/transparency-dev/formats v0.1.2-0.20260629100010-fa283eb7462a
 	github.com/transparency-dev/merkle v0.0.3-0.20260629095233-a1adddb6323b
-	github.com/transparency-dev/witness v0.0.0-20260617164027-9332986a94a4
+	github.com/transparency-dev/witness v0.0.0-20260701145555-54dbcdd14f82
 	go.opentelemetry.io/contrib/detectors/aws/ec2/v2 v2.5.1
 	go.opentelemetry.io/contrib/detectors/aws/ecs v1.44.0
 	go.opentelemetry.io/contrib/detectors/gcp v1.44.0
@@ -91,7 +91,6 @@ require (
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.68.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
