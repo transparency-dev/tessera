@@ -35,7 +35,7 @@ func TestWitnessGroup_Empty(t *testing.T) {
 	if !group.Satisfied([]byte("definitely a checkpoint\n")) {
 		t.Error("empty group should be satisfied")
 	}
-	if len(group.Endpoints()) != 0 {
+	if len(group.WitnessEndpoints()) != 0 {
 		t.Error("empty group should have no URLs")
 	}
 }
@@ -180,7 +180,7 @@ func TestWitnessGroup_URLs(t *testing.T) {
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
 			gotURLs := make([]string, 0)
-			for u := range tC.group.Endpoints() {
+			for u := range tC.group.WitnessEndpoints() {
 				gotURLs = append(gotURLs, u)
 			}
 			slices.Sort(gotURLs)
