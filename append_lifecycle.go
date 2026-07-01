@@ -1005,7 +1005,7 @@ func (o *AppendOptions) LogValue() slog.Value {
 	}
 
 	if len(o.witnesses.Components) > 0 {
-		endpoints := o.witnesses.Endpoints()
+		endpoints := o.witnesses.WitnessEndpoints()
 		urls := make([]string, 0, len(endpoints))
 		for u := range endpoints {
 			urls = append(urls, u)

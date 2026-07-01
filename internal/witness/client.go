@@ -103,11 +103,11 @@ type WitnessGroup interface {
 	// that the input value represents a valid note.
 	Satisfied(cp []byte) bool
 
-	// Endpoints returns the details required for updating a witness and checking the
+	// WitnessEndpoints returns the details required for updating a witness and checking the
 	// response. The returned result is a map from the URL that should be used to update
 	// the witness with a new checkpoint, to the values which are the verifiers to check
 	// the response is well formed.
-	Endpoints() map[string][]note.Verifier
+	WitnessEndpoints() map[string][]note.Verifier
 }
 
 // NewWitnessGateway returns a WitnessGateway that will send out new checkpoints to witnesses
@@ -115,7 +115,7 @@ type WitnessGroup interface {
 // requests will be done using the given client. The tile fetcher is used for constructing
 // consistency proofs for the witnesses.
 func NewWitnessGateway(group WitnessGroup, client *http.Client, oldSize uint64, fetchTiles client.TileFetcherFunc) WitnessGateway {
-	endpoints := group.Endpoints()
+	endpoints := group.WitnessEndpoints()
 	witnesses := make([]*witnessClient, 0, len(endpoints))
 	for u, vs := range endpoints {
 		vs := dedupVerifiers(vs)
