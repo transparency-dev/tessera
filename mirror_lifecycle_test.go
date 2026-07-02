@@ -59,7 +59,8 @@ func (f *fakeMirrorWriter) UpdateCheckpoint(ctx context.Context, g func(oldCP []
 }
 
 type fakeLogReader struct {
-	sizeFunc func(ctx context.Context) (uint64, error)
+	sizeFunc            func(ctx context.Context) (uint64, error)
+	readEntryBundleFunc func(ctx context.Context, index uint64, p uint8) ([]byte, error)
 }
 
 func (f *fakeLogReader) IntegratedSize(ctx context.Context) (uint64, error) {
@@ -73,6 +74,9 @@ func (f *fakeLogReader) ReadTile(ctx context.Context, level, index uint64, p uin
 	return nil, nil
 }
 func (f *fakeLogReader) ReadEntryBundle(ctx context.Context, index uint64, p uint8) ([]byte, error) {
+	if f.readEntryBundleFunc != nil {
+		return f.readEntryBundleFunc(ctx, index, p)
+	}
 	return nil, nil
 }
 func (f *fakeLogReader) NextIndex(ctx context.Context) (uint64, error) { return 0, nil }
@@ -357,5 +361,73 @@ func TestMirrorTarget_AddEntries_VerifySubtreeProof(t *testing.T) {
 				t.Errorf("verifySubtreeProof proof: got %x, want %x", gotProof, pkg.Proof)
 			}
 		})
+	}
+}
+
+func TestMirrorTarget_AddEntries_Unaligned_PadsFirstBundle(t *testing.T) {
+	const (
+		testIntegratedSize = uint64(270)
+		testUploadStart    = uint64(270) // not aligned: 270 % 256 = 14
+		testUploadEnd      = testPendingCPSize
+	)
+
+	var readEntryBundleCalled bool
+
+	padEntries := testUploadStart % layout.EntryBundleWidth
+	padBundleRaw := make([]byte, 2*padEntries)
+
+	mt := &MirrorTarget{
+		logVerifier: testLogVerifier,
+		signer:      testMirrorSigner,
+		writer: &fakeMirrorWriter{
+			integrateFunc: func(ctx context.Context, fromBundleIdx uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
+				if want := testUploadStart / layout.EntryBundleWidth; fromBundleIdx != want {
+					return 0, nil, fmt.Errorf("got fromBundleIdx %d want %d", fromBundleIdx, want)
+				}
+				for b, err := range bundles {
+					if err != nil {
+						return 0, nil, err
+					}
+					if got, want := uint64(len(b.Entries)), testUploadStart%layout.EntryBundleWidth; got != want {
+						return 0, nil, fmt.Errorf("got %d entries in bundle, want %d", got, want)
+					}
+				}
+				pendingCPRoot, err := base64.StdEncoding.DecodeString(testPendingCPRoot)
+				return testUploadEnd, pendingCPRoot, err
+			},
+			updateCheckpointFunc: func(ctx context.Context, f func(oldCP []byte) (newCP []byte, err error)) error {
+				_, err := f(nil)
+				return err
+			},
+		},
+		reader: &fakeLogReader{
+			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
+			readEntryBundleFunc: func(ctx context.Context, index uint64, p uint8) ([]byte, error) {
+				readEntryBundleCalled = true
+				if got, want := index, testUploadStart/layout.EntryBundleWidth; got != want {
+					t.Errorf("ReadEntryBundle index: got %d, want %d", got, want)
+				}
+				if got, want := p, uint8(testUploadStart%layout.EntryBundleWidth); got != want {
+					t.Errorf("ReadEntryBundle p: got %d, want %d", got, want)
+				}
+				return padBundleRaw, nil
+			},
+		},
+		cpSource: func(ctx context.Context) ([]byte, error) { return []byte(testPendingCP), nil },
+	}
+
+	validTicket, err := mt.sealTicket([]byte(testPendingCP))
+	if err != nil {
+		t.Fatalf("sealTicket failed: %v", err)
+	}
+
+	_, _, _, _, err = mt.AddEntries(t.Context(), testUploadStart, testUploadEnd, validTicket, func() (*MirrorPackage, error) {
+		return nil, io.EOF
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !readEntryBundleCalled {
+		t.Errorf("ReadEntryBundle was not called")
 	}
 }
