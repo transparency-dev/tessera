@@ -39,6 +39,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"time"
 
@@ -157,10 +158,26 @@ type Config struct {
 	BucketPrefix string
 	// Spanner is the GCP resource URI of the spanner database instance to use.
 	Spanner string
+	// SpannerTablePrefix is an optional prefix to prepend to the names of all Spanner tables.
+	// This can be used e.g. to store multiple logs in the same Spanner database.
+	// Note that this only namespaces the Spanner state; logs sharing a database must still
+	// each use a distinct Bucket and/or BucketPrefix, since GCS object paths are unaffected
+	// by this prefix.
+	// If set, it must start with a letter, contain only letters, digits, or underscores
+	// (e.g. "log1_"), and be at most 64 characters long, so that prefixed table names
+	// remain valid Spanner identifiers.
+	SpannerTablePrefix string
 }
+
+// tablePrefixRE matches valid values for a Spanner table prefix: empty, or a leading
+// letter followed by up to 63 letters, digits, or underscores.
+var tablePrefixRE = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]{0,63})?$`)
 
 // New creates a new instance of the GCP based Storage.
 func New(ctx context.Context, cfg Config) (tessera.Driver, error) {
+	if !tablePrefixRE.MatchString(cfg.SpannerTablePrefix) {
+		return nil, fmt.Errorf("invalid SpannerTablePrefix %q: must start with a letter, contain only letters, digits, or underscores, and be at most 64 characters long", cfg.SpannerTablePrefix)
+	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = http.DefaultClient
 	}
@@ -237,11 +254,11 @@ func (s *Storage) Appender(ctx context.Context, opts *tessera.AppendOptions) (*t
 			return nil, nil, fmt.Errorf("failed to connect to Spanner: %v", err)
 		}
 	}
-	if err := initDB(ctx, s.cfg.Spanner); err != nil {
+	if err := initDB(ctx, s.cfg.Spanner, s.cfg.SpannerTablePrefix); err != nil {
 		return nil, nil, fmt.Errorf("failed to verify/init Spanner schema: %v", err)
 	}
 
-	seq, err := newSpannerCoordinator(ctx, s.cfg.SpannerClient, uint64(opts.PushbackMaxOutstanding()))
+	seq, err := newSpannerCoordinator(ctx, s.cfg.SpannerClient, s.cfg.SpannerTablePrefix, uint64(opts.PushbackMaxOutstanding()))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create Spanner coordinator: %v", err)
 	}
@@ -756,6 +773,7 @@ func (a *Appender) updateEntryBundles(ctx context.Context, fromSeq uint64, entri
 // a durable and thread/multi-process safe sequencer.
 type spannerCoordinator struct {
 	dbPool         *spanner.Client
+	tablePrefix    string
 	maxOutstanding uint64
 
 	// seqTableMaxBatchByteSize is the maximum byte size of a batch of entries to be written to the "V" field in the "Seq" table.
@@ -764,9 +782,10 @@ type spannerCoordinator struct {
 
 // newSpannerCoordinator returns a new spannerSequencer struct which uses the provided
 // spanner resource name for its spanner connection.
-func newSpannerCoordinator(ctx context.Context, dbPool *spanner.Client, maxOutstanding uint64) (*spannerCoordinator, error) {
+func newSpannerCoordinator(ctx context.Context, dbPool *spanner.Client, tablePrefix string, maxOutstanding uint64) (*spannerCoordinator, error) {
 	r := &spannerCoordinator{
 		dbPool:                   dbPool,
+		tablePrefix:              tablePrefix,
 		maxOutstanding:           maxOutstanding,
 		seqTableMaxBatchByteSize: defaultSeqTableMaxBatchByteSize,
 	}
@@ -774,6 +793,11 @@ func newSpannerCoordinator(ctx context.Context, dbPool *spanner.Client, maxOutst
 		return nil, fmt.Errorf("schema is not compatible with this version of the Tessera library: %v", err)
 	}
 	return r, nil
+}
+
+// tbl returns the provided table name with the configured table prefix, if any, prepended.
+func (s *spannerCoordinator) tbl(name string) string {
+	return s.tablePrefix + name
 }
 
 // initDB ensures that the coordination DB is initialised correctly.
@@ -795,32 +819,32 @@ func newSpannerCoordinator(ctx context.Context, dbPool *spanner.Client, maxOutst
 //   - GCCoord
 //     This table coordinates garbage collection of unneeded partial tiles
 //     and entry bundles.
-func initDB(ctx context.Context, spannerDB string) error {
+func initDB(ctx context.Context, spannerDB string, tablePrefix string) error {
 	return createAndPrepareTables(ctx, spannerDB,
 		[]string{
-			"CREATE TABLE IF NOT EXISTS Tessera (id INT64 NOT NULL, compatibilityVersion INT64 NOT NULL) PRIMARY KEY (id)",
-			"CREATE TABLE IF NOT EXISTS SeqCoord (id INT64 NOT NULL, next INT64 NOT NULL,) PRIMARY KEY (id)",
-			"CREATE TABLE IF NOT EXISTS Seq (id INT64 NOT NULL, seq INT64 NOT NULL, v BYTES(MAX),) PRIMARY KEY (id, seq)",
-			"CREATE TABLE IF NOT EXISTS IntCoord (id INT64 NOT NULL, seq INT64 NOT NULL, rootHash BYTES(32)) PRIMARY KEY (id)",
-			"CREATE TABLE IF NOT EXISTS PubCoord (id INT64 NOT NULL, publishedAt TIMESTAMP NOT NULL, size INT64) PRIMARY KEY (id)",
-			"CREATE TABLE IF NOT EXISTS GCCoord (id INT64 NOT NULL, fromSize INT64 NOT NULL) PRIMARY KEY (id)",
+			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %sTessera (id INT64 NOT NULL, compatibilityVersion INT64 NOT NULL) PRIMARY KEY (id)", tablePrefix),
+			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %sSeqCoord (id INT64 NOT NULL, next INT64 NOT NULL,) PRIMARY KEY (id)", tablePrefix),
+			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %sSeq (id INT64 NOT NULL, seq INT64 NOT NULL, v BYTES(MAX),) PRIMARY KEY (id, seq)", tablePrefix),
+			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %sIntCoord (id INT64 NOT NULL, seq INT64 NOT NULL, rootHash BYTES(32)) PRIMARY KEY (id)", tablePrefix),
+			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %sPubCoord (id INT64 NOT NULL, publishedAt TIMESTAMP NOT NULL, size INT64) PRIMARY KEY (id)", tablePrefix),
+			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %sGCCoord (id INT64 NOT NULL, fromSize INT64 NOT NULL) PRIMARY KEY (id)", tablePrefix),
 		},
 		[]string{
-			"ALTER TABLE PubCoord ADD COLUMN IF NOT EXISTS size INT64",
+			fmt.Sprintf("ALTER TABLE %sPubCoord ADD COLUMN IF NOT EXISTS size INT64", tablePrefix),
 		},
 		[][]*spanner.Mutation{
-			{spanner.Insert("Tessera", []string{"id", "compatibilityVersion"}, []any{0, SchemaCompatibilityVersion})},
-			{spanner.Insert("SeqCoord", []string{"id", "next"}, []any{0, 0})},
-			{spanner.Insert("IntCoord", []string{"id", "seq", "rootHash"}, []any{0, 0, rfc6962.DefaultHasher.EmptyRoot()})},
-			{spanner.Insert("PubCoord", []string{"id", "publishedAt", "size"}, []any{0, time.Unix(0, 0), 0})},
-			{spanner.Insert("GCCoord", []string{"id", "fromSize"}, []any{0, 0})},
+			{spanner.Insert(tablePrefix+"Tessera", []string{"id", "compatibilityVersion"}, []any{0, SchemaCompatibilityVersion})},
+			{spanner.Insert(tablePrefix+"SeqCoord", []string{"id", "next"}, []any{0, 0})},
+			{spanner.Insert(tablePrefix+"IntCoord", []string{"id", "seq", "rootHash"}, []any{0, 0, rfc6962.DefaultHasher.EmptyRoot()})},
+			{spanner.Insert(tablePrefix+"PubCoord", []string{"id", "publishedAt", "size"}, []any{0, time.Unix(0, 0), 0})},
+			{spanner.Insert(tablePrefix+"GCCoord", []string{"id", "fromSize"}, []any{0, 0})},
 		})
 }
 
 // checkDataCompatibility compares the Tessera library SchemaCompatibilityVersion with the one stored in the
 // database, and returns an error if they are not identical.
 func (s *spannerCoordinator) checkDataCompatibility(ctx context.Context) error {
-	row, err := s.dbPool.Single().ReadRow(ctx, "Tessera", spanner.Key{0}, []string{"compatibilityVersion"})
+	row, err := s.dbPool.Single().ReadRow(ctx, s.tbl("Tessera"), spanner.Key{0}, []string{"compatibilityVersion"})
 	if err != nil {
 		return fmt.Errorf("failed to read schema compatibilityVersion: %v", err)
 	}
@@ -853,7 +877,7 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 		// First grab the treeSize in a non-locking read-only fashion (we don't want to block/collide with integration).
 		// We'll use this value to determine whether we need to apply back-pressure.
 		var treeSize int64
-		if row, err := s.dbPool.Single().ReadRowWithOptions(ctx, "IntCoord", spanner.Key{0}, []string{"seq"}, &spanner.ReadOptions{RequestTag: "tessera.op=assignEntries.treeSize"}); err != nil {
+		if row, err := s.dbPool.Single().ReadRowWithOptions(ctx, s.tbl("IntCoord"), spanner.Key{0}, []string{"seq"}, &spanner.ReadOptions{RequestTag: "tessera.op=assignEntries.treeSize"}); err != nil {
 			return err
 		} else {
 			if err := row.Column(0, &treeSize); err != nil {
@@ -868,7 +892,7 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 		_, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 			span.AddEvent("Reading SeqCoord:next")
 			// First we need to grab the next available sequence number from the SeqCoord table.
-			row, err := txn.ReadRowWithOptions(ctx, "SeqCoord", spanner.Key{0}, []string{"next"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+			row, err := txn.ReadRowWithOptions(ctx, s.tbl("SeqCoord"), spanner.Key{0}, []string{"next"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 			if err != nil {
 				return fmt.Errorf("failed to read SeqCoord: %w", err)
 			}
@@ -927,7 +951,7 @@ func (s *spannerCoordinator) assignEntries(ctx context.Context, entries []*tesse
 			}
 
 			// and update the next-available sequence number row in SeqCoord.
-			mutations = append(mutations, spanner.Update("SeqCoord", []string{"id", "next"}, []any{0, int64(next)}))
+			mutations = append(mutations, spanner.Update(s.tbl("SeqCoord"), []string{"id", "next"}, []any{0, int64(next)}))
 
 			span.AddEvent("Writing mutations")
 			if err := txn.BufferWrite(mutations); err != nil {
@@ -958,7 +982,7 @@ func (s *spannerCoordinator) addSeqMutation(seq uint64, entries []storage.Sequen
 		return nil, fmt.Errorf("failed to serialise batch: %v", err)
 	}
 	// Insert our newly sequenced batch of entries into Seq.
-	return spanner.Insert("Seq", []string{"id", "seq", "v"}, []any{0, int64(seq), b.Bytes()}), nil
+	return spanner.Insert(s.tbl("Seq"), []string{"id", "seq", "v"}, []any{0, int64(seq), b.Bytes()}), nil
 }
 
 // consumeEntries calls f with previously sequenced entries.
@@ -981,7 +1005,7 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 		_, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 			span.AddEvent("Reading IntCoord:seq")
 			// Figure out which is the starting index of sequenced entries to start consuming from.
-			row, err := txn.ReadRowWithOptions(ctx, "IntCoord", spanner.Key{0}, []string{"seq"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+			row, err := txn.ReadRowWithOptions(ctx, s.tbl("IntCoord"), spanner.Key{0}, []string{"seq"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 			if err != nil {
 				return err
 			}
@@ -997,7 +1021,7 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 			slog.DebugContext(ctx, "Consuming bundles", slog.Int64("fromSeq", fromSeq), slog.Uint64("toSeq", seqLimit-1))
 			span.AddEvent("Reading entries from sequence table")
 			// Now read the sequenced starting at the index we got above.
-			rows := txn.Read(ctx, "Seq",
+			rows := txn.Read(ctx, s.tbl("Seq"),
 				spanner.KeyRange{Start: spanner.Key{0, fromSeq}, End: spanner.Key{0, int64(seqLimit)}, Kind: spanner.ClosedOpen},
 				[]string{"seq", "v"})
 			defer rows.Stop()
@@ -1049,9 +1073,9 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 			// consumeFunc was successful, so we can update our coordination row, and delete the row(s) for
 			// the then consumed entries.
 			m := make([]*spanner.Mutation, 0)
-			m = append(m, spanner.Update("IntCoord", []string{"id", "seq", "rootHash"}, []any{0, int64(orderCheck), newRoot}))
+			m = append(m, spanner.Update(s.tbl("IntCoord"), []string{"id", "seq", "rootHash"}, []any{0, int64(orderCheck), newRoot}))
 			for _, c := range seqsConsumed {
-				m = append(m, spanner.Delete("Seq", spanner.Key{0, c}))
+				m = append(m, spanner.Delete(s.tbl("Seq"), spanner.Key{0, c}))
 			}
 
 			span.AddEvent("Writing mutations")
@@ -1074,7 +1098,7 @@ func (s *spannerCoordinator) consumeEntries(ctx context.Context, limit uint64, f
 
 // currentTree returns the size and root hash of the currently integrated tree.
 func (s *spannerCoordinator) currentTree(ctx context.Context) (uint64, []byte, error) {
-	row, err := s.dbPool.Single().ReadRowWithOptions(ctx, "IntCoord", spanner.Key{0}, []string{"seq", "rootHash"}, &spanner.ReadOptions{RequestTag: "tessera.op=currentTree"})
+	row, err := s.dbPool.Single().ReadRowWithOptions(ctx, s.tbl("IntCoord"), spanner.Key{0}, []string{"seq", "rootHash"}, &spanner.ReadOptions{RequestTag: "tessera.op=currentTree"})
 	if err != nil {
 		return 0, nil, fmt.Errorf("failed to read IntCoord: %v", err)
 	}
@@ -1089,7 +1113,7 @@ func (s *spannerCoordinator) currentTree(ctx context.Context) (uint64, []byte, e
 
 // nextIndex returns the next available index in the log.
 func (s *spannerCoordinator) nextIndex(ctx context.Context) (uint64, error) {
-	row, err := s.dbPool.Single().ReadRowWithOptions(ctx, "SeqCoord", spanner.Key{0}, []string{"next"}, &spanner.ReadOptions{RequestTag: "tessera.op=nextIndex"})
+	row, err := s.dbPool.Single().ReadRowWithOptions(ctx, s.tbl("SeqCoord"), spanner.Key{0}, []string{"next"}, &spanner.ReadOptions{RequestTag: "tessera.op=nextIndex"})
 	if err != nil {
 		return 0, fmt.Errorf("failed to read SeqCoord: %v", err)
 	}
@@ -1131,7 +1155,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 			outcomeAttr = outcomeTypeKey.String("success")
 
 			span.AddEvent("Reading PubCoord")
-			pRow, err := txn.ReadRowWithOptions(ctx, "PubCoord", spanner.Key{0}, []string{"publishedAt", "size"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+			pRow, err := txn.ReadRowWithOptions(ctx, s.tbl("PubCoord"), spanner.Key{0}, []string{"publishedAt", "size"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 			if err != nil {
 				return fmt.Errorf("failed to read PubCoord: %w", err)
 			}
@@ -1184,7 +1208,7 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 			span.AddEvent("Updating PubCoord")
 			pubAt = time.Now()
 			nextPubAt = pubAt.Add(minStaleActive)
-			if err := txn.BufferWrite([]*spanner.Mutation{spanner.Update("PubCoord", []string{"id", "publishedAt", "size"}, []any{0, pubAt, int64(currentSize)})}); err != nil {
+			if err := txn.BufferWrite([]*spanner.Mutation{spanner.Update(s.tbl("PubCoord"), []string{"id", "publishedAt", "size"}, []any{0, pubAt, int64(currentSize)})}); err != nil {
 				return err
 			}
 
@@ -1211,7 +1235,7 @@ func (s *spannerCoordinator) garbageCollect(ctx context.Context, treeSize uint64
 	const numWorkers = 1
 
 	_, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
-		row, err := txn.ReadRowWithOptions(ctx, "GCCoord", spanner.Key{0}, []string{"fromSize"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+		row, err := txn.ReadRowWithOptions(ctx, s.tbl("GCCoord"), spanner.Key{0}, []string{"fromSize"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 		if err != nil {
 			return fmt.Errorf("failed to read GCCoord: %w", err)
 		}
@@ -1276,7 +1300,7 @@ func (s *spannerCoordinator) garbageCollect(ctx context.Context, treeSize uint64
 			return fmt.Errorf("failed to delete one or more objects: %v", err)
 		}
 
-		if err := txn.BufferWrite([]*spanner.Mutation{spanner.Update("GCCoord", []string{"id", "fromSize"}, []any{0, int64(fromSize)})}); err != nil {
+		if err := txn.BufferWrite([]*spanner.Mutation{spanner.Update(s.tbl("GCCoord"), []string{"id", "fromSize"}, []any{0, int64(fromSize)})}); err != nil {
 			return err
 		}
 
@@ -1442,17 +1466,18 @@ func (s *Storage) MigrationWriter(ctx context.Context, opts *tessera.MigrationOp
 			return nil, nil, fmt.Errorf("failed to connect to Spanner: %v", err)
 		}
 	}
-	if err := initDB(ctx, s.cfg.Spanner); err != nil {
+	if err := initDB(ctx, s.cfg.Spanner, s.cfg.SpannerTablePrefix); err != nil {
 		return nil, nil, fmt.Errorf("failed to verify/init Spanner schema: %v", err)
 	}
 
-	seq, err := newSpannerCoordinator(ctx, s.cfg.SpannerClient, 0)
+	seq, err := newSpannerCoordinator(ctx, s.cfg.SpannerClient, s.cfg.SpannerTablePrefix, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create Spanner sequencer: %v", err)
 	}
 	m := &MigrationStorage{
 		s:            s,
 		dbPool:       seq.dbPool,
+		tablePrefix:  s.cfg.SpannerTablePrefix,
 		bundleHasher: opts.LeafHasher(),
 		sequencer:    seq,
 		logStore: &logResourceStore{
@@ -1482,9 +1507,15 @@ func (s *Storage) MigrationWriter(ctx context.Context, opts *tessera.MigrationOp
 type MigrationStorage struct {
 	s            *Storage
 	dbPool       *spanner.Client
+	tablePrefix  string
 	bundleHasher func([]byte) ([][]byte, error)
 	sequencer    sequencer
 	logStore     *logResourceStore
+}
+
+// tbl returns the provided table name with the configured table prefix, if any, prepended.
+func (m *MigrationStorage) tbl(name string) string {
+	return m.tablePrefix + name
 }
 
 var _ migrate.MigrationWriter = &MigrationStorage{}
@@ -1576,7 +1607,7 @@ func (m *MigrationStorage) buildTree(ctx context.Context, sourceSize uint64) (ui
 
 	_, err := m.dbPool.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 		// Figure out which is the starting index of sequenced entries to start consuming from.
-		row, err := txn.ReadRowWithOptions(ctx, "IntCoord", spanner.Key{0}, []string{"seq", "rootHash"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+		row, err := txn.ReadRowWithOptions(ctx, m.tbl("IntCoord"), spanner.Key{0}, []string{"seq", "rootHash"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 		if err != nil {
 			return err
 		}
@@ -1611,9 +1642,8 @@ func (m *MigrationStorage) buildTree(ctx context.Context, sourceSize uint64) (ui
 		slog.InfoContext(ctx, "Integrate: added entries", slog.Uint64("added", added))
 
 		// integration was successful, so we can update our coordination row
-		m := make([]*spanner.Mutation, 0)
-		m = append(m, spanner.Update("IntCoord", []string{"id", "seq", "rootHash"}, []any{0, int64(from + added), newRoot}))
-		return txn.BufferWrite(m)
+		muts := []*spanner.Mutation{spanner.Update(m.tbl("IntCoord"), []string{"id", "seq", "rootHash"}, []any{0, int64(from + added), newRoot})}
+		return txn.BufferWrite(muts)
 	})
 
 	if err != nil {

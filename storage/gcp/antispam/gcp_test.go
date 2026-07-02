@@ -62,6 +62,24 @@ func TestAntispamStorage(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "roundtrip with table prefix",
+			opts: AntispamOpts{SpannerTablePrefix: "Tenant1_"},
+			logEntries: [][]byte{
+				[]byte("one"),
+				[]byte("two"),
+			},
+			lookupEntries: []testLookup{
+				{
+					entryHash: testIDHash([]byte("one")),
+				}, {
+					entryHash: testIDHash([]byte("two")),
+				}, {
+					entryHash:    testIDHash([]byte("nowhere to be found")),
+					wantNotFound: true,
+				},
+			},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			closeDB := newSpannerDB(t)
