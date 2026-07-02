@@ -31,7 +31,7 @@ import (
 	"github.com/transparency-dev/tessera/cmd/mtc/mirror/internal/config"
 	"github.com/transparency-dev/tessera/cmd/mtc/mirror/internal/handler"
 	"github.com/transparency-dev/tessera/storage/posix"
-	"github.com/transparency-dev/witness/omniwitness"
+	witnessConfig "github.com/transparency-dev/witness/config"
 	"github.com/transparency-dev/witness/persistence/sqlite"
 	"github.com/transparency-dev/witness/witness"
 	"golang.org/x/mod/sumdb/note"
@@ -88,7 +88,7 @@ func main() {
 		}
 
 		// Ensure log is known by the witness
-		if err := wp.AddLogs(ctx, []omniwitness.Log{
+		if err := wp.AddLogs(ctx, []witnessConfig.Log{
 			{Origin: origin, VKey: l.VKey},
 		}); err != nil {
 			slog.ErrorContext(ctx, "Failed to add target log to witness", slog.String("origin", origin), slog.Any("error", err))
