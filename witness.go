@@ -51,6 +51,8 @@ func NewWitnessGroupFromPolicy(p []byte) (WitnessGroup, error) {
 	scanner := bufio.NewScanner(bytes.NewBuffer(p))
 	components := make(map[string]policyComponent)
 
+	urlToWitnessName := make(map[string]string)
+
 	var quorumName string
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -88,6 +90,11 @@ func NewWitnessGroupFromPolicy(p []byte) (WitnessGroup, error) {
 				return WitnessGroup{}, fmt.Errorf("invalid witness config %q: %w", line, err)
 			}
 			components[name] = w
+			if wName, ok := urlToWitnessName[witnessURLStr]; !ok {
+				urlToWitnessName[witnessURLStr] = w.Key.Name()
+			} else if wName != w.Key.Name() {
+				return WitnessGroup{}, fmt.Errorf("witness URL %q has multiple witness signer names assigned %q and %q", witnessURLStr, wName, w.Key.Name())
+			}
 		case "group":
 			if len(fields) < 3 {
 				return WitnessGroup{}, fmt.Errorf("invalid group definition: %q", line)

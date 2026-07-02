@@ -23,8 +23,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -287,7 +290,7 @@ func (pf *sharedConsistencyProofFetcher) ConsistencyProof(ctx context.Context, s
 // It also has the size of the checkpoint that the log thinks that the witness last signed.
 // This is important for sending update proofs.
 // This is defaulted to zero on startup and calibrated after the first request, which is expected by the spec:
-// `If a client doesn't have information on the latest cosigned checkpoint, it MAY initially make a request with a old size of zero to obtain it`
+// `If a client doesn't have information on the latest cosigned checkpoint, it MAY initially make a request with an old size of zero to obtain it`
 type witnessClient struct {
 	client    *http.Client
 	url       string
@@ -295,14 +298,26 @@ type witnessClient struct {
 	size      uint64
 }
 
+// names returns a string with unique names of the verifiers, sorted.
+func names(w []note.Verifier) []string {
+	m := make(map[string]struct{}, len(w))
+	for _, v := range w {
+		m[v.Name()] = struct{}{}
+	}
+	s := slices.Collect(maps.Keys(m))
+	sort.Strings(s)
+	return s
+}
+
 func (w *witnessClient) update(ctx context.Context, cp []byte, size uint64, fetchProof func(ctx context.Context, from, to uint64) ([][]byte, error)) ([]byte, error) {
 	return otel.Trace(ctx, "tessera.witness.update", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		witNames := names(w.verifiers)
 		var recursed uint
 		if v := ctx.Value(antiRecursionCtxKey); v != nil {
 			recursed = v.(uint)
 		}
 		if recursed >= maxUpdateRecursion {
-			return nil, fmt.Errorf("too many consecutive requests to witness %s", w.verifiers[0].Name())
+			return nil, fmt.Errorf("too many consecutive requests to witness %v", witNames)
 		}
 
 		var proof [][]byte
@@ -315,7 +330,7 @@ func (w *witnessClient) update(ctx context.Context, cp []byte, size uint64, fetc
 		}
 
 		start := time.Now()
-		nameAttr := witnessNameKey.String(w.verifiers[0].Name())
+		nameAttr := witnessNameKey.String(strings.Join(witNames, ","))
 		witnessClientReqsTotal.Add(ctx, 1, metric.WithAttributes(nameAttr))
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.url, w.buildRequestBody(proof, cp))
@@ -348,7 +363,7 @@ func (w *witnessClient) update(ctx context.Context, cp []byte, size uint64, fetc
 			copy(signed, cp)
 			copy(signed[len(cp):], rb)
 			if n, err := note.Open(signed, note.VerifierList(w.verifiers...)); err != nil {
-				return nil, fmt.Errorf("witness %q at %q replied with invalid signature: %q\nconstructed note: %q\nerror: %v", w.verifiers[0].Name(), w.url, rb, string(signed), err)
+				return nil, fmt.Errorf("witnesses %v at %q replied with no valid signature(s): %q\nconstructed note: %q\nerror: %v", witNames, w.url, rb, string(signed), err)
 			} else {
 				w.size = uint64(size)
 				var sigs []byte

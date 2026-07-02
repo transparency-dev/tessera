@@ -159,8 +159,15 @@ func TestNewWitnessGroupFromPolicy_Errors(t *testing.T) {
 			desc:   "witness name is keyword",
 			policy: `group none 1 witness`,
 			errStr: "invalid group name",
-		},
-	}
+		}, {
+			desc: "witness URL has multiple signer names",
+			policy: `
+				witness w1 sigsum.org+e4ade967+AZuUY6B08pW3QVHu8uvsrxWPcAv9nykap2Nb4oxCee+r https://sigsum.org/witness/
+				witness w2 example.com+3753d3de+AebBhMcghIUoavZpjuDofa4sW6fYHyVn7gvwDBfvkvuM https://sigsum.org/witness/
+				group g1 1 w1 w2
+				quorum g1`,
+			errStr: "has multiple witness signer names assigned",
+		}}
 
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
