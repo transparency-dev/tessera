@@ -46,7 +46,7 @@ effort to set up per-mirror, but has a number of benefits:
      copy is no longer useful, the filesystem containing that mirror's data can be unmounted and its storage
      reclaimed much quicker and more cheaply compared to attempting to delete the directory hierarchy.
 
-> [NOTE]
+> [!NOTE]
 > Feedback is very welcome, and we'd particularly love to hear opinions from potential operators on operational
 > characteristics such as the storage details outlined above.
 
