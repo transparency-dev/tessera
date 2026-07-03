@@ -9,7 +9,7 @@ A `tlog-mirror` is both:
 - an additional "extended" `tlog-witness` which will sign a consistent checkpoint only once it has _also_
   stored a copy of the log content which that checkpoint commits to.
 
-> [WARNING]
+> [!WARNING]
 > This binary and the internal packages it uses are still under active development, and should be
 > considered experimental and not production-ready. They remain outside the SemVer policy.
 
@@ -63,20 +63,20 @@ You will need:
 
 You can generate MLDSA key pairs in the correct `vkey` format with the
 [`generate_keys`](https://github.com/transparency-dev/witness/blob/main/cmd/generate_keys/main.go) command from the
-`[witness](https://github.com/transparency-dev/witness) repo.
+[witness](https://github.com/transparency-dev/witness) repo.
 
 The command below will generate such a key pair, with an origin of "mirror.example.com/mtctest", writing the public
 and private keys out to `mirror.pub` and `mirror.sec` respectively:
 
 ```bash
-$ go run github.com/transparency-dev/witness/cmd/generate_keys@main \
-    --mldsa \
-    --origin "mirror.example.com/mtctest" \
-    --out_priv mirror.sec \
-    --out_pub mirror.pub
+go run github.com/transparency-dev/witness/cmd/generate_keys@main \
+  --mldsa \
+  --origin "mirror.example.com/mtctest" \
+  --out_priv mirror.sec \
+  --out_pub mirror.pub
 ```
 
-> [WARNING]
+> [!WARNING]
 > Ensure that these keys are stored somewhere safe, and not in a location which could accidentally be made
 > public when exporting the mirrored log data!
 
@@ -92,9 +92,9 @@ Edit this or create your own with appropriate entries. Then, place the config fi
 An example command for starting the server is given below:
 
 ```bash
-$ go run ./cmd/mtc/mirror/posix \
-    --storage_dir="/tmp/mirrorroot" \
-    --mirror_cosigner_path=./mirror.sec \
-    --config_path=cmd/mtc/mirror/posix/example_config.json \
-    --slog_level=-9
+go run ./cmd/mtc/mirror/posix \
+  --storage_dir="/tmp/mirrorroot" \
+  --mirror_cosigner_path=./mirror.sec \
+  --config_path=cmd/mtc/mirror/posix/example_config.json \
+  --slog_level=-9
 ```
