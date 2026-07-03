@@ -208,47 +208,11 @@ type MirrorPackage struct {
 // ticket for future invocations, and, optionally, a cosignature over a pending checkpoint
 // whose size matches uploadEnd if one exists.
 func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticketBytes []byte, next func() (*MirrorPackage, error)) (nextEntry uint64, pendingSize uint64, newTicket []byte, cosigs []byte, err error) {
-	curIntegratedSize, err := mt.reader.IntegratedSize(ctx)
+	nextEntry, pendingSize, ticket, pendingCP, pendingNote, err := mt.openOrCreateTicket(ctx, ticketBytes, uploadEnd)
 	if err != nil {
-		return 0, 0, nil, nil, fmt.Errorf("failed to read integrated size: %w", err)
-	}
-	ticketCP, err := mt.openTicket(ticketBytes)
-	if err != nil {
-		slog.DebugContext(ctx, "Invalid Ticket received, returning new one", slog.Any("error", err), slog.Uint64("uploadStart", uploadStart), slog.Uint64("uploadEnd", uploadEnd))
-
-		// If the client didn't provide a [valid] ticket, then we don't have a pending
-		// checkpoint to validate against, so we return a new ticket with the
-		// current checkpoint.
-		pendingCPRaw, err := mt.cpSource(ctx)
-		if err != nil {
-			return 0, 0, nil, nil, fmt.Errorf("failed to get pending checkpoint: %v", err)
-		}
-		if len(pendingCPRaw) == 0 {
-			return 0, 0, nil, nil, ErrNoPendingCheckpoint
-		}
-		ticketBytes, err = mt.sealTicket(pendingCPRaw)
-		if err != nil {
-			return 0, 0, nil, nil, fmt.Errorf("failed to create ticket: %v", err)
-		}
-
-		pendingCP, _, _, err := log.ParseCheckpoint(pendingCPRaw, mt.logVerifier.Name(), mt.logVerifier)
-		if err != nil {
-			slog.ErrorContext(ctx, "Invalid pending checkpoint from source", slog.String("pending_checkpoint", string(pendingCPRaw)), slog.String("error", err.Error()))
-			return 0, 0, nil, nil, fmt.Errorf("failed to parse pending checkpoint while creating ticket: %v", err)
-		}
-
-		slog.DebugContext(ctx, "Returning new ticket", slog.Uint64("curIntegratedSize", curIntegratedSize), slog.Uint64("pendingSize", pendingCP.Size))
-
-		return curIntegratedSize, pendingCP.Size, ticketBytes, nil, ErrConflict
+		return nextEntry, pendingSize, ticket, nil, err
 	}
 
-	pendingCP, _, pendingNote, err := log.ParseCheckpoint(ticketCP, mt.logVerifier.Name(), mt.logVerifier)
-	if err != nil {
-		slog.ErrorContext(ctx, "Invalid pending checkpoint in ticket", slog.String("pending_checkpoint", string(ticketCP)), slog.String("error", err.Error()))
-		return 0, 0, nil, nil, fmt.Errorf("failed to parse pending checkpoint from ticket: %v", err)
-	}
-
-	slog.DebugContext(ctx, "Valid ticket, proceeding", slog.Uint64("curIntegratedSize", curIntegratedSize), slog.Uint64("pendingSize", pendingCP.Size))
 	// Handle 409 Conflicts:
 	//    - Zero-request check: If upload_start == 0 and upload_end == 0, the client is
 	//      requesting initial mirror information.
@@ -259,11 +223,11 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 	//      * MUST NOT be greater than the mirror's next expected entry index.
 	//      * MUST NOT be too far below the mirror's next entry index.
 	if (uploadStart == 0 && uploadEnd == 0) ||
-		(uploadEnd != pendingCP.Size || uploadEnd < curIntegratedSize) ||
-		(uploadStart > curIntegratedSize) {
+		(uploadEnd != pendingSize || uploadEnd < nextEntry) ||
+		(uploadStart > nextEntry) {
 		// TODO(al): add flexibility about re-writing some entries
-		slog.ErrorContext(ctx, "Returning conflict", slog.Uint64("curIntegratedSize", curIntegratedSize), slog.Uint64("pendingSize", pendingCP.Size), slog.Uint64("uploadStart", uploadStart), slog.Uint64("uploadEnd", uploadEnd))
-		return curIntegratedSize, pendingCP.Size, ticketBytes, nil, ErrConflict
+		slog.ErrorContext(ctx, "Returning conflict", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingSize), slog.Uint64("uploadStart", uploadStart), slog.Uint64("uploadEnd", uploadEnd))
+		return nextEntry, pendingSize, ticket, nil, ErrConflict
 	}
 
 	bundleIdx := uploadStart / layout.EntryBundleWidth
@@ -271,9 +235,9 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 	switch {
 	case err != nil:
 		return 0, 0, nil, nil, err
-	case nextEntry == pendingCP.Size:
+	case nextEntry == pendingSize:
 		if !bytes.Equal(pendingCP.Hash, newRoot) {
-			slog.ErrorContext(ctx, "CORRUPTION DETECTED - pending root != calculated root", slog.String("calculated_root", hex.EncodeToString(newRoot)), slog.String("pending_checkpoint", string(ticketCP)))
+			slog.ErrorContext(ctx, "CORRUPTION DETECTED - pending root != calculated root", slog.String("calculated_root", hex.EncodeToString(newRoot)), slog.String("pending_checkpoint", string(pendingNote.Text)))
 			return 0, 0, nil, nil, errors.New("internal error")
 		}
 
@@ -283,16 +247,15 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 			return nextEntry, pubSize, nil, nil, fmt.Errorf("publishCheckpoint %w", err) // %w as we may need to signal ErrConflict.
 		}
 
-		slog.WarnContext(ctx, "Completed upload", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingCP.Size), slog.String("sigs", string(sigs)))
-		return nextEntry, pendingCP.Size, ticketBytes, sigs, nil
-	case nextEntry > pendingCP.Size:
-		// TODO(al): ticket is stale, probably need to update the ticket?
-		slog.WarnContext(ctx, "nextEntry > pendingSize", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingCP.Size))
-		return nextEntry, pendingCP.Size, ticketBytes, nil, nil
+		slog.WarnContext(ctx, "Completed upload", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingSize), slog.String("sigs", string(sigs)))
+		return nextEntry, pendingSize, nil, sigs, nil
+	case nextEntry > pendingSize:
+		slog.WarnContext(ctx, "nextEntry > pendingSize", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingSize))
+		return nextEntry, pendingSize, nil, nil, nil
 	default:
-		slog.WarnContext(ctx, "Incomplete upload", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingCP.Size))
+		slog.WarnContext(ctx, "Incomplete upload", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingSize))
 		// Incomplete upload, return an updated ticket with the current checkpoint.
-		return nextEntry, pendingCP.Size, ticketBytes, nil, nil
+		return nextEntry, pendingSize, ticketBytes, nil, nil
 	}
 }
 
@@ -426,26 +389,85 @@ func (mt *MirrorTarget) IntegratedSize(ctx context.Context) (uint64, error) {
 	return mt.reader.IntegratedSize(ctx)
 }
 
-func (mt *MirrorTarget) sealTicket(pendingCP []byte) ([]byte, error) {
-	h := hmac.New(sha256.New, mt.ticketKey)
-	h.Write(pendingCP)
-	mac := h.Sum(nil)
-	return append(mac, pendingCP...), nil
+// openOrCreateTicket handles ticket logic, returning a new ticket if the provided one is invalid/missing.
+//
+// Returns next entry index to upload, size of the pending checkpoint, ticket to return to the caller, pending checkpoint structure, pending note, and error.
+func (mt *MirrorTarget) openOrCreateTicket(ctx context.Context, ticketBytes []byte, expectedSize uint64) (uint64, uint64, []byte, *log.Checkpoint, *note.Note, error) {
+	nextEntry, err := mt.reader.IntegratedSize(ctx)
+	if err != nil {
+		return 0, 0, nil, nil, nil, fmt.Errorf("failed to read integrated size: %v", err)
+	}
+
+	var pendingCP *log.Checkpoint
+	var pendingNote *note.Note
+
+	ticketCP, err := mt.open(ticketBytes)
+	if err != nil {
+		slog.DebugContext(ctx, "Failed to open ticket", slog.Any("error", err))
+	} else {
+		pendingCP, _, pendingNote, err = log.ParseCheckpoint(ticketCP, mt.logVerifier.Name(), mt.logVerifier)
+		if err != nil {
+			slog.DebugContext(ctx, "Failed to parse ticket", slog.Any("error", err))
+		}
+		slog.DebugContext(ctx, "Valid ticket", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingCP.Size))
+	}
+
+	if pendingCP == nil || pendingCP.Size != expectedSize {
+		slog.DebugContext(ctx, "Invalid or incorrect ticket, returning new ticket", slog.Uint64("next_entry", nextEntry), slog.String("ticketCP", string(ticketCP)), slog.Uint64("expectedSize", expectedSize))
+		ticketBytes, pendingCP, pendingNote, err = mt.createNewTicket(ctx)
+		if err != nil {
+			return 0, 0, nil, nil, nil, fmt.Errorf("failed to create new ticket: %v", err)
+		}
+		// If the new pending checkpoint still doesn't match expectedSize, return 409 Conflict with the fresh ticket.
+		if pendingCP.Size != expectedSize {
+			return nextEntry, pendingCP.Size, ticketBytes, pendingCP, pendingNote, ErrConflict
+		}
+		// Otherwise, allow the request to continue (because their uploadEnd == pendingCP.Size).
+	}
+
+	return nextEntry, pendingCP.Size, ticketBytes, pendingCP, pendingNote, nil
 }
 
-func (mt *MirrorTarget) openTicket(ticketBytes []byte) ([]byte, error) {
-	if len(ticketBytes) < sha256.Size {
-		return nil, errors.New("invalid ticket")
+func (mt *MirrorTarget) createNewTicket(ctx context.Context) (ticket []byte, pendingCP *log.Checkpoint, pendingNote *note.Note, err error) {
+	pendingCPRaw, err := mt.cpSource(ctx)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to get pending checkpoint: %v", err)
+	}
+	if len(pendingCPRaw) == 0 {
+		return nil, nil, nil, ErrNoPendingCheckpoint
+	}
+	pendingCP, _, pendingNote, err = log.ParseCheckpoint(pendingCPRaw, mt.logVerifier.Name(), mt.logVerifier)
+	if err != nil {
+		slog.ErrorContext(ctx, "Invalid pending checkpoint from source", slog.String("pending_checkpoint", string(pendingCPRaw)), slog.String("error", err.Error()))
+		return nil, nil, nil, fmt.Errorf("failed to parse pending checkpoint while creating ticket: %v", err)
+	}
+	ticket, err = mt.seal(pendingCPRaw)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to create ticket: %v", err)
+	}
+	return ticket, pendingCP, pendingNote, nil
+}
+
+func (mt *MirrorTarget) seal(b []byte) ([]byte, error) {
+	h := hmac.New(sha256.New, mt.ticketKey)
+	h.Write(b)
+	mac := h.Sum(nil)
+	return append(mac, b...), nil
+}
+
+func (mt *MirrorTarget) open(sealed []byte) ([]byte, error) {
+	if len(sealed) < sha256.Size {
+		return nil, errors.New("invalid sealed value")
 	}
 
-	mac, pendingCP := ticketBytes[:sha256.Size], ticketBytes[sha256.Size:]
+	mac, b := sealed[:sha256.Size], sealed[sha256.Size:]
 
 	h := hmac.New(sha256.New, mt.ticketKey)
-	h.Write(pendingCP)
+	h.Write(b)
 	if !hmac.Equal(mac, h.Sum(nil)) {
-		return nil, errors.New("invalid ticketMAC")
+		return nil, errors.New("invalid sealed value MAC")
 	}
-	return pendingCP, nil
+	return b, nil
 }
 
 func signNote(n *note.Note, signers ...note.Signer) ([]byte, []byte, error) {
