@@ -18,8 +18,14 @@ For real load-testing applications, especially headless runs as part of a CI pip
 First, store the hammer log test private key:
 
 ```shell
-echo "PRIVATE+KEY+example.com/log/testdata+3232599a+BhO1aBkQITKqnLpM1tkZqj6H7+WU506YqBVlOhyrTO+j" > /tmp/hammer-log.key
+go run github.com/transparency-dev/witness/cmd/generate_keys@latest \
+  --mldsa \
+  --origin "example.com/log/testdata" \
+  --out_priv /tmp/hammer-log.key \
+  --out_pub /tmp/hammer-log.pub
 ```
+
+Then, add the hammer log public key to the mirror server's configuration.
 
 Example usage to test a deployment of `cmd/mtc/mirror/posix` server:
 
