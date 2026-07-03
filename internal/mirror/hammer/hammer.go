@@ -297,8 +297,8 @@ func getSignerOrDie(ctx context.Context) *note.Signer {
 	var privKey string
 	var err error
 
-	if len(privKey) == 0 {
-		slog.ErrorContext(ctx, "Supply private key file path using --private_key")
+	if len(*logPrivKey) == 0 {
+		slog.ErrorContext(ctx, "Supply log private key file path using --log_private_key")
 		os.Exit(1)
 	}
 
