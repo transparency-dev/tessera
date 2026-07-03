@@ -296,7 +296,7 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 	}
 }
 
-// bundleIterator returns an interator which yields entry bundles after verifying their subtree consistency with the provided pending checkpoint.
+// bundleIterator returns an iterator which yields entry bundles after verifying their subtree consistency with the provided pending checkpoint.
 //
 // Yielded entry bundles are always aligned to bundle boundaries. Specifically, this means that if the provided start is _not_ bundle aligned, then we will
 // fetch entries from the bundle at start/256 and use those entries to left-pad the first yielded bundle.
@@ -316,6 +316,10 @@ func (mt *MirrorTarget) bundleIterator(ctx context.Context, next func() (*Mirror
 			b := &api.EntryBundle{}
 			if err := b.UnmarshalText(br); err != nil {
 				yield(nil, fmt.Errorf("failed to unmarshal bundle containing uploadStart (%d): %v", start, err))
+				return
+			}
+			if l := len(b.Entries); l < int(p) {
+				yield(nil, fmt.Errorf("POTENTIAL CORRUPTION: partial bundle at index %d.%d has only %d entries", start/layout.EntryBundleWidth, p, l))
 				return
 			}
 			padEntries = b.Entries[:p]

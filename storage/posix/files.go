@@ -1235,7 +1235,7 @@ func (m *MirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, b
 			return 0, nil, fmt.Errorf("failed to marshal bundle at index %d: %v", bundleIdx, err)
 		}
 
-		// Now write the bundle out out.
+		// Now write the bundle out.
 		if err := m.logStorage.writeBundle(ctx, bundleIdx, uint8(p), bundleData); err != nil {
 			return 0, nil, err
 		}
