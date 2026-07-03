@@ -65,6 +65,9 @@ func main() {
 
 	mirrorCosigner := mustCreateCosigner(ctx, *mirrorCosignerPath)
 
+	// Mirror cosigner MUST NOT use the same key as add-checkpoint cosigner.
+	assertDistinctSigners(ctx, w.Signers, []note.Signer{mirrorCosigner})
+
 	mux := handler.NewMirrorMux()
 	cfg := mirrorConfigFromFlags(ctx)
 	for _, l := range cfg.Logs {
@@ -215,4 +218,22 @@ func mustCreateCosigner(ctx context.Context, path string) note.Signer {
 		os.Exit(1)
 	}
 	return s
+}
+
+// assertDistinctSigners asserts that the two provided lists of cosigners have no signers in common.
+func assertDistinctSigners(ctx context.Context, w, m []note.Signer) {
+	type nhKey struct {
+		name string
+		hash uint32
+	}
+	aMap := make(map[nhKey]struct{}, len(w))
+	for _, s := range w {
+		aMap[nhKey{name: s.Name(), hash: s.KeyHash()}] = struct{}{}
+	}
+	for _, s := range m {
+		if _, ok := aMap[nhKey{name: s.Name(), hash: s.KeyHash()}]; ok {
+			slog.ErrorContext(ctx, "Cannot use same signing key for witness and mirror", slog.String("name", s.Name()), slog.String("hash", fmt.Sprintf("%08x", s.KeyHash())))
+			os.Exit(1)
+		}
+	}
 }
