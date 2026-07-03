@@ -1212,18 +1212,19 @@ func (m *MirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, b
 		}
 		if seenPartialBundle {
 			// Seeing a partial bundle means that there should not be any further bundles to be processed.
-			return 0, nil, fmt.Errorf("unexpected bundle after partial at index %d", bundleIdx)
+			return 0, nil, fmt.Errorf("bundle index %d follows a partial bundle", bundleIdx)
 		}
 
-		p := len(b.Entries)
-		switch p {
-		case 0:
+		var p int
+		switch le := len(b.Entries); {
+		case le == 0:
 			return 0, nil, fmt.Errorf("zero-length entry bundle at index %d", bundleIdx)
-		case layout.EntryBundleWidth:
-			p = 0
-		default:
+		case le > layout.EntryBundleWidth:
+			return 0, nil, fmt.Errorf("bundle index %d has too many entries (%d)", bundleIdx, le)
+		case le < layout.EntryBundleWidth:
 			// This is a partial bundle, so we do not expect to see any further bundles from the iterator.
 			seenPartialBundle = true
+			p = le
 		}
 
 		// Serialise the bundle...
@@ -1233,7 +1234,8 @@ func (m *MirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, b
 		if err != nil {
 			return 0, nil, fmt.Errorf("failed to marshal bundle at index %d: %v", bundleIdx, err)
 		}
-		// ...and then write it out.
+
+		// Now write the bundle out.
 		if err := m.logStorage.writeBundle(ctx, bundleIdx, uint8(p), bundleData); err != nil {
 			return 0, nil, err
 		}
