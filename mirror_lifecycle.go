@@ -204,21 +204,23 @@ type MirrorPackage struct {
 // AddEntries processes a stream of entry packages, verifies subtree consistency proofs,
 // and durably commits entries to the log.
 //
-// Returns the next required entry index, a recent pending checkpoint size, an opaque
-// ticket for future invocations, and, optionally, a cosignature over a pending checkpoint
-// whose size matches uploadEnd if one exists.
-func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticketBytes []byte, next func() (*MirrorPackage, error)) (nextEntry uint64, pendingSize uint64, newTicket []byte, cosigs []byte, err error) {
-	nextEntry, pendingSize, ticket, pendingCP, pendingNote, err := mt.openOrCreateTicket(ctx, ticketBytes, uploadEnd)
+// Returns:
+// - the next required entry index,
+// - a recent pending checkpoint size,
+// - an opaque ticket for future invocation,
+// - optionally, a cosignature over a pending checkpoint whose size matches uploadEnd if one exists.
+func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticketBytes []byte, next func() (*MirrorPackage, error)) (uint64, uint64, []byte, []byte, error) {
+	nextEntry, pendingSize, ticketBytes, pendingCP, pendingNote, err := mt.openOrCreateTicket(ctx, ticketBytes, uploadEnd)
 	if err != nil {
-		return nextEntry, pendingSize, ticket, nil, err
+		return nextEntry, pendingSize, ticketBytes, nil, err
 	}
 
 	// Handle 409 Conflicts:
 	//    - Zero-request check: If upload_start == 0 and upload_end == 0, the client is
 	//      requesting initial mirror information.
 	//    - upload_end:
-	//      * MUST be equal to the tree size of a known pending checkpoint value.
-	//      * MUST NOT be less than the mirror checkpoint's tree size.
+	//      * MUST be equal to the tree size of a known pending checkpoint.
+	//      * MUST NOT be less than the mirror's current checkpoint tree size.
 	//    - upload_start:
 	//      * MUST NOT be greater than the mirror's next expected entry index.
 	//      * MUST NOT be too far below the mirror's next entry index.
@@ -227,7 +229,7 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 		(uploadStart > nextEntry) {
 		// TODO(al): add flexibility about re-writing some entries
 		slog.ErrorContext(ctx, "Returning conflict", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingSize), slog.Uint64("uploadStart", uploadStart), slog.Uint64("uploadEnd", uploadEnd))
-		return nextEntry, pendingSize, ticket, nil, ErrConflict
+		return nextEntry, pendingSize, ticketBytes, nil, ErrConflict
 	}
 
 	bundleIdx := uploadStart / layout.EntryBundleWidth
@@ -408,8 +410,9 @@ func (mt *MirrorTarget) openOrCreateTicket(ctx context.Context, ticketBytes []by
 		pendingCP, _, pendingNote, err = log.ParseCheckpoint(ticketCP, mt.logVerifier.Name(), mt.logVerifier)
 		if err != nil {
 			slog.DebugContext(ctx, "Failed to parse ticket", slog.Any("error", err))
+		} else {
+			slog.DebugContext(ctx, "Valid ticket", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingCP.Size))
 		}
-		slog.DebugContext(ctx, "Valid ticket", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingCP.Size))
 	}
 
 	if pendingCP == nil || pendingCP.Size != expectedSize {
