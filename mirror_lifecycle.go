@@ -47,9 +47,6 @@ var (
 	// ErrConflict is returned when the requested upload range conflicts with the
 	// current state of the log.
 	ErrConflict = errors.New("tree size conflict")
-	// ErrNoPendingCheckpoint is returned when a pending checkpoint cannot be
-	// determined.
-	ErrNoPendingCheckpoint = errors.New("no pending checkpoint")
 	// ErrInvalidProof is returned when a proof fails to verify.
 	ErrInvalidProof = errors.New("invalid proof")
 )

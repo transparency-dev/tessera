@@ -211,15 +211,6 @@ func TestAddEntries_StatusCodes(t *testing.T) {
 			wantStatus: http.StatusAccepted,
 			wantBody:   fmt.Sprintf("%d\n%d\n%s\n", testPendingSize, testUploadStart+5, base64.StdEncoding.EncodeToString([]byte(testNewTicket))),
 		}, {
-			name:   "400 no pending checkpoint",
-			origin: testOrigin,
-			mockTarget: &mockTarget{
-				addEntriesFunc: func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (uint64, uint64, []byte, []byte, error) {
-					return 0, 0, nil, nil, tessera.ErrNoPendingCheckpoint
-				},
-			},
-			wantStatus: http.StatusBadRequest,
-		}, {
 			name:   "400 truncated body (no entries saved)",
 			origin: testOrigin,
 			mockTarget: &mockTarget{

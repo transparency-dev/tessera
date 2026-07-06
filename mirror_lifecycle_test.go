@@ -602,3 +602,65 @@ func TestMirrorTarget_AddEntries_Unaligned_PadsFirstBundle(t *testing.T) {
 		t.Errorf("ReadEntryBundle was not called")
 	}
 }
+
+func TestMirrorTarget_AddEntries_NoPendingCheckpoint_Success(t *testing.T) {
+	const (
+		testIntegratedSize = uint64(100)
+	)
+	ctx := t.Context()
+
+	mt := &MirrorTarget{
+		logVerifier: testLogVerifier,
+		signer:      testMirrorSigner,
+		writer: &fakeMirrorWriter{
+			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
+		},
+		reader: &fakeLogReader{
+			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
+		},
+		cpSource: func(ctx context.Context) ([]byte, error) {
+			return nil, nil // No pending checkpoint
+		},
+	}
+
+	nextEntry, pendingSize, _, _, err := mt.AddEntries(ctx, testIntegratedSize, testIntegratedSize, nil, func() (*MirrorPackage, error) {
+		return nil, io.EOF
+	})
+	if err != nil {
+		t.Errorf("got error %v, want nil", err)
+	}
+	if got, want := nextEntry, testIntegratedSize; got != want {
+		t.Errorf("nextEntry: got %d, want %d", got, want)
+	}
+	if got, want := pendingSize, testIntegratedSize; got != want {
+		t.Errorf("pendingSize: got %d, want %d", got, want)
+	}
+}
+
+func TestMirrorTarget_AddEntries_NoPendingCheckpoint_Conflict(t *testing.T) {
+	const (
+		testIntegratedSize = uint64(100)
+	)
+	ctx := t.Context()
+
+	mt := &MirrorTarget{
+		logVerifier: testLogVerifier,
+		signer:      testMirrorSigner,
+		writer: &fakeMirrorWriter{
+			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
+		},
+		reader: &fakeLogReader{
+			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
+		},
+		cpSource: func(ctx context.Context) ([]byte, error) {
+			return nil, nil // No pending checkpoint
+		},
+	}
+
+	_, _, _, _, err := mt.AddEntries(ctx, testIntegratedSize, testIntegratedSize+10, nil, func() (*MirrorPackage, error) {
+		return nil, io.EOF
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("got error %v, want ErrConflict", err)
+	}
+}
