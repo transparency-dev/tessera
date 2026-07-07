@@ -31,12 +31,14 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/client"
 )
 
 // PackageProverFunc computes and returns the proof hashes required by the mirror
-// for the specified entry package covering the index interval [start, end).
-type PackageProverFunc func(ctx context.Context, start, end uint64) ([][]byte, error)
+// for the specified entry package covering the index interval [start, end)
+// in a tree of the specified size.
+type PackageProverFunc func(ctx context.Context, start, end, size uint64) ([][]byte, error)
 
 // Options holds the configuration for a tlog-mirror Client.
 type Options struct {
@@ -118,9 +120,6 @@ func (o *Options) validate() error {
 	if o.mirrorCheckpointFetcher == nil {
 		return errors.New("mirror checkpoint fetcher is required")
 	}
-	if o.packageProver == nil {
-		return errors.New("package prover is required")
-	}
 	return nil
 }
 
@@ -135,6 +134,17 @@ type Client struct {
 func NewClient(_ context.Context, opts *Options) (*Client, error) {
 	if err := opts.validate(); err != nil {
 		return nil, err
+	}
+
+	// Use default subtree consistency proof if not provided.
+	if opts.packageProver == nil {
+		opts.packageProver = func(ctx context.Context, start, end, size uint64) ([][]byte, error) {
+			pb, err := client.NewProofBuilder(ctx, size, opts.tileFetcher)
+			if err != nil {
+				return nil, err
+			}
+			return pb.SubtreeConsistencyProof(ctx, start, end)
+		}
 	}
 
 	return &Client{opts: opts}, nil
@@ -227,6 +237,12 @@ func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64,
 		return nil, parseConflict(resp.Body)
 	}
 
+	// TODO(roger2hk): Update this logic to comply with tlog-mirror specification.
+	// This is a temporary workaround to match the existing behavior of the mirror server.
+	if resp.StatusCode == http.StatusBadRequest {
+		return nil, ErrConflict{}
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("add-entries failed with status %d: %s", resp.StatusCode, string(body))
@@ -310,9 +326,9 @@ func (c *Client) streamEntries(ctx context.Context, uploadStart, uploadEnd uint6
 			}
 		}
 
-		proof, err := c.opts.packageProver(ctx, curr, pkgEnd)
+		proof, err := c.opts.packageProver(ctx, bundleIndex*layout.EntryBundleWidth, pkgEnd, uploadEnd)
 		if err != nil {
-			_ = pw.CloseWithError(fmt.Errorf("failed to generate proof [%d, %d): %w", curr, pkgEnd, err))
+			_ = pw.CloseWithError(fmt.Errorf("failed to generate proof [%d, %d): %w", bundleIndex*layout.EntryBundleWidth, pkgEnd, err))
 			return
 		}
 

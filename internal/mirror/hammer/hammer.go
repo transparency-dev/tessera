@@ -165,8 +165,7 @@ func main() {
 			WithBundleFetcher(logReader.ReadEntryBundle).
 			WithMirrorCheckpointFetcher(func(ctx context.Context) ([]byte, error) {
 				return nil, nil
-			}).
-			WithPackageProver(dummyPackageProver)
+			})
 		mc, err := mirror.NewClient(ctx, mOpts)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to create mirror client", slog.String("url", urlStr), slog.Any("error", err))
@@ -323,11 +322,6 @@ func getKeyFile(path string) (string, error) {
 		return "", fmt.Errorf("failed to read key file: %w", err)
 	}
 	return string(k), nil
-}
-
-// TODO(roger2hk): Replace with the subtree consistency proof from merkle repo.
-func dummyPackageProver(_ context.Context, _ uint64, _ uint64) ([][]byte, error) {
-	return nil, nil
 }
 
 // runMirrorSync syncs the source log to a mirror server.
