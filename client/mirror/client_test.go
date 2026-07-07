@@ -222,7 +222,7 @@ func TestOptionsBuilders(t *testing.T) {
 	var mirrorCheckpointFetcher client.CheckpointFetcherFunc = func(ctx context.Context) ([]byte, error) {
 		return nil, nil
 	}
-	var packageProver PackageProverFunc = func(ctx context.Context, start, end uint64) ([][]byte, error) {
+	var packageProver PackageProverFunc = func(ctx context.Context, start, end, size uint64) ([][]byte, error) {
 		return nil, nil
 	}
 
@@ -266,7 +266,6 @@ func TestNewClientValidation(t *testing.T) {
 	var tileFetcher client.TileFetcherFunc = func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) { return nil, nil }
 	var bundleFetcher client.EntryBundleFetcherFunc = func(ctx context.Context, index uint64, size uint8) ([]byte, error) { return nil, nil }
 	var mirrorCheckpointFetcher client.CheckpointFetcherFunc = func(ctx context.Context) ([]byte, error) { return nil, nil }
-	var packageProver PackageProverFunc = func(ctx context.Context, start, end uint64) ([][]byte, error) { return nil, nil }
 
 	tests := []struct {
 		desc    string
@@ -282,8 +281,7 @@ func TestNewClientValidation(t *testing.T) {
 					WithLogOrigin(logOrigin).
 					WithTileFetcher(tileFetcher).
 					WithBundleFetcher(bundleFetcher).
-					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher).
-					WithPackageProver(packageProver)
+					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher)
 			},
 		},
 		{
@@ -294,8 +292,7 @@ func TestNewClientValidation(t *testing.T) {
 					WithLogOrigin(logOrigin).
 					WithTileFetcher(tileFetcher).
 					WithBundleFetcher(bundleFetcher).
-					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher).
-					WithPackageProver(packageProver)
+					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher)
 			},
 			wantErr: "mirror URL is required",
 		},
@@ -307,8 +304,7 @@ func TestNewClientValidation(t *testing.T) {
 					WithLogOrigin(logOrigin).
 					WithTileFetcher(tileFetcher).
 					WithBundleFetcher(bundleFetcher).
-					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher).
-					WithPackageProver(packageProver)
+					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher)
 				opts.httpClient = nil
 				return opts
 			},
@@ -322,8 +318,7 @@ func TestNewClientValidation(t *testing.T) {
 					WithHTTPClient(httpClient).
 					WithTileFetcher(tileFetcher).
 					WithBundleFetcher(bundleFetcher).
-					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher).
-					WithPackageProver(packageProver)
+					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher)
 			},
 			wantErr: "log origin is required",
 		},
@@ -335,8 +330,7 @@ func TestNewClientValidation(t *testing.T) {
 					WithHTTPClient(httpClient).
 					WithLogOrigin(logOrigin).
 					WithBundleFetcher(bundleFetcher).
-					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher).
-					WithPackageProver(packageProver)
+					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher)
 			},
 			wantErr: "tile fetcher is required",
 		},
@@ -348,8 +342,7 @@ func TestNewClientValidation(t *testing.T) {
 					WithHTTPClient(httpClient).
 					WithLogOrigin(logOrigin).
 					WithTileFetcher(tileFetcher).
-					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher).
-					WithPackageProver(packageProver)
+					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher)
 			},
 			wantErr: "bundle fetcher is required",
 		},
@@ -361,23 +354,9 @@ func TestNewClientValidation(t *testing.T) {
 					WithHTTPClient(httpClient).
 					WithLogOrigin(logOrigin).
 					WithTileFetcher(tileFetcher).
-					WithBundleFetcher(bundleFetcher).
-					WithPackageProver(packageProver)
+					WithBundleFetcher(bundleFetcher)
 			},
 			wantErr: "mirror checkpoint fetcher is required",
-		},
-		{
-			desc: "missing package prover",
-			setup: func() *Options {
-				return NewOptions().
-					WithMirrorURL(u).
-					WithHTTPClient(httpClient).
-					WithLogOrigin(logOrigin).
-					WithTileFetcher(tileFetcher).
-					WithBundleFetcher(bundleFetcher).
-					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher)
-			},
-			wantErr: "package prover is required",
 		},
 	}
 
@@ -518,9 +497,12 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/x.tlog.mirror-info")
 			}
 			w.WriteHeader(status)
-			if status == http.StatusConflict {
+			switch status {
+			case http.StatusConflict:
 				ticketB64 := base64.StdEncoding.EncodeToString(fm.ticket)
 				_, _ = fmt.Fprintf(w, "%d\n%d\n%s\n", fm.initialPendingSize, fm.initialNextEntry, ticketB64)
+			case http.StatusBadRequest:
+				_, _ = w.Write([]byte("no pending checkpoint"))
 			}
 			return
 		}
@@ -599,6 +581,9 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+
+		// Consume the rest of the gzipped body (including the gzip footer) to prevent client write hangs.
+		_, _ = io.Copy(io.Discard, gr)
 
 		if exp.status != http.StatusOK {
 			if exp.status == http.StatusConflict || exp.status == http.StatusAccepted {
@@ -706,7 +691,7 @@ func TestSync(t *testing.T) {
 		return nil, errors.New("mirror checkpoint fetcher should not be called")
 	}
 
-	packageProver := func(ctx context.Context, start, end uint64) ([][]byte, error) {
+	packageProver := func(ctx context.Context, start, end, size uint64) ([][]byte, error) {
 		return fm.proofHashes, nil
 	}
 
@@ -833,6 +818,20 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 				},
 			},
 		},
+		{
+			desc:               "initial status query returns no pending checkpoint (bootstrap)",
+			initialPendingSize: 0,
+			initialNextEntry:   0,
+			initialStatus:      http.StatusBadRequest,
+			addEntriesExpectations: []addEntriesExpectation{
+				{
+					start:  0,
+					end:    5,
+					ticket: nil,
+					status: http.StatusOK,
+				},
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -875,7 +874,7 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 				return nil, errors.New("mirror checkpoint fetcher should not be called")
 			}
 
-			packageProver := func(ctx context.Context, start, end uint64) ([][]byte, error) {
+			packageProver := func(ctx context.Context, start, end, size uint64) ([][]byte, error) {
 				return fm.proofHashes, nil
 			}
 
