@@ -629,3 +629,82 @@ func TestMirrorTarget_AddEntries_NoPendingCheckpoint(t *testing.T) {
 		t.Errorf("got error %v, want ErrNoPendingCheckpoint", err)
 	}
 }
+
+func TestMirrorTarget_AddEntries_UploadStartConflicts(t *testing.T) {
+	const (
+		testIntegratedSize = uint64(3072)
+		testUploadEnd      = uint64(4096)
+	)
+
+	ctx := t.Context()
+	testPendingCPCustom := mustSignCP(testPendingCPOrigin, testUploadEnd, testPendingCPRoot, testLogSigner)
+
+	for _, tc := range []struct {
+		name         string
+		uploadStart  uint64
+		wantConflict bool
+	}{
+		{
+			name:         "exact start",
+			uploadStart:  testIntegratedSize,
+			wantConflict: false,
+		},
+		{
+			name:         "re-upload within limit",
+			uploadStart:  testIntegratedSize - maxExcessEntries,
+			wantConflict: false,
+		},
+		{
+			name:         "re-upload too far back",
+			uploadStart:  testIntegratedSize - maxExcessEntries - 1,
+			wantConflict: true,
+		},
+		{
+			name:         "uploadStart > nextEntry",
+			uploadStart:  testIntegratedSize + 256,
+			wantConflict: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mt := &MirrorTarget{
+				logVerifier: testLogVerifier,
+				signer:      testMirrorSigner,
+				writer: &fakeMirrorWriter{
+					integrateFunc: func(ctx context.Context, fromBundleIdx uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
+						for _, err := range bundles {
+							if err != nil {
+								return 0, nil, err
+							}
+						}
+						pendingCPRoot, err := base64.StdEncoding.DecodeString(testPendingCPRoot)
+						return testUploadEnd, pendingCPRoot, err
+					},
+					updateCheckpointFunc: func(ctx context.Context, f func(oldCP []byte) (newCP []byte, err error)) error {
+						return nil
+					},
+				},
+				reader: &fakeLogReader{
+					sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
+				},
+				cpSource: func(ctx context.Context) ([]byte, error) { return []byte(testPendingCPCustom), nil },
+			}
+
+			validTicket, err := mt.seal([]byte(testPendingCPCustom))
+			if err != nil {
+				t.Fatalf("seal failed: %v", err)
+			}
+
+			_, _, _, _, err = mt.AddEntries(ctx, tc.uploadStart, testUploadEnd, validTicket, func() (*MirrorPackage, error) {
+				return nil, io.EOF
+			})
+
+			if gotConflict := errors.Is(err, ErrConflict); gotConflict != tc.wantConflict {
+				t.Fatalf("AddEntries got conflict %v, want conflict %v (err: %v)", gotConflict, tc.wantConflict, err)
+			}
+			if !tc.wantConflict && err != nil {
+				t.Fatalf("AddEntries unexpected error: %v", err)
+			}
+
+		})
+	}
+}

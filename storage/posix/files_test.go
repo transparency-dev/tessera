@@ -676,3 +676,84 @@ func TestOverwrite_CleanupOnRenameFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestMirrorWriter_IntegrateBundles(t *testing.T) {
+	baseBundle := &api.EntryBundle{
+		Entries: [][]byte{[]byte("entry1"), []byte("entry2")},
+	}
+
+	bundlesFunc := func(b *api.EntryBundle) func(yield func(*api.EntryBundle, error) bool) {
+		return func(yield func(*api.EntryBundle, error) bool) {
+			yield(b, nil)
+		}
+	}
+
+	for _, tc := range []struct {
+		name         string
+		bundleIdx    uint64
+		bundle       *api.EntryBundle
+		expectedSize uint64
+		wantErr      bool
+		errSubstring string
+	}{
+		{
+			name:         "integrate bundle with common prefix (extend)",
+			bundleIdx:    0,
+			bundle:       &api.EntryBundle{Entries: append(append([][]byte{}, baseBundle.Entries...), []byte("entry3"))},
+			expectedSize: 3,
+		},
+		{
+			name:         "re-integrate base bundle (idempotency)",
+			bundleIdx:    0,
+			bundle:       baseBundle,
+			expectedSize: 2,
+		},
+		{
+			name:         "re-integrate modified basebundle (conflict error)",
+			bundleIdx:    0,
+			bundle:       &api.EntryBundle{Entries: append(append([][]byte{}, baseBundle.Entries[:len(baseBundle.Entries)-1]...), []byte("entry2_modified"))},
+			wantErr:      true,
+			errSubstring: "different contents",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Storage{
+				cfg: Config{
+					HTTPClient: http.DefaultClient,
+					Path:       t.TempDir(),
+				},
+			}
+			opts := tessera.NewMirrorOptions()
+			ctx := t.Context()
+			mw, _, err := s.MirrorWriter(ctx, opts)
+			if err != nil {
+				t.Fatalf("MirrorWriter: %v", err)
+			}
+
+			// Set up the storage with the base bundle.
+			if size, _, err := mw.IntegrateBundles(ctx, 0, bundlesFunc(baseBundle)); err != nil {
+				t.Fatalf("Failed to set up test, IntegrateBundles: %v", err)
+			} else if size != uint64(len(baseBundle.Entries)) {
+				t.Fatalf("Failed to set up test, expected size %d, got %d", len(baseBundle.Entries), size)
+			}
+
+			// Now run the test case.
+			size, _, err := mw.IntegrateBundles(ctx, tc.bundleIdx, bundlesFunc(tc.bundle))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.errSubstring)
+				}
+				if !strings.Contains(err.Error(), tc.errSubstring) {
+					t.Fatalf("expected error containing %q, got %v", tc.errSubstring, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if size != tc.expectedSize {
+				t.Fatalf("got size %d, want %d", size, tc.expectedSize)
+			}
+		})
+	}
+}
