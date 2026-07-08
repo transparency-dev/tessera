@@ -396,7 +396,6 @@ func TestMirrorTarget_AddEntries_ZeroCheckpoint(t *testing.T) {
 	}
 }
 
-
 func mustGenerateKey(origin string) (note.Signer, note.Verifier) {
 	sk, vk, err := fnote.GenerateMLDSAKey(origin)
 	if err != nil {
@@ -600,5 +599,33 @@ func TestMirrorTarget_AddEntries_Unaligned_PadsFirstBundle(t *testing.T) {
 	}
 	if !readEntryBundleCalled {
 		t.Errorf("ReadEntryBundle was not called")
+	}
+}
+
+func TestMirrorTarget_AddEntries_NoPendingCheckpoint(t *testing.T) {
+	const (
+		testIntegratedSize = uint64(100)
+	)
+	ctx := t.Context()
+
+	mt := &MirrorTarget{
+		logVerifier: testLogVerifier,
+		signer:      testMirrorSigner,
+		writer: &fakeMirrorWriter{
+			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
+		},
+		reader: &fakeLogReader{
+			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
+		},
+		cpSource: func(ctx context.Context) ([]byte, error) {
+			return nil, nil // No pending checkpoint
+		},
+	}
+
+	_, _, _, _, err := mt.AddEntries(ctx, testIntegratedSize, testIntegratedSize+10, nil, func() (*MirrorPackage, error) {
+		return nil, io.EOF
+	})
+	if !errors.Is(err, ErrNoPendingCheckpoint) {
+		t.Errorf("got error %v, want ErrNoPendingCheckpoint", err)
 	}
 }

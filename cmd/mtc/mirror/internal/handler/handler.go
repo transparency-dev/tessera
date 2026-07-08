@@ -106,7 +106,7 @@ func addEntries(m *MirrorMux) http.HandlerFunc {
 			return
 
 		case errors.Is(err, tessera.ErrNoPendingCheckpoint):
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 
 		case errors.Is(err, tessera.ErrInvalidProof):
