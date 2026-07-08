@@ -96,36 +96,129 @@ var (
 )
 
 func TestTicketRoundTrip(t *testing.T) {
-	mt := &MirrorTarget{}
-
-	ticket, err := mt.sealTicket([]byte(testPendingCP))
-	if err != nil {
-		t.Fatalf("sealTicket failed: %v", err)
+	mt := &MirrorTarget{
+		logVerifier: testLogVerifier,
+		cpSource: func(ctx context.Context) ([]byte, error) {
+			return testPendingCP, nil
+		},
+		reader: &fakeLogReader{
+			sizeFunc: func(ctx context.Context) (uint64, error) { return testPendingCPSize, nil },
+		},
 	}
 
-	p, err := mt.openTicket(ticket)
+	ticket, _, _, err := mt.createNewTicket(t.Context())
 	if err != nil {
-		t.Fatalf("openTicket failed: %v", err)
+		t.Fatalf("createNewTicket failed: %v", err)
 	}
 
-	if !bytes.Equal(p, []byte(testPendingCP)) {
-		t.Errorf("openTicket: got %s, want %s", p, testPendingCP)
+	mt.cpSource = func(ctx context.Context) ([]byte, error) {
+		t.Fatalf("cpSource called, but ticket should not be stale")
+		return nil, nil // Unreachable.
+	}
+
+	_, _, newTicket, _, _, err := mt.openOrCreateTicket(t.Context(), ticket, testPendingCPSize)
+	if err != nil {
+		t.Fatalf("openOrCreateTicket: %v", err)
+	}
+
+	if !bytes.Equal(ticket, newTicket) {
+		t.Fatalf("ticket should not have been updated")
 	}
 }
 
-func TestTicketTampering(t *testing.T) {
+func TestCreateNewTicket(t *testing.T) {
+	testPendingCPLessOne := mustSignCP(testPendingCPOrigin, testPendingCPSize-1, testPendingCPRoot, testLogSigner)
+	mt := &MirrorTarget{
+		logVerifier: testLogVerifier,
+		cpSource: func(ctx context.Context) ([]byte, error) {
+			return testPendingCPLessOne, nil
+		},
+		reader: &fakeLogReader{
+			sizeFunc: func(ctx context.Context) (uint64, error) { return testPendingCPSize, nil },
+		},
+	}
+
+	// Create a ticket for size CP-1
+	ticket, _, _, err := mt.createNewTicket(t.Context())
+	if err != nil {
+		t.Fatalf("createNewTicket failed: %v", err)
+	}
+
+	// Then move the pending checkpoint to the next size along.
+	// This will allow us to determine when we get a fresh ticket back.
+	mt.cpSource = func(ctx context.Context) ([]byte, error) {
+		return testPendingCP, nil
+	}
+
+	for _, test := range []struct {
+		name          string
+		ticket        []byte
+		expectedSize  uint64
+		wantNewTicket bool
+		wantConflict  bool
+	}{
+		{
+			name:         "ticket valid",
+			ticket:       ticket,
+			expectedSize: testPendingCPSize - 1, // Expect old size
+		}, {
+			name:          "ticket stale",
+			ticket:        ticket,
+			expectedSize:  testPendingCPSize, // Expect new size because we want a new ticket.
+			wantNewTicket: true,
+			wantConflict:  true,
+		}, {
+			name:          "ticket corrupt",
+			ticket:        append(append([]byte{}, ticket[:len(ticket)-1]...), ticket[len(ticket)-1]^0xff),
+			expectedSize:  testPendingCPSize, // Expect new size because we want a new ticket.
+			wantNewTicket: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, newTicket, _, _, err := mt.openOrCreateTicket(t.Context(), test.ticket, test.expectedSize)
+			if err != nil {
+				gotConflict := errors.Is(err, ErrConflict)
+				if gotConflict != test.wantConflict {
+					t.Fatalf("openOrCreateTicket: %v want err %v", err, test.wantConflict)
+				}
+				if !gotConflict {
+					t.Fatalf("openOrCreateTicket: %v", err)
+				}
+			}
+
+			if test.wantNewTicket {
+				if bytes.Equal(test.ticket, newTicket) {
+					t.Fatalf("ticket should have been updated")
+				}
+			} else {
+				if !bytes.Equal(test.ticket, newTicket) {
+					t.Fatalf("ticket should not have been updated")
+				}
+			}
+		})
+	}
+
+}
+
+func TestMirrorTarget_SealAndOpen(t *testing.T) {
 	mt := &MirrorTarget{}
 
-	ticket, err := mt.sealTicket([]byte(testPendingCP))
+	ticket, err := mt.seal([]byte(testPendingCP))
 	if err != nil {
-		t.Fatalf("sealTicket failed: %v", err)
+		t.Fatalf("seal failed: %v", err)
+	}
+
+	if newTicket, err := mt.open(ticket); err != nil {
+		t.Errorf("Failed to open untampered: %v", err)
+	} else if !bytes.Equal(newTicket, testPendingCP) {
+		t.Errorf("open: eturn unexpected bytes")
 	}
 
 	for i := 0; i < len(ticket); i++ {
 		b := ticket[i]
 		ticket[i] = b ^ 0xff
-		if _, err := mt.openTicket(ticket); err == nil {
-			t.Errorf("openTicket: tampering did not fail")
+		if _, err := mt.open(ticket); err == nil {
+			t.Errorf("open: tampering did not fail")
 		}
 		ticket[i] = b
 	}
@@ -202,9 +295,9 @@ func TestMirrorTarget_AddEntries_CompleteUpload(t *testing.T) {
 		cpSource: func(ctx context.Context) ([]byte, error) { return []byte(testPendingCP), nil },
 	}
 
-	validTicket, err := mt.sealTicket([]byte(testPendingCP))
+	validTicket, err := mt.seal([]byte(testPendingCP))
 	if err != nil {
-		t.Fatalf("sealTicket failed: %v", err)
+		t.Fatalf("seal failed: %v", err)
 	}
 	nextEntry, pendingSize, _, cosigs, err := mt.AddEntries(ctx, testUploadStart, testUploadEnd, validTicket, func() (*MirrorPackage, error) {
 		return nil, io.EOF
@@ -315,9 +408,9 @@ func TestMirrorTarget_AddEntries_VerifySubtreeProof(t *testing.T) {
 				},
 			}
 
-			validTicket, err := mt.sealTicket([]byte(testPendingCP))
+			validTicket, err := mt.seal([]byte(testPendingCP))
 			if err != nil {
-				t.Fatalf("sealTicket failed: %v", err)
+				t.Fatalf("seal failed: %v", err)
 			}
 
 			firstCall := true
@@ -416,9 +509,9 @@ func TestMirrorTarget_AddEntries_Unaligned_PadsFirstBundle(t *testing.T) {
 		cpSource: func(ctx context.Context) ([]byte, error) { return []byte(testPendingCP), nil },
 	}
 
-	validTicket, err := mt.sealTicket([]byte(testPendingCP))
+	validTicket, err := mt.seal([]byte(testPendingCP))
 	if err != nil {
-		t.Fatalf("sealTicket failed: %v", err)
+		t.Fatalf("seal failed: %v", err)
 	}
 
 	_, _, _, _, err = mt.AddEntries(t.Context(), testUploadStart, testUploadEnd, validTicket, func() (*MirrorPackage, error) {
