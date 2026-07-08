@@ -1331,7 +1331,7 @@ func (m *MirrorWriter) UpdateCheckpoint(ctx context.Context, fn func(old []byte)
 	}
 	newCP, err := fn(oldCP)
 	if err != nil {
-		return fmt.Errorf("update function returned error: %v", err)
+		return fmt.Errorf("update function returned error: %w", err)
 	}
 
 	return m.s.createOverwrite(layout.CheckpointPath, newCP)

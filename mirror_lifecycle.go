@@ -380,7 +380,7 @@ func (mt *MirrorTarget) publishCheckpoint(ctx context.Context, newCP *log.Checkp
 
 		return signedNewCPRaw, nil
 	}); err != nil {
-		return nil, retSize, fmt.Errorf("failed to update checkpoint: %v", err)
+		return nil, retSize, fmt.Errorf("failed to update checkpoint: %w", err)
 	}
 
 	return retSigs, retSize, nil
