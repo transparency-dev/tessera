@@ -1370,12 +1370,12 @@ func (s *gcsStorage) setObject(ctx context.Context, objName string, data []byte,
 			if preconditionFailed {
 				existing, existingAttr, err := s.getObject(ctx, objName)
 				if err != nil {
-					return fmt.Errorf("failed to fetch existing content for %q (@%d): %v", objName, existingAttr.Generation, err)
+					return fmt.Errorf("failed to fetch existing content for %q: %v", objName, err)
 				}
 				if !bytes.Equal(existing, data) {
 					span.AddEvent("Non-idempotent write")
 					slog.ErrorContext(ctx, "Resource non-idempotent write", slog.String("objName", objName), slog.String("diff", cmp.Diff(existing, data)))
-					return fmt.Errorf("precondition failed: resource content for %q differs from data to-be-written", objName)
+					return fmt.Errorf("precondition failed: resource content for %q (@%d) differs from data to-be-written", objName, existingAttr.Generation)
 				}
 
 				span.AddEvent("Idempotent write")
