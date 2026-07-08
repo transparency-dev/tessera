@@ -329,6 +329,74 @@ func TestMirrorTarget_AddEntries_CompleteUpload(t *testing.T) {
 	}
 }
 
+func TestMirrorTarget_AddEntries_ZeroCheckpoint(t *testing.T) {
+	testPendingCPZero := mustSignCP(testPendingCPOrigin, 0, testPendingCPRoot, testLogSigner)
+	ctx := context.Background()
+	var gotUpdatedCP []byte
+	mt := &MirrorTarget{
+		logVerifier: testLogVerifier,
+		signer:      testMirrorSigner,
+		writer: &fakeMirrorWriter{
+			integrateFunc: func(ctx context.Context, fromBundleIdx uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
+				pendingCPRoot, err := base64.StdEncoding.DecodeString(testPendingCPRoot)
+				return 0, pendingCPRoot, err
+			},
+			updateCheckpointFunc: func(ctx context.Context, f func(oldCP []byte) (newCP []byte, err error)) error {
+				cp, err := f(nil)
+				gotUpdatedCP = cp
+				return err
+			},
+		},
+		reader: &fakeLogReader{
+			sizeFunc: func(ctx context.Context) (uint64, error) { return 0, nil },
+		},
+		cpSource: func(ctx context.Context) ([]byte, error) { return []byte(testPendingCPZero), nil },
+	}
+
+	// 1. First call with no ticket and uploadStart=0, uploadEnd=0.
+	// This should request the initial mirror info/ticket and return ErrConflict.
+	nextEntry, pendingSize, ticket, cosigs, err := mt.AddEntries(ctx, 0, 0, nil, func() (*MirrorPackage, error) {
+		return nil, io.EOF
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("first call got err: %v, want ErrConflict", err)
+	}
+	if nextEntry != 0 {
+		t.Errorf("first call got nextEntry %d, want 0", nextEntry)
+	}
+	if pendingSize != 0 {
+		t.Errorf("first call got pendingSize %d, want 0", pendingSize)
+	}
+	if len(ticket) == 0 {
+		t.Fatalf("first call got empty ticket, want a valid ticket")
+	}
+	if len(cosigs) != 0 {
+		t.Errorf("first call got cosigs, want none")
+	}
+
+	// 2. Second call with the ticket returned from the first call.
+	// This should succeed and return the cosignature.
+	nextEntry, pendingSize, _, cosigs, err = mt.AddEntries(ctx, 0, 0, ticket, func() (*MirrorPackage, error) {
+		return nil, io.EOF
+	})
+	if err != nil {
+		t.Fatalf("second call got err: %v, want nil", err)
+	}
+	if nextEntry != 0 {
+		t.Errorf("second call got nextEntry %d, want 0", nextEntry)
+	}
+	if pendingSize != 0 {
+		t.Errorf("second call got pendingSize %d, want 0", pendingSize)
+	}
+	if len(cosigs) == 0 {
+		t.Errorf("second call got empty cosigs, want non-empty")
+	}
+	if wantCP := append([]byte(testPendingCPZero), cosigs...); !bytes.Equal(gotUpdatedCP, wantCP) {
+		t.Errorf("got updated CP %s, want %s", gotUpdatedCP, wantCP)
+	}
+}
+
+
 func mustGenerateKey(origin string) (note.Signer, note.Verifier) {
 	sk, vk, err := fnote.GenerateMLDSAKey(origin)
 	if err != nil {
