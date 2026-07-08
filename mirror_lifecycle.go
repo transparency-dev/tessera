@@ -47,6 +47,9 @@ var (
 	// ErrConflict is returned when the requested upload range conflicts with the
 	// current state of the log.
 	ErrConflict = errors.New("tree size conflict")
+	// ErrNoPendingCheckpoint is returned when a pending checkpoint cannot be
+	// determined.
+	ErrNoPendingCheckpoint = errors.New("no pending checkpoint")
 	// ErrInvalidProof is returned when a proof fails to verify.
 	ErrInvalidProof = errors.New("invalid proof")
 )
@@ -418,7 +421,7 @@ func (mt *MirrorTarget) openOrCreateTicket(ctx context.Context, ticketBytes []by
 		slog.DebugContext(ctx, "Invalid or incorrect ticket, returning new ticket", slog.Uint64("next_entry", nextEntry), slog.String("ticketCP", string(ticketCP)), slog.Uint64("expectedSize", expectedSize))
 		ticketBytes, pendingCP, pendingNote, err = mt.createNewTicket(ctx)
 		if err != nil {
-			return 0, 0, userTicketValid, nil, nil, nil, fmt.Errorf("failed to create new ticket: %v", err)
+			return 0, 0, userTicketValid, nil, nil, nil, fmt.Errorf("failed to create new ticket: %w", err)
 		}
 		// If the new pending checkpoint still doesn't match expectedSize, return 409 Conflict with the fresh ticket.
 		if pendingCP.Size != expectedSize {

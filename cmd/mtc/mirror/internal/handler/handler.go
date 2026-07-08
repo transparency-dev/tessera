@@ -105,6 +105,10 @@ func addEntries(m *MirrorMux) http.HandlerFunc {
 			_, _ = fmt.Fprintf(w, "%d\n%d\n%s\n", pendingSize, nextEntry, base64.StdEncoding.EncodeToString(ticket))
 			return
 
+		case errors.Is(err, tessera.ErrNoPendingCheckpoint):
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+
 		case errors.Is(err, tessera.ErrInvalidProof):
 			// SPEC: If this (subtree consistency proof) verification process fails, it MUST respond with a "422 Unprocessable Entity"
 			// HTTP status code and end processing.
