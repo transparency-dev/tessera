@@ -210,13 +210,13 @@ type MirrorPackage struct {
 // - an opaque ticket for future invocation,
 // - optionally, a cosignature over a pending checkpoint whose size matches uploadEnd if one exists.
 func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticketBytes []byte, next func() (*MirrorPackage, error)) (uint64, uint64, []byte, []byte, error) {
-	nextEntry, pendingSize, ticketBytes, pendingCP, pendingNote, err := mt.openOrCreateTicket(ctx, ticketBytes, uploadEnd)
+	nextEntry, pendingSize, userTicketValid, ticketBytes, pendingCP, pendingNote, err := mt.openOrCreateTicket(ctx, ticketBytes, uploadEnd)
 	if err != nil {
 		return nextEntry, pendingSize, ticketBytes, nil, err
 	}
 
 	// Handle 409 Conflicts:
-	//    - Zero-request check: If upload_start == 0 and upload_end == 0, the client is
+	//    - Zero-request check: If upload_start == 0 and upload_end == 0 and provided no valid ticket, the client is
 	//      requesting initial mirror information.
 	//    - upload_end:
 	//      * MUST be equal to the tree size of a known pending checkpoint.
@@ -224,7 +224,7 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 	//    - upload_start:
 	//      * MUST NOT be greater than the mirror's next expected entry index.
 	//      * MUST NOT be too far below the mirror's next entry index.
-	if (uploadStart == 0 && uploadEnd == 0) ||
+	if (uploadStart == 0 && uploadEnd == 0 && !userTicketValid) ||
 		(uploadEnd != pendingSize || uploadEnd < nextEntry) ||
 		(uploadStart > nextEntry) {
 		// TODO(al): add flexibility about re-writing some entries
@@ -393,15 +393,16 @@ func (mt *MirrorTarget) IntegratedSize(ctx context.Context) (uint64, error) {
 
 // openOrCreateTicket handles ticket logic, returning a new ticket if the provided one is invalid/missing.
 //
-// Returns next entry index to upload, size of the pending checkpoint, ticket to return to the caller, pending checkpoint structure, pending note, and error.
-func (mt *MirrorTarget) openOrCreateTicket(ctx context.Context, ticketBytes []byte, expectedSize uint64) (uint64, uint64, []byte, *log.Checkpoint, *note.Note, error) {
+// Returns next entry index to upload, size of the pending checkpoint, a bool indicating whether the provided ticket was valid, the ticket to return to the caller (may be the same as the provided one), pending checkpoint structure, pending note, and error.
+func (mt *MirrorTarget) openOrCreateTicket(ctx context.Context, ticketBytes []byte, expectedSize uint64) (uint64, uint64, bool, []byte, *log.Checkpoint, *note.Note, error) {
 	nextEntry, err := mt.reader.IntegratedSize(ctx)
 	if err != nil {
-		return 0, 0, nil, nil, nil, fmt.Errorf("failed to read integrated size: %v", err)
+		return 0, 0, false, nil, nil, nil, fmt.Errorf("failed to read integrated size: %v", err)
 	}
 
 	var pendingCP *log.Checkpoint
 	var pendingNote *note.Note
+	userTicketValid := false
 
 	ticketCP, err := mt.open(ticketBytes)
 	if err != nil {
@@ -412,6 +413,7 @@ func (mt *MirrorTarget) openOrCreateTicket(ctx context.Context, ticketBytes []by
 			slog.DebugContext(ctx, "Failed to parse ticket", slog.Any("error", err))
 		} else {
 			slog.DebugContext(ctx, "Valid ticket", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingCP.Size))
+			userTicketValid = true
 		}
 	}
 
@@ -419,16 +421,16 @@ func (mt *MirrorTarget) openOrCreateTicket(ctx context.Context, ticketBytes []by
 		slog.DebugContext(ctx, "Invalid or incorrect ticket, returning new ticket", slog.Uint64("next_entry", nextEntry), slog.String("ticketCP", string(ticketCP)), slog.Uint64("expectedSize", expectedSize))
 		ticketBytes, pendingCP, pendingNote, err = mt.createNewTicket(ctx)
 		if err != nil {
-			return 0, 0, nil, nil, nil, fmt.Errorf("failed to create new ticket: %v", err)
+			return 0, 0, userTicketValid, nil, nil, nil, fmt.Errorf("failed to create new ticket: %v", err)
 		}
 		// If the new pending checkpoint still doesn't match expectedSize, return 409 Conflict with the fresh ticket.
 		if pendingCP.Size != expectedSize {
-			return nextEntry, pendingCP.Size, ticketBytes, pendingCP, pendingNote, ErrConflict
+			return nextEntry, pendingCP.Size, userTicketValid, ticketBytes, pendingCP, pendingNote, ErrConflict
 		}
 		// Otherwise, allow the request to continue (because their uploadEnd == pendingCP.Size).
 	}
 
-	return nextEntry, pendingCP.Size, ticketBytes, pendingCP, pendingNote, nil
+	return nextEntry, pendingCP.Size, userTicketValid, ticketBytes, pendingCP, pendingNote, nil
 }
 
 func (mt *MirrorTarget) createNewTicket(ctx context.Context) (ticket []byte, pendingCP *log.Checkpoint, pendingNote *note.Note, err error) {

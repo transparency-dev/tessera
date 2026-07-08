@@ -116,9 +116,13 @@ func TestTicketRoundTrip(t *testing.T) {
 		return nil, nil // Unreachable.
 	}
 
-	_, _, newTicket, _, _, err := mt.openOrCreateTicket(t.Context(), ticket, testPendingCPSize)
+	_, _, oldTicketValid, newTicket, _, _, err := mt.openOrCreateTicket(t.Context(), ticket, testPendingCPSize)
 	if err != nil {
 		t.Fatalf("openOrCreateTicket: %v", err)
+	}
+
+	if !oldTicketValid {
+		t.Fatalf("openOrCreateTicket: oldTicketValid = %v, want true", oldTicketValid)
 	}
 
 	if !bytes.Equal(ticket, newTicket) {
@@ -151,22 +155,25 @@ func TestCreateNewTicket(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name          string
-		ticket        []byte
-		expectedSize  uint64
-		wantNewTicket bool
-		wantConflict  bool
+		name            string
+		ticket          []byte
+		expectedSize    uint64
+		wantTicketValid bool
+		wantNewTicket   bool
+		wantConflict    bool
 	}{
 		{
-			name:         "ticket valid",
-			ticket:       ticket,
-			expectedSize: testPendingCPSize - 1, // Expect old size
+			name:            "ticket valid",
+			ticket:          ticket,
+			expectedSize:    testPendingCPSize - 1, // Expect old size
+			wantTicketValid: true,
 		}, {
-			name:          "ticket stale",
-			ticket:        ticket,
-			expectedSize:  testPendingCPSize, // Expect new size because we want a new ticket.
-			wantNewTicket: true,
-			wantConflict:  true,
+			name:            "ticket stale",
+			ticket:          ticket,
+			expectedSize:    testPendingCPSize, // Expect new size because we want a new ticket.
+			wantTicketValid: true,
+			wantNewTicket:   true,
+			wantConflict:    true,
 		}, {
 			name:          "ticket corrupt",
 			ticket:        append(append([]byte{}, ticket[:len(ticket)-1]...), ticket[len(ticket)-1]^0xff),
@@ -175,7 +182,7 @@ func TestCreateNewTicket(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, _, newTicket, _, _, err := mt.openOrCreateTicket(t.Context(), test.ticket, test.expectedSize)
+			_, _, oldTicketValid, newTicket, _, _, err := mt.openOrCreateTicket(t.Context(), test.ticket, test.expectedSize)
 			if err != nil {
 				gotConflict := errors.Is(err, ErrConflict)
 				if gotConflict != test.wantConflict {
@@ -186,6 +193,9 @@ func TestCreateNewTicket(t *testing.T) {
 				}
 			}
 
+			if test.wantTicketValid != oldTicketValid {
+				t.Fatalf("openOrCreateTicket: newTicket Valid = %v, want %v", oldTicketValid, test.wantTicketValid)
+			}
 			if test.wantNewTicket {
 				if bytes.Equal(test.ticket, newTicket) {
 					t.Fatalf("ticket should have been updated")
