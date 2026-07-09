@@ -51,6 +51,13 @@ func newSpannerDB(t *testing.T) (*spanner.Client, func()) {
 	return newSpannerDBWithPrefix(t, "")
 }
 
+// prefixTable returns a function which returns the provided table name with prefix prepended.
+func prefixTable(prefix string) func(string) string {
+	return func(table string) string {
+		return prefix + table
+	}
+}
+
 func newSpannerDBWithPrefix(t *testing.T, tablePrefix string) (*spanner.Client, func()) {
 	t.Helper()
 	srv, err := spannertest.NewServer("localhost:0")
@@ -62,7 +69,7 @@ func newSpannerDBWithPrefix(t *testing.T, tablePrefix string) (*spanner.Client, 
 	}
 
 	id := "projects/p/instances/i/databases/d"
-	if err := initDB(t.Context(), id, tablePrefix); err != nil {
+	if err := initDB(t.Context(), id, prefixTable(tablePrefix)); err != nil {
 		t.Fatalf("initDB: %v", err)
 	}
 
@@ -79,7 +86,7 @@ func TestSpannerSequencerAssignEntries(t *testing.T) {
 	db, close := newSpannerDB(t)
 	defer close()
 
-	seq, err := newSpannerCoordinator(ctx, db, "", 1000)
+	seq, err := newSpannerCoordinator(ctx, db, prefixTable(""), 1000)
 	if err != nil {
 		t.Fatalf("newSpannerCoordinator: %v", err)
 	}
@@ -108,7 +115,7 @@ func TestSpannerTablePrefix(t *testing.T) {
 	db, close := newSpannerDBWithPrefix(t, prefix)
 	defer close()
 
-	seq, err := newSpannerCoordinator(ctx, db, prefix, 1000)
+	seq, err := newSpannerCoordinator(ctx, db, prefixTable(prefix), 1000)
 	if err != nil {
 		t.Fatalf("newSpannerCoordinator: %v", err)
 	}
@@ -198,7 +205,7 @@ func TestSpannerSequencerPushback(t *testing.T) {
 			db, close := newSpannerDB(t)
 			defer close()
 
-			seq, err := newSpannerCoordinator(ctx, db, "", test.threshold)
+			seq, err := newSpannerCoordinator(ctx, db, prefixTable(""), test.threshold)
 			if err != nil {
 				t.Fatalf("newSpannerCoordinator: %v", err)
 			}
@@ -228,7 +235,7 @@ func TestSpannerSequencerRoundTrip(t *testing.T) {
 	db, close := newSpannerDB(t)
 	defer close()
 
-	s, err := newSpannerCoordinator(ctx, db, "", 1000)
+	s, err := newSpannerCoordinator(ctx, db, prefixTable(""), 1000)
 	if err != nil {
 		t.Fatalf("newSpannerCoordinator: %v", err)
 	}
@@ -280,7 +287,7 @@ func TestCheckDataCompatibility(t *testing.T) {
 	db, close := newSpannerDB(t)
 	defer close()
 
-	s, err := newSpannerCoordinator(ctx, db, "", 1000)
+	s, err := newSpannerCoordinator(ctx, db, prefixTable(""), 1000)
 	if err != nil {
 		t.Fatalf("newSpannerCoordinator: %v", err)
 	}
@@ -447,7 +454,7 @@ func TestSpannerSequencerAssignEntriesBatchSplitting(t *testing.T) {
 		entrySize  = 10 * 1024
 	)
 
-	seq, err := newSpannerCoordinator(ctx, db, "", uint64(numEntries+1))
+	seq, err := newSpannerCoordinator(ctx, db, prefixTable(""), uint64(numEntries+1))
 	if err != nil {
 		t.Fatalf("newSpannerCoordinator: %v", err)
 	}
@@ -573,7 +580,7 @@ func TestPublishTree(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			db, closeDB := newSpannerDB(t)
 			defer closeDB()
-			s, err := newSpannerCoordinator(ctx, db, "", 1000)
+			s, err := newSpannerCoordinator(ctx, db, prefixTable(""), 1000)
 			if err != nil {
 				t.Fatalf("newSpannerCoordinator: %v", err)
 			}
@@ -642,7 +649,7 @@ func TestGarbageCollect(t *testing.T) {
 	db, closeDB := newSpannerDB(t)
 	defer closeDB()
 
-	s, err := newSpannerCoordinator(ctx, db, "", batchSize)
+	s, err := newSpannerCoordinator(ctx, db, prefixTable(""), batchSize)
 	if err != nil {
 		t.Fatalf("newSpannerCoordinator: %v", err)
 	}
@@ -751,7 +758,7 @@ func TestGarbageCollectOption(t *testing.T) {
 			db, closeDB := newSpannerDB(t)
 			defer closeDB()
 
-			s, err := newSpannerCoordinator(ctx, db, "", batchSize)
+			s, err := newSpannerCoordinator(ctx, db, prefixTable(""), batchSize)
 			if err != nil {
 				t.Fatalf("newSpannerCoordinator: %v", err)
 			}
