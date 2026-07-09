@@ -1531,13 +1531,17 @@ func (s *s3Storage) setObject(ctx context.Context, objName string, data []byte, 
 // an error will be returned *unless*  the currently stored data is bit-for-bit identical to the
 // data to-be-written. This is intended to provide idempotentency for writes.
 func (s *s3Storage) setObjectIfNoneMatch(ctx context.Context, objName string, data []byte, contType string, cacheControl string) error {
+	// objName deliberately stays unprefixed so the precondition-failed
+	// recovery getObject call below, which applies bucketPrefix itself,
+	// can use it directly.
+	prefixedName := objName
 	if s.bucketPrefix != "" {
-		objName = filepath.Join(s.bucketPrefix, objName)
+		prefixedName = filepath.Join(s.bucketPrefix, objName)
 	}
 
 	put := &s3.PutObjectInput{
 		Bucket:       aws.String(s.bucket),
-		Key:          aws.String(objName),
+		Key:          aws.String(prefixedName),
 		Body:         bytes.NewReader(data),
 		ContentType:  aws.String(contType),
 		CacheControl: aws.String(cacheControl),
@@ -1554,18 +1558,18 @@ func (s *s3Storage) setObjectIfNoneMatch(ctx context.Context, objName string, da
 		if errors.As(err, &apiErr) && apiErr.ErrorCode() == "PreconditionFailed" {
 			existing, err := s.getObject(ctx, objName)
 			if err != nil {
-				return fmt.Errorf("failed to fetch existing content for %q: %v", objName, err)
+				return fmt.Errorf("failed to fetch existing content for %q: %v", prefixedName, err)
 			}
 			if !bytes.Equal(existing, data) {
-				slog.ErrorContext(ctx, "Resource non-idempotent writen", slog.String("objname", objName), slog.String("diff", cmp.Diff(existing, data)))
-				return fmt.Errorf("precondition failed: resource content for %q differs from data to-be-written", objName)
+				slog.ErrorContext(ctx, "Resource non-idempotent writen", slog.String("objname", prefixedName), slog.String("diff", cmp.Diff(existing, data)))
+				return fmt.Errorf("precondition failed: resource content for %q differs from data to-be-written", prefixedName)
 			}
 
-			slog.DebugContext(ctx, "setObjectIfNoneMatch: identical resource already exists. Continuing", slog.String("objname", objName))
+			slog.DebugContext(ctx, "setObjectIfNoneMatch: identical resource already exists. Continuing", slog.String("objname", prefixedName))
 			return nil
 		}
 
-		return fmt.Errorf("failed to write object %q to bucket %q: %w", objName, s.bucket, err)
+		return fmt.Errorf("failed to write object %q to bucket %q: %w", prefixedName, s.bucket, err)
 	}
 	return nil
 }
