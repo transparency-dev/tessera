@@ -159,21 +159,13 @@ type Config struct {
 	// Spanner is the GCP resource URI of the spanner database instance to use.
 	Spanner string
 	// SpannerTablePrefix is an optional prefix to prepend to the names of all Spanner tables.
-	// This can be used e.g. to store multiple logs in the same Spanner database.
-	// Note that this only namespaces the Spanner state; logs sharing a database must still
-	// each use a distinct Bucket and/or BucketPrefix, since GCS object paths are unaffected
-	// by this prefix.
 	// If set, it must start with a letter, contain only letters, digits, or underscores
-	// (e.g. "log1_"), and be at most 64 characters long, so that prefixed table names
-	// remain valid Spanner identifiers.
-	// It's recommended to derive this prefix from the log's origin string (e.g. by
-	// replacing any characters other than letters, digits, or underscores with
-	// underscores, and prepending a letter if the origin doesn't start with one), to
+	// (e.g. "log1_"), and be at most 64 characters long.
+	// It's recommended to derive this prefix from the log's origin string, to
 	// make it easy to associate tables with specific logs.
 	//
 	// TODO: consider providing a mechanism to set both BucketPrefix and SpannerTablePrefix
-	// from a single string to avoid misconfiguration foot-guns; decide based on how these
-	// options end up being used.
+	// from a single string to avoid misconfiguration foot-guns.
 	SpannerTablePrefix string
 }
 
