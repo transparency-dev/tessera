@@ -1355,14 +1355,18 @@ func (s *gcsStorage) getObject(ctx context.Context, obj string) ([]byte, *gcs.Re
 // This is intended to provide idempotentency for writes.
 func (s *gcsStorage) setObject(ctx context.Context, objName string, data []byte, cond *gcs.Conditions, contType string, cacheCtl string) error {
 	return otel.TraceErr(ctx, "tessera.storage.gcp.setObject", tracer, func(ctx context.Context, span trace.Span) error {
+		// objName deliberately stays unprefixed so the precondition-failed
+		// recovery getObject call below, which applies bucketPrefix itself,
+		// can use it directly.
+		prefixedName := objName
 		if s.bucketPrefix != "" {
-			objName = filepath.Join(s.bucketPrefix, objName)
+			prefixedName = filepath.Join(s.bucketPrefix, objName)
 		}
 
-		span.SetAttributes(objectPathKey.String(objName))
+		span.SetAttributes(objectPathKey.String(prefixedName))
 
 		bkt := s.gcsClient.Bucket(s.bucket)
-		obj := bkt.Object(objName)
+		obj := bkt.Object(prefixedName)
 
 		var w *gcs.Writer
 		if cond == nil {
@@ -1376,7 +1380,7 @@ func (s *gcsStorage) setObject(ctx context.Context, objName string, data []byte,
 		// Limit the amount of memory used for buffers, see https://pkg.go.dev/cloud.google.com/go/storage#Writer
 		w.ChunkSize = len(data) + 1024
 		if _, err := w.Write(data); err != nil {
-			return fmt.Errorf("failed to write object %q to bucket %q: %w", objName, s.bucket, err)
+			return fmt.Errorf("failed to write object %q to bucket %q: %w", prefixedName, s.bucket, err)
 		}
 
 		if err := w.Close(); err != nil {
@@ -1395,20 +1399,20 @@ func (s *gcsStorage) setObject(ctx context.Context, objName string, data []byte,
 			if preconditionFailed {
 				existing, existingAttr, err := s.getObject(ctx, objName)
 				if err != nil {
-					return fmt.Errorf("failed to fetch existing content for %q: %v", objName, err)
+					return fmt.Errorf("failed to fetch existing content for %q: %v", prefixedName, err)
 				}
 				if !bytes.Equal(existing, data) {
 					span.AddEvent("Non-idempotent write")
-					slog.ErrorContext(ctx, "Resource non-idempotent write", slog.String("objName", objName), slog.String("diff", cmp.Diff(existing, data)))
-					return fmt.Errorf("precondition failed: resource content for %q (@%d) differs from data to-be-written", objName, existingAttr.Generation)
+					slog.ErrorContext(ctx, "Resource non-idempotent write", slog.String("objName", prefixedName), slog.String("diff", cmp.Diff(existing, data)))
+					return fmt.Errorf("precondition failed: resource content for %q (@%d) differs from data to-be-written", prefixedName, existingAttr.Generation)
 				}
 
 				span.AddEvent("Idempotent write")
-				slog.DebugContext(ctx, "setObject: identical resource already exists", slog.String("objName", objName))
+				slog.DebugContext(ctx, "setObject: identical resource already exists", slog.String("objName", prefixedName))
 				return nil
 			}
 
-			return fmt.Errorf("failed to close write on %q: %v", objName, err)
+			return fmt.Errorf("failed to close write on %q: %v", prefixedName, err)
 		}
 		return nil
 	})

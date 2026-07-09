@@ -22,6 +22,9 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"reflect"
 	"strings"
@@ -939,6 +942,86 @@ func (m *memObjStore) deleteObjectsWithPrefix(_ context.Context, prefix string) 
 		}
 	}
 	return nil
+}
+
+// TestSetObjectBucketPrefixIdempotentRecovery exercises gcsStorage.setObject's
+// precondition-failed recovery path with a non-empty BucketPrefix: the
+// recovery getObject must read <prefix>/<name>, not <prefix>/<prefix>/<name>.
+// setObject and getObject each apply bucketPrefix once, so setObject must
+// hand getObject the unprefixed name. The fake server returns 412 on the
+// write and serves identical bytes at the single-prefixed path, so setObject
+// should return nil (idempotent success).
+func TestSetObjectBucketPrefixIdempotentRecovery(t *testing.T) {
+	const (
+		bucket  = "test-bucket"
+		prefix  = "some/prefix"
+		objName = "tile/0/000"
+	)
+	data := []byte("tile-bytes")
+	wantObj := prefix + "/" + objName
+
+	// This fake pins the cloud.google.com/go/storage client's HTTP JSON-API
+	// wire shape (multipart upload, 412 parsing, JSON media-read path). That
+	// coupling is deliberate: the bug under test sits below the objStore
+	// interface, so a real *gcs.Client is the only way to exercise it; the
+	// cost is possible breakage on a client-library upgrade that reshapes
+	// these requests.
+	var mu sync.Mutex
+	var gotReadObj string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/upload/"):
+			// Conditional write: object already exists, precondition fails.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPreconditionFailed)
+			_, _ = fmt.Fprint(w, `{"error":{"code":412,"message":"conditionNotMet"}}`)
+		case r.Method == http.MethodGet:
+			// JSON-API media read. Tolerate both path shapes the client
+			// library has been observed to emit against an emulator endpoint:
+			//   [/download]/storage/v1/b/<bucket>/o/<url-encoded object>?alt=media
+			p := strings.TrimPrefix(r.URL.Path, "/download")
+			got, _ := url.PathUnescape(strings.TrimPrefix(p, "/storage/v1/b/"+bucket+"/o/"))
+			mu.Lock()
+			gotReadObj = got
+			mu.Unlock()
+			if got != wantObj {
+				http.Error(w, "object not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("X-Goog-Generation", "1")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected", http.StatusNotImplemented)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("STORAGE_EMULATOR_HOST", strings.TrimPrefix(srv.URL, "http://"))
+	ctx := context.Background()
+	c, err := gcs.NewClient(ctx, gcs.WithJSONReads())
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer func() {
+		if err := c.Close(); err != nil {
+			t.Logf("Close: %v", err)
+		}
+	}()
+
+	s := &gcsStorage{gcsClient: c, bucket: bucket, bucketPrefix: prefix}
+	err = s.setObject(ctx, objName, data, &gcs.Conditions{DoesNotExist: true}, "application/octet-stream", "")
+	mu.Lock()
+	got := gotReadObj
+	mu.Unlock()
+	if err != nil {
+		t.Fatalf("setObject: want idempotent success (nil), got %v (recovery read was for %q)", err, got)
+	}
+	if got != wantObj {
+		t.Fatalf("recovery getObject read %q, want %q (double-prefix bug)", got, wantObj)
+	}
 }
 
 func mustGenerateKeys(t *testing.T) (note.Signer, note.Verifier) {
