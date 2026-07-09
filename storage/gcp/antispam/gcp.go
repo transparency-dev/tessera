@@ -28,6 +28,7 @@ import (
 	"io"
 	"iter"
 	"os"
+	"regexp"
 	"sync/atomic"
 	"time"
 
@@ -72,7 +73,22 @@ type AntispamOpts struct {
 	// When the antispam follower is at least this many entries behind the size of the locally integrated tree,
 	// the antispam decorator will return a wrapped tessera.ErrPushback for every Add request.
 	PushbackThreshold uint
+
+	// SpannerTablePrefix is an optional prefix to prepend to the names of all Spanner tables.
+	// This can be used e.g. to store the antispam state for multiple logs in the same Spanner database.
+	// If set, it must start with a letter, contain only letters, digits, or underscores
+	// (e.g. "log1_"), and be at most 64 characters long, so that prefixed table names
+	// remain valid Spanner identifiers.
+	// It's recommended to derive this prefix from the log's origin string (e.g. by
+	// replacing any characters other than letters, digits, or underscores with
+	// underscores, and prepending a letter if the origin doesn't start with one), to
+	// make it easy to associate tables with specific logs.
+	SpannerTablePrefix string
 }
+
+// tablePrefixRE matches valid values for a Spanner table prefix: empty, or a leading
+// letter followed by up to 63 letters, digits, or underscores.
+var tablePrefixRE = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]{0,63})?$`)
 
 // NewAntispam returns an antispam driver which uses Spanner to maintain a mapping of
 // previously seen entries and their assigned indices.
@@ -88,14 +104,20 @@ func NewAntispam(ctx context.Context, spannerDB string, opts AntispamOpts) (*Ant
 	if opts.PushbackThreshold == 0 {
 		opts.PushbackThreshold = DefaultPushbackThreshold
 	}
+	if !tablePrefixRE.MatchString(opts.SpannerTablePrefix) {
+		return nil, fmt.Errorf("invalid SpannerTablePrefix %q: must start with a letter, contain only letters, digits, or underscores, and be at most 64 characters long", opts.SpannerTablePrefix)
+	}
+	table := func(t string) string {
+		return opts.SpannerTablePrefix + t
+	}
 	if err := createAndPrepareTables(
 		ctx, spannerDB,
 		[]string{
-			"CREATE TABLE IF NOT EXISTS FollowCoord (id INT64 NOT NULL, nextIdx INT64 NOT NULL) PRIMARY KEY (id)",
-			"CREATE TABLE IF NOT EXISTS IDSeq (h BYTES(32) NOT NULL, idx INT64 NOT NULL) PRIMARY KEY (h)",
+			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INT64 NOT NULL, nextIdx INT64 NOT NULL) PRIMARY KEY (id)", table("FollowCoord")),
+			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (h BYTES(32) NOT NULL, idx INT64 NOT NULL) PRIMARY KEY (h)", table("IDSeq")),
 		},
 		[][]*spanner.Mutation{
-			{spanner.Insert("FollowCoord", []string{"id", "nextIdx"}, []any{0, 0})},
+			{spanner.Insert(table("FollowCoord"), []string{"id", "nextIdx"}, []any{0, 0})},
 		},
 	); err != nil {
 		return nil, fmt.Errorf("failed to create tables: %v", err)
@@ -109,6 +131,7 @@ func NewAntispam(ctx context.Context, spannerDB string, opts AntispamOpts) (*Ant
 	r := &AntispamStorage{
 		opts:   opts,
 		dbPool: db,
+		table:  table,
 	}
 
 	return r, nil
@@ -118,6 +141,10 @@ type AntispamStorage struct {
 	opts AntispamOpts
 
 	dbPool *spanner.Client
+
+	// table returns the provided table name with the configured table prefix, if any,
+	// prepended - see AntispamOpts.SpannerTablePrefix.
+	table func(string) string
 
 	// pushBack is used to prevent the follower from getting too far underwater.
 	// Populate dynamically will set this to true/false based on how far behind the follower is from the
@@ -135,7 +162,7 @@ func (d *AntispamStorage) index(ctx context.Context, h []byte) (*uint64, error) 
 	return otel.Trace(ctx, "tessera.antispam.gcp.index", tracer, func(ctx context.Context, span trace.Span) (*uint64, error) {
 		d.numLookups.Add(1)
 		var idx int64
-		if row, err := d.dbPool.Single().ReadRowWithOptions(ctx, "IDSeq", spanner.Key{h}, []string{"idx"}, &spanner.ReadOptions{RequestTag: "tessera.op=antispam.index"}); err != nil {
+		if row, err := d.dbPool.Single().ReadRowWithOptions(ctx, d.table("IDSeq"), spanner.Key{h}, []string{"idx"}, &spanner.ReadOptions{RequestTag: "tessera.op=antispam.index"}); err != nil {
 			if c := spanner.ErrCode(err); c == codes.NotFound {
 				span.AddEvent("tessera.miss")
 				return nil, nil
@@ -267,7 +294,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 				_, err := f.as.dbPool.ReadWriteTransactionWithOptions(ctx, func(txctx context.Context, txn *spanner.ReadWriteTransaction) error {
 					return otel.TraceErr(txctx, "tessera.antispam.gcp.FollowTxn", tracer, func(txctx context.Context, span trace.Span) error {
 						// Figure out the last entry we used to populate our antispam storage.
-						row, err := txn.ReadRowWithOptions(txctx, "FollowCoord", spanner.Key{0}, []string{"nextIdx"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+						row, err := txn.ReadRowWithOptions(txctx, f.as.table("FollowCoord"), spanner.Key{0}, []string{"nextIdx"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 						if err != nil {
 							return err
 						}
@@ -357,7 +384,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 						{
 							ms := make([]*spanner.Mutation, 0, len(curEntries))
 							for i, e := range curEntries {
-								ms = append(ms, spanner.Insert("IDSeq", []string{"h", "idx"}, []any{e, int64(curIndex + uint64(i))}))
+								ms = append(ms, spanner.Insert(f.as.table("IDSeq"), []string{"h", "idx"}, []any{e, int64(curIndex + uint64(i))}))
 							}
 							if err := f.updateIndex(txctx, txn, ms); err != nil {
 								return err
@@ -369,7 +396,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 
 						// Insertion of dupe entries was successful, so update our follow coordination row:
 						m := make([]*spanner.Mutation, 0)
-						m = append(m, spanner.Update("FollowCoord", []string{"id", "nextIdx"}, []any{0, int64(followFrom + numAdded)}))
+						m = append(m, spanner.Update(f.as.table("FollowCoord"), []string{"id", "nextIdx"}, []any{0, int64(followFrom + numAdded)}))
 
 						return txn.BufferWrite(m)
 					})
@@ -433,7 +460,7 @@ func (f *follower) batchUpdateIndex(ctx context.Context, _ *spanner.ReadWriteTra
 
 // EntriesProcessed returns the total number of log entries processed.
 func (f *follower) EntriesProcessed(ctx context.Context) (uint64, error) {
-	row, err := f.as.dbPool.Single().ReadRowWithOptions(ctx, "FollowCoord", spanner.Key{0}, []string{"nextIdx"}, &spanner.ReadOptions{RequestTag: "tessera.op=antispam.EntriesProcessed"})
+	row, err := f.as.dbPool.Single().ReadRowWithOptions(ctx, f.as.table("FollowCoord"), spanner.Key{0}, []string{"nextIdx"}, &spanner.ReadOptions{RequestTag: "tessera.op=antispam.EntriesProcessed"})
 	if err != nil {
 		return 0, err
 	}
