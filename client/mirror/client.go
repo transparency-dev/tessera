@@ -237,9 +237,7 @@ func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64,
 		return nil, parseConflict(resp.Body)
 	}
 
-	// TODO(roger2hk): Update this logic to comply with tlog-mirror specification.
-	// This is a temporary workaround to match the existing behavior of the mirror server.
-	if resp.StatusCode == http.StatusBadRequest {
+	if resp.StatusCode == http.StatusUnprocessableEntity {
 		return nil, ErrConflict{}
 	}
 

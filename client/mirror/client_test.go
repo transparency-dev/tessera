@@ -501,7 +501,7 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			case http.StatusConflict:
 				ticketB64 := base64.StdEncoding.EncodeToString(fm.ticket)
 				_, _ = fmt.Fprintf(w, "%d\n%d\n%s\n", fm.initialPendingSize, fm.initialNextEntry, ticketB64)
-			case http.StatusBadRequest:
+			case http.StatusUnprocessableEntity:
 				_, _ = w.Write([]byte("no pending checkpoint"))
 			}
 			return
@@ -822,7 +822,7 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 			desc:               "initial status query returns no pending checkpoint (bootstrap)",
 			initialPendingSize: 0,
 			initialNextEntry:   0,
-			initialStatus:      http.StatusBadRequest,
+			initialStatus:      http.StatusUnprocessableEntity,
 			addEntriesExpectations: []addEntriesExpectation{
 				{
 					start:  0,
