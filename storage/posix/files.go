@@ -528,6 +528,17 @@ func (lrs *logResourceStorage) writeBundle(ctx context.Context, index uint64, pa
 	})
 }
 
+// writeBundleIdempotent takes care of writing out the serialised entry bundle file if it doesn't already exist.
+func (lrs *logResourceStorage) writeBundleIdempotent(ctx context.Context, index uint64, partial uint8, bundle []byte) error {
+	return otel.TraceErr(ctx, "tessera.storage.posix.writeBundleIdempotent", tracer, func(ctx context.Context, span trace.Span) error {
+		bf := lrs.entriesPath(index, partial)
+		if err := lrs.s.createIdempotent(bf, bundle); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
 // initialise ensures that the storage location is valid by loading the checkpoint from this location, or
 // creating a zero-sized one if it doesn't already exist.
 func (a *appender) initialise(ctx context.Context) error {
@@ -915,6 +926,12 @@ func (s *Storage) createOverwrite(p string, d []byte) error {
 	return overwrite(filepath.Join(s.cfg.Path, p), d)
 }
 
+// createIdempotent atomically creates a file at the given path with the provided data, if it doesn't already exist.
+// Returns an error if the target path already exists but contains different data.
+func (s *Storage) createIdempotent(p string, d []byte) error {
+	return createIdempotent(filepath.Join(s.cfg.Path, p), d)
+}
+
 func (s *Storage) readAll(p string) ([]byte, error) {
 	p = filepath.Join(s.cfg.Path, p)
 	return os.ReadFile(p)
@@ -1236,7 +1253,7 @@ func (m *MirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, b
 		}
 
 		// Now write the bundle out.
-		if err := m.logStorage.writeBundle(ctx, bundleIdx, uint8(p), bundleData); err != nil {
+		if err := m.logStorage.writeBundleIdempotent(ctx, bundleIdx, uint8(p), bundleData); err != nil {
 			return 0, nil, err
 		}
 

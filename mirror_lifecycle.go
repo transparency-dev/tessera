@@ -54,6 +54,11 @@ var (
 	ErrInvalidProof = errors.New("invalid proof")
 )
 
+// maxExcessEntries is the maximum number of "excess" entries that can be
+// re-uploaded. This is intended to prevent mirror re-uploads from going too far
+// back in time.
+const maxExcessEntries = 2048
+
 // MirrorOptions holds mirror lifecycle settings for all storage implementations.
 type MirrorOptions struct {
 	signer      note.Signer
@@ -113,6 +118,7 @@ func (o *MirrorOptions) valid() error {
 type MirrorWriter interface {
 	// IntegrateBundles integrates bundles of log entries, starting at the given bundle index, into the local tree.
 	// Bundles are _always_ aligned on bundle boundaries.
+	// Implementations MUST NOT overwrite entries that are already integrated into the tree.
 	//
 	// Returns the size of the tree and its new root hash if successful.
 	// If the provided iterator yields an error, the MirrorWriter MUST return it either directly, or wrapped so the caller can identify it.
@@ -224,11 +230,10 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 	//    - upload_start:
 	//      * MUST NOT be greater than the mirror's next expected entry index.
 	//      * MUST NOT be too far below the mirror's next entry index.
-	if (uploadStart == 0 && uploadEnd == 0 && !userTicketValid) ||
+	if excessEntries := min(uploadEnd, nextEntry) - uploadStart; (uploadStart == 0 && uploadEnd == 0 && !userTicketValid) ||
 		(uploadEnd != pendingSize || uploadEnd < nextEntry) ||
-		(uploadStart > nextEntry) {
-		// TODO(al): add flexibility about re-writing some entries
-		slog.ErrorContext(ctx, "Returning conflict", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingSize), slog.Uint64("uploadStart", uploadStart), slog.Uint64("uploadEnd", uploadEnd))
+		(uploadStart > nextEntry || excessEntries > maxExcessEntries) {
+		slog.ErrorContext(ctx, "Returning conflict", slog.Bool("ticket_valid", userTicketValid), slog.Uint64("next_entry", nextEntry), slog.Uint64("pending_size", pendingSize), slog.Uint64("upload_start", uploadStart), slog.Uint64("upload_end", uploadEnd), slog.Uint64("excess_entries", excessEntries))
 		return nextEntry, pendingSize, ticketBytes, nil, ErrConflict
 	}
 
@@ -269,6 +274,7 @@ func (mt *MirrorTarget) bundleIterator(ctx context.Context, next func() (*Mirror
 	crf := compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}
 	return func(yield func(*api.EntryBundle, error) bool) {
 		// Check for unaligned upload start, and fetch entries from the start of the bundle to use to pad.
+		// This is necessary for the subtree proof for such an unaligned first bundle to validate.
 		var padEntries [][]byte
 		if p := start % layout.EntryBundleWidth; p != 0 {
 			// non-aligned starting bundle

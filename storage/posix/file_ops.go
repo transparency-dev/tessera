@@ -15,6 +15,7 @@
 package posix
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -127,11 +128,32 @@ func createEx(name string, d []byte) error {
 		}()
 
 		if err := os.Link(tmpName, name); err != nil {
-			// Wrap the error here because we need to know if it's os.ErrExists at higher levels.
+			// Wrap the error here because we need to know if it's os.ErrExist at higher levels.
 			return fmt.Errorf("failed to link temporary file to target %q: %w", name, err)
 		}
 		return nil
 	})
+}
+
+// createIdempotent atomically creates a file at the given path containing the provided data, and syncs the
+// directory containing the newly created file.
+//
+// Returns an error if a file already exists at the specified location and it contents are not identical to
+// the provided data, or if it's unable to fully write the data & close the file.
+func createIdempotent(name string, d []byte) error {
+	if err := createEx(name, d); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		e, err := os.ReadFile(name)
+		if err != nil {
+			return fmt.Errorf("failed to read existing file: %w", err)
+		}
+		if !bytes.Equal(e, d) {
+			return fmt.Errorf("existing file %q has different contents", name)
+		}
+	}
+	return nil
 }
 
 // overwrite atomically creates/overwrites a file at the given path containing the provided data, and syncs
