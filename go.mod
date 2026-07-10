@@ -27,7 +27,7 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/muesli/termenv v0.16.0
 	github.com/rivo/tview v0.42.0
-	github.com/transparency-dev/formats v0.1.2-0.20260629100010-fa283eb7462a
+	github.com/transparency-dev/formats v0.1.2-0.20260710124811-af9e607161b6
 	github.com/transparency-dev/merkle v0.0.3-0.20260629095233-a1adddb6323b
 	github.com/transparency-dev/witness v0.0.0-20260701145555-54dbcdd14f82
 	go.opentelemetry.io/contrib/detectors/aws/ec2/v2 v2.5.1
