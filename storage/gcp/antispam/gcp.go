@@ -84,6 +84,11 @@ type AntispamOpts struct {
 	// underscores, and prepending a letter if the origin doesn't start with one), to
 	// make it easy to associate tables with specific logs.
 	SpannerTablePrefix string
+
+	// SpannerClient will be used to interact with Spanner. If unset, Tessera will create one.
+	// If set, it must be connected to the database identified by the spannerDB parameter to
+	// NewAntispam, and it will never be closed by Tessera.
+	SpannerClient *spanner.Client
 }
 
 // tablePrefixRE matches valid values for a Spanner table prefix: empty, or a leading
@@ -107,11 +112,17 @@ func NewAntispam(ctx context.Context, spannerDB string, opts AntispamOpts) (*Ant
 	if !tablePrefixRE.MatchString(opts.SpannerTablePrefix) {
 		return nil, fmt.Errorf("invalid SpannerTablePrefix %q: must start with a letter, contain only letters, digits, or underscores, and be at most 64 characters long", opts.SpannerTablePrefix)
 	}
+	if opts.SpannerClient != nil {
+		if got := opts.SpannerClient.DatabaseName(); got != spannerDB {
+			return nil, fmt.Errorf("provided SpannerClient is connected to %q, want %q", got, spannerDB)
+		}
+	}
 	table := func(t string) string {
 		return opts.SpannerTablePrefix + t
 	}
+
 	if err := createAndPrepareTables(
-		ctx, spannerDB,
+		ctx, spannerDB, opts.SpannerClient,
 		[]string{
 			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INT64 NOT NULL, nextIdx INT64 NOT NULL) PRIMARY KEY (id)", table("FollowCoord")),
 			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (h BYTES(32) NOT NULL, idx INT64 NOT NULL) PRIMARY KEY (h)", table("IDSeq")),
@@ -123,9 +134,13 @@ func NewAntispam(ctx context.Context, spannerDB string, opts AntispamOpts) (*Ant
 		return nil, fmt.Errorf("failed to create tables: %v", err)
 	}
 
-	db, err := spanner.NewClient(ctx, spannerDB)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Spanner: %v", err)
+	db := opts.SpannerClient
+	if db == nil {
+		var err error
+		db, err = spanner.NewClient(ctx, spannerDB)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to Spanner: %v", err)
+		}
 	}
 
 	r := &AntispamStorage{
@@ -477,7 +492,9 @@ func (f *follower) EntriesProcessed(ctx context.Context) (uint64, error) {
 // This is intended to be used to create and initialise Spanner instances on first use.
 // DDL should likely be of the form "CREATE TABLE IF NOT EXISTS".
 // Mutation groups should likey be one or more spanner.Insert operations - AlreadyExists errors will be silently ignored.
-func createAndPrepareTables(ctx context.Context, spannerDB string, ddl []string, mutations [][]*spanner.Mutation) error {
+// If dbPool is non-nil it is used to apply the mutations (and is not closed); otherwise a
+// temporary client is created for the duration of this call.
+func createAndPrepareTables(ctx context.Context, spannerDB string, dbPool *spanner.Client, ddl []string, mutations [][]*spanner.Mutation) error {
 	adminClient, err := database.NewDatabaseAdminClient(ctx)
 	if err != nil {
 		return err
@@ -499,11 +516,13 @@ func createAndPrepareTables(ctx context.Context, spannerDB string, ddl []string,
 		return err
 	}
 
-	dbPool, err := spanner.NewClient(ctx, spannerDB)
-	if err != nil {
-		return fmt.Errorf("failed to connect to Spanner: %v", err)
+	if dbPool == nil {
+		dbPool, err = spanner.NewClient(ctx, spannerDB)
+		if err != nil {
+			return fmt.Errorf("failed to connect to Spanner: %v", err)
+		}
+		defer dbPool.Close()
 	}
-	defer dbPool.Close()
 
 	// Set default values for a newly initialised schema using passed in mutation groups.
 	// Note that this will only succeed if no row exists, so there's no danger of "resetting" an existing log.

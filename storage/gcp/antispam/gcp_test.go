@@ -24,6 +24,7 @@ import (
 
 	"log/slog"
 
+	"cloud.google.com/go/spanner"
 	"cloud.google.com/go/spanner/spannertest"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
@@ -39,6 +40,7 @@ func TestAntispamStorage(t *testing.T) {
 	for _, test := range []struct {
 		name          string
 		opts          AntispamOpts
+		sharedClient  bool
 		logEntries    [][]byte
 		lookupEntries []testLookup
 	}{
@@ -56,6 +58,25 @@ func TestAntispamStorage(t *testing.T) {
 					entryHash: testIDHash([]byte("two")),
 				}, {
 					entryHash: testIDHash([]byte("three")),
+				}, {
+					entryHash:    testIDHash([]byte("nowhere to be found")),
+					wantNotFound: true,
+				},
+			},
+		},
+		{
+			name:         "roundtrip with shared client",
+			opts:         AntispamOpts{SpannerTablePrefix: "Shared1_"},
+			sharedClient: true,
+			logEntries: [][]byte{
+				[]byte("one"),
+				[]byte("two"),
+			},
+			lookupEntries: []testLookup{
+				{
+					entryHash: testIDHash([]byte("one")),
+				}, {
+					entryHash: testIDHash([]byte("two")),
 				}, {
 					entryHash:    testIDHash([]byte("nowhere to be found")),
 					wantNotFound: true,
@@ -84,7 +105,19 @@ func TestAntispamStorage(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			closeDB := newSpannerDB(t)
 			defer closeDB()
-			as, err := NewAntispam(t.Context(), "projects/p/instances/i/databases/d", test.opts)
+			const spannerDB = "projects/p/instances/i/databases/d"
+			if test.sharedClient {
+				c, err := spanner.NewClient(t.Context(), spannerDB)
+				if err != nil {
+					t.Fatalf("spanner.NewClient: %v", err)
+				}
+				// As documented on AntispamOpts.SpannerClient, the caller retains
+				// ownership of the client's lifecycle. Cleanup runs after this
+				// function's defers have shut down the follower.
+				t.Cleanup(c.Close)
+				test.opts.SpannerClient = c
+			}
+			as, err := NewAntispam(t.Context(), spannerDB, test.opts)
 			if err != nil {
 				t.Fatalf("NewAntispam: %v", err)
 			}
@@ -148,6 +181,21 @@ func TestAntispamStorage(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAntispamSharedClientWrongDatabase(t *testing.T) {
+	closeDB := newSpannerDB(t)
+	defer closeDB()
+
+	c, err := spanner.NewClient(t.Context(), "projects/p/instances/i/databases/other")
+	if err != nil {
+		t.Fatalf("spanner.NewClient: %v", err)
+	}
+	defer c.Close()
+
+	if _, err := NewAntispam(t.Context(), "projects/p/instances/i/databases/d", AntispamOpts{SpannerClient: c}); err == nil {
+		t.Error("NewAntispam accepted a SpannerClient connected to a different database, want error")
 	}
 }
 
