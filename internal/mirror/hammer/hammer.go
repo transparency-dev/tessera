@@ -292,7 +292,7 @@ func (ms *multiStringFlag) Set(w string) error {
 }
 
 // Read log private key from file.
-func getSignerOrDie(ctx context.Context) *note.Signer {
+func getSignerOrDie(ctx context.Context) note.Signer {
 	var privKey string
 	var err error
 
