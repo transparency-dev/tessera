@@ -244,10 +244,6 @@ func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64,
 		return nil, parseConflict(resp.Body)
 	}
 
-	if resp.StatusCode == http.StatusUnprocessableEntity {
-		return nil, ErrConflict{}
-	}
-
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("add-entries failed with status %d: %s", resp.StatusCode, string(body))
