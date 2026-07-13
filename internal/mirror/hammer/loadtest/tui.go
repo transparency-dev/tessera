@@ -17,6 +17,7 @@ package loadtest
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -142,4 +143,9 @@ func (c *tuiController) updateStatsLoop(ctx context.Context, interval time.Durat
 			c.app.Draw()
 		}
 	}
+}
+
+// LogWriter returns a writer that writes to the log TextView.
+func (c *tuiController) LogWriter() io.Writer {
+	return c.logView
 }
