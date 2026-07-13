@@ -17,6 +17,7 @@ package posix
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -755,5 +756,101 @@ func TestMirrorWriter_IntegrateBundles(t *testing.T) {
 				t.Fatalf("got size %d, want %d", size, tc.expectedSize)
 			}
 		})
+	}
+}
+
+func TestMirrorWriter_UpdateCheckpointGeometry(t *testing.T) {
+	ctx := t.Context()
+	s := &Storage{
+		cfg: Config{
+			Path: t.TempDir(),
+		},
+	}
+	opts := tessera.NewMirrorOptions()
+	mw, _, err := s.MirrorWriter(ctx, opts)
+	if err != nil {
+		t.Fatalf("MirrorWriter: %v", err)
+	}
+	mwConcrete, ok := mw.(*MirrorWriter)
+	if !ok {
+		t.Fatalf("Got %T, expected *MirrorWriter", mw)
+	}
+
+	// Create a full bundle of 256 entries.
+	entries := make([][]byte, 256)
+	for i := range 256 {
+		entries[i] = fmt.Appendf(nil, "entry %d", i)
+	}
+	baseBundle := &api.EntryBundle{
+		Entries: entries,
+	}
+
+	bundlesFunc := func(b *api.EntryBundle) func(yield func(*api.EntryBundle, error) bool) {
+		return func(yield func(*api.EntryBundle, error) bool) {
+			yield(b, nil)
+		}
+	}
+
+	// Integrate to size 256. This writes the full bundle at index 0 and its corresponding tile.
+	size, _, err := mw.IntegrateBundles(ctx, 0, bundlesFunc(baseBundle))
+	if err != nil {
+		t.Fatalf("IntegrateBundles: %v", err)
+	}
+	if size != 256 {
+		t.Fatalf("expected integrated size 256, got %d", size)
+	}
+
+	// Update the checkpoint to size 100.
+	h := make([]byte, 32)
+	cpStr := fmt.Sprintf("origin\n100\n%s\nsig\n", base64.StdEncoding.EncodeToString(h))
+
+	if err := mw.UpdateCheckpoint(ctx, func(old []byte) ([]byte, error) {
+		return []byte(cpStr), nil
+	}); err != nil {
+		t.Fatalf("UpdateCheckpoint: %v", err)
+	}
+
+	// Verify that the partial entry bundle of size 100 exists and has correct contents (first 100 entries).
+	partialBundlePath := filepath.Join(s.cfg.Path, mwConcrete.logStorage.entriesPath(0, 100))
+	if _, err := os.Stat(partialBundlePath); err != nil {
+		t.Fatalf("expected partial entry bundle file to exist: %v", err)
+	}
+
+	bundleData, err := os.ReadFile(partialBundlePath)
+	if err != nil {
+		t.Fatalf("failed to read partial entry bundle: %v", err)
+	}
+
+	eb := &api.EntryBundle{}
+	if err := eb.UnmarshalText(bundleData); err != nil {
+		t.Fatalf("failed to unmarshal partial entry bundle: %v", err)
+	}
+
+	if l := len(eb.Entries); l != 100 {
+		t.Fatalf("expected 100 entries in partial bundle, got %d", l)
+	}
+	for i := range 100 {
+		if !bytes.Equal(eb.Entries[i], entries[i]) {
+			t.Errorf("entry %d: expected %q, got %q", i, string(entries[i]), string(eb.Entries[i]))
+		}
+	}
+
+	// 2. Verify that the partial tile of size 100 exists.
+	partialTilePath := filepath.Join(s.cfg.Path, layout.TilePath(0, 0, 100))
+	if _, err := os.Stat(partialTilePath); err != nil {
+		t.Fatalf("expected partial tile file to exist: %v", err)
+	}
+
+	tileData, err := os.ReadFile(partialTilePath)
+	if err != nil {
+		t.Fatalf("failed to read partial tile: %v", err)
+	}
+
+	tile := &api.HashTile{}
+	if err := tile.UnmarshalText(tileData); err != nil {
+		t.Fatalf("failed to unmarshal partial tile: %v", err)
+	}
+	if len(tile.Nodes) != 100 {
+		t.Fatalf("expected 100 nodes in partial tile, got %d", len(tile.Nodes))
 	}
 }
