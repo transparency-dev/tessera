@@ -633,8 +633,9 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if oldSize != fm.initialPendingSize {
-			fm.t.Errorf("oldSize = %d, want %d", oldSize, fm.initialPendingSize)
-			w.WriteHeader(http.StatusBadRequest)
+			w.Header().Set("Content-Type", "text/x.tlog.size")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = fmt.Fprintf(w, "%d\n", fm.initialPendingSize)
 			return
 		}
 		if oldSize > 0 && len(headerLines) <= 1 {
@@ -665,6 +666,14 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func TestSync(t *testing.T) {
 	origin := "test-origin"
 	fm := newFakeMirror(t, origin)
+	fm.addEntriesExpectations = []addEntriesExpectation{
+		{
+			start:  0,
+			end:    uint64(fm.numEntries),
+			ticket: nil,
+			status: http.StatusOK,
+		},
+	}
 	server := httptest.NewServer(fm)
 	defer server.Close()
 
@@ -732,20 +741,6 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 		wantErr                string
 	}{
 		{
-			desc:               "initial status query returns unexpected success",
-			initialPendingSize: 0,
-			initialNextEntry:   0,
-			initialStatus:      http.StatusOK,
-			wantErr:            "unexpected success when querying mirror status with size 0",
-		},
-		{
-			desc:               "initial status query returns generic error",
-			initialPendingSize: 0,
-			initialNextEntry:   0,
-			initialStatus:      http.StatusInternalServerError,
-			wantErr:            "failed to retrieve mirror status",
-		},
-		{
 			desc:               "consistency proof fails",
 			initialPendingSize: 1,
 			initialNextEntry:   1,
@@ -768,7 +763,7 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 				{
 					start:  1,
 					end:    5,
-					ticket: []byte("ticket-value"),
+					ticket: nil,
 					status: http.StatusOK,
 				},
 			},
@@ -784,7 +779,7 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 				}
 				return nil, fmt.Errorf("unexpected tile request: level=%d, index=%d, p=%d", level, index, p)
 			},
-			wantErr: "failed to push new checkpoint",
+			wantErr: "failed to push checkpoint",
 		},
 		{
 			desc: "entry upload fails with generic error",
@@ -792,7 +787,7 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 				{
 					start:  0,
 					end:    5,
-					ticket: []byte("ticket-value"),
+					ticket: nil,
 					status: http.StatusInternalServerError,
 				},
 			},
@@ -806,9 +801,9 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 				{
 					start:  0,
 					end:    5,
-					ticket: []byte("ticket-value"),
+					ticket: nil,
 					status: http.StatusConflict,
-					body:   "5\n2\ndGlja2V0LW5ldw==\n", // pending size = 5, next entry = 2, ticket = "ticket-new"
+					body:   "5\n2\ndGlja2V0LW5ldw==\n",
 				},
 				{
 					start:  2,
@@ -819,7 +814,7 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 			},
 		},
 		{
-			desc:               "initial status query returns no pending checkpoint (bootstrap)",
+			desc:               "bootstrap when mirror has no pending checkpoint",
 			initialPendingSize: 0,
 			initialNextEntry:   0,
 			initialStatus:      http.StatusUnprocessableEntity,
@@ -831,6 +826,21 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 					status: http.StatusOK,
 				},
 			},
+		},
+		{
+			desc:               "mirror size reverts during entry upload",
+			initialPendingSize: 0,
+			initialNextEntry:   0,
+			addEntriesExpectations: []addEntriesExpectation{
+				{
+					start:  0,
+					end:    5,
+					ticket: nil,
+					status: http.StatusConflict,
+					body:   "2\n2\ndGlja2V0LW5ldw==\n",
+				},
+			},
+			wantErr: "mirror size reverted to 2, which is smaller than target 5",
 		},
 	}
 
