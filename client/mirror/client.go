@@ -27,9 +27,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/client"
@@ -128,6 +130,11 @@ func (o *Options) validate() error {
 // TODO(roger2hk): Should multiple mirrors in one client be supported?
 type Client struct {
 	opts *Options
+
+	// TODO(roger2hk): Add a mutex just in case client is used across multiple goroutines.
+	// State of the mirror.
+	oldSize uint64
+	ticket  []byte
 }
 
 // NewClient creates a new Client with the provided options.
@@ -346,7 +353,19 @@ func (c *Client) streamEntries(ctx context.Context, uploadStart, uploadEnd uint6
 }
 
 // pushCheckpoint sends a new checkpoint and its consistency proof to the mirror's /add-checkpoint endpoint.
-func (c *Client) pushCheckpoint(ctx context.Context, oldSize uint64, proof [][]byte, checkpointRaw []byte) error {
+func (c *Client) pushCheckpoint(ctx context.Context, oldSize, targetSize uint64, checkpointRaw []byte) error {
+	var proof [][]byte
+	if oldSize > 0 {
+		pb, err := client.NewProofBuilder(ctx, targetSize, c.opts.tileFetcher)
+		if err != nil {
+			return fmt.Errorf("failed to create ProofBuilder: %v", err)
+		}
+		proof, err = pb.ConsistencyProof(ctx, oldSize, targetSize)
+		if err != nil {
+			return fmt.Errorf("failed to generate consistency proof: %v", err)
+		}
+	}
+
 	reqBody := c.buildCheckpointRequestBody(oldSize, proof, checkpointRaw)
 
 	u, err := c.opts.mirrorURL.Parse("add-checkpoint")
@@ -369,9 +388,32 @@ func (c *Client) pushCheckpoint(ctx context.Context, oldSize uint64, proof [][]b
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read body from witness at %q: %v", u.String(), err)
+	}
+
+	if resp.StatusCode == http.StatusConflict {
+		// The witness MUST check that the old size matches the size of the latest checkpoint it cosigned
+		// for the checkpoint's origin (or zero if it never cosigned a checkpoint for that origin).
+		// If it doesn't match, the witness MUST respond with a "409 Conflict" HTTP status code.
+		// The response body MUST consist of the tree size of the latest cosigned checkpoint in decimal,
+		// followed by a newline (U+000A). The response MUST have a Content-Type of text/x.tlog.size
+		if resp.Header.Get("Content-Type") == "text/x.tlog.size" {
+			bodyStr := strings.TrimSpace(string(respBody))
+			newWitSize, err := strconv.ParseUint(bodyStr, 10, 64)
+			if err != nil {
+				return fmt.Errorf("witness at %q replied with x.tlog.size but body %q could not be parsed as decimal", u.String(), bodyStr)
+			}
+			slog.InfoContext(ctx, "Witness replied with x.tlog.size different than our hint", slog.String("url", u.String()), slog.Uint64("reply", newWitSize), slog.Uint64("hinted", oldSize))
+
+			return ErrConflict{
+				PendingSize: newWitSize,
+			}
+		}
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("add-checkpoint failed with status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -404,47 +446,31 @@ func (c *Client) buildCheckpointRequestBody(oldSize uint64, proof [][]byte, chec
 // Sync synchronizes all entries and the checkpoint from the source log to the mirror
 // up to the specified targetSize. It returns the mirror's cosignatures on success.
 func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSize uint64) ([]byte, error) {
-	// Get the mirror's current state by querying it with upload_start=0, upload_end=0 (guaranteed to conflict).
-	_, err := c.pushEntries(ctx, 0, 0, nil)
-	if err == nil {
-		return nil, errors.New("unexpected success when querying mirror status with size 0")
-	}
-
 	var conflict ErrConflict
-	if !errors.As(err, &conflict) {
-		return nil, fmt.Errorf("failed to retrieve mirror status: %v", err)
-	}
+	nextEntry := c.oldSize
 
-	oldSize := conflict.PendingSize
-	nextEntry := conflict.NextEntry
-	ticket := conflict.Ticket
-
-	// If the mirror's pending checkpoint is smaller than target size, update it first.
-	if oldSize < targetSize {
-		var proof [][]byte
-		if oldSize > 0 {
-			pb, err := client.NewProofBuilder(ctx, targetSize, c.opts.tileFetcher)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create ProofBuilder: %v", err)
+	// Push the checkpoint with the old size (0 if not provided).
+	for c.oldSize < targetSize {
+		err := c.pushCheckpoint(ctx, c.oldSize, targetSize, targetCheckpointRaw)
+		if err != nil {
+			if !errors.As(err, &conflict) {
+				return nil, fmt.Errorf("failed to push checkpoint: %v", err)
 			}
-			proof, err = pb.ConsistencyProof(ctx, oldSize, targetSize)
-			if err != nil {
-				return nil, fmt.Errorf("failed to generate consistency proof: %v", err)
-			}
+			c.oldSize = max(c.oldSize, conflict.PendingSize)
+			continue
 		}
 
-		if err := c.pushCheckpoint(ctx, oldSize, proof, targetCheckpointRaw); err != nil {
-			return nil, fmt.Errorf("failed to push new checkpoint: %v", err)
-		}
+		nextEntry = c.oldSize
+		c.oldSize = targetSize
 	}
 
 	// Push entries up to target size in packages of 256, handling concurrent conflicts and retries.
-	uploadEnd := max(targetSize, oldSize)
+	uploadEnd := max(targetSize, c.oldSize)
 
 	var cosigs []byte
 	for {
 		var err error
-		cosigs, err = c.pushEntries(ctx, nextEntry, uploadEnd, ticket)
+		cosigs, err = c.pushEntries(ctx, nextEntry, uploadEnd, c.ticket)
 		if err == nil {
 			break
 		}
@@ -453,11 +479,14 @@ func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSiz
 			return nil, fmt.Errorf("sync failed during entry upload: %v", err)
 		}
 
-		nextEntry = conflict.NextEntry
-		ticket = conflict.Ticket
 		uploadEnd = conflict.PendingSize
+		nextEntry = conflict.NextEntry
+		c.ticket = conflict.Ticket
+		c.oldSize = conflict.PendingSize
 
-		// TODO(roger2hk): Handle the case uploadEnd is updated to a value smaller than targetSize.
+		if uploadEnd < targetSize {
+			return nil, fmt.Errorf("mirror size reverted to %d, which is smaller than target %d", uploadEnd, targetSize)
+		}
 	}
 
 	return cosigs, nil
