@@ -452,15 +452,16 @@ func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSiz
 	// Push the checkpoint with the old size (0 if not provided).
 	for c.oldSize < targetSize {
 		err := c.pushCheckpoint(ctx, c.oldSize, targetSize, targetCheckpointRaw)
-		if err == nil {
-			nextEntry = c.oldSize
-			c.oldSize = targetSize
-			break
+		if err != nil {
+			if !errors.As(err, &conflict) {
+				return nil, fmt.Errorf("failed to push checkpoint: %v", err)
+			}
+			c.oldSize = max(c.oldSize, conflict.PendingSize)
+			continue
 		}
-		if !errors.As(err, &conflict) {
-			return nil, fmt.Errorf("failed to push checkpoint: %v", err)
-		}
-		c.oldSize = max(c.oldSize, conflict.PendingSize)
+
+		nextEntry = c.oldSize
+		c.oldSize = targetSize
 	}
 
 	// Push entries up to target size in packages of 256, handling concurrent conflicts and retries.
