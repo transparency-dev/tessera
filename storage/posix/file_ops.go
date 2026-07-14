@@ -15,6 +15,7 @@
 package posix
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"

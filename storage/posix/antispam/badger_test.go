@@ -15,7 +15,9 @@
 package badger
 
 import (
+	"context"
 	"crypto/sha256"
+	"fmt"
 	"testing"
 	"time"
 
