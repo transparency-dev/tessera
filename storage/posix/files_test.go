@@ -767,90 +767,103 @@ func TestMirrorWriter_UpdateCheckpointGeometry(t *testing.T) {
 		},
 	}
 	opts := tessera.NewMirrorOptions()
-	mw, _, err := s.MirrorWriter(ctx, opts)
+	mw, lr, err := s.MirrorWriter(ctx, opts)
 	if err != nil {
 		t.Fatalf("MirrorWriter: %v", err)
 	}
-	mwConcrete, ok := mw.(*MirrorWriter)
-	if !ok {
-		t.Fatalf("Got %T, expected *MirrorWriter", mw)
-	}
 
-	// Create a full bundle of 256 entries.
-	entries := make([][]byte, 256)
-	for i := range 256 {
+	// Create 600 entries to span multiple tile levels.
+	entries := make([][]byte, 600)
+	for i := range 600 {
 		entries[i] = fmt.Appendf(nil, "entry %d", i)
 	}
-	baseBundle := &api.EntryBundle{
-		Entries: entries,
-	}
 
-	bundlesFunc := func(b *api.EntryBundle) func(yield func(*api.EntryBundle, error) bool) {
-		return func(yield func(*api.EntryBundle, error) bool) {
-			yield(b, nil)
+	bundles := []*api.EntryBundle{
+		{Entries: entries[0:256]},
+		{Entries: entries[256:512]},
+		{Entries: entries[512:600]},
+	}
+	bundlesIter := func(yield func(*api.EntryBundle, error) bool) {
+		for _, b := range bundles {
+			if !yield(b, nil) {
+				return
+			}
 		}
 	}
 
-	// Integrate to size 256. This writes the full bundle at index 0 and its corresponding tile.
-	size, _, err := mw.IntegrateBundles(ctx, 0, bundlesFunc(baseBundle))
+	// Integrate to size 600.
+	// Tiles layout should then be:
+	// Level 1: [2]
+	// Level 0: [256] [256] [44]
+	// Entries: [256] [256] [44]
+	size, _, err := mw.IntegrateBundles(ctx, 0, bundlesIter)
 	if err != nil {
 		t.Fatalf("IntegrateBundles: %v", err)
 	}
-	if size != 256 {
-		t.Fatalf("expected integrated size 256, got %d", size)
+	if size != 600 {
+		t.Fatalf("expected integrated size 600, got %d", size)
 	}
 
-	// Update the checkpoint to size 100.
+	// Update the checkpoint to size 300.
 	h := make([]byte, 32)
-	cpStr := fmt.Sprintf("origin\n100\n%s\nsig\n", base64.StdEncoding.EncodeToString(h))
+	cpStr := fmt.Sprintf("origin\n300\n%s\nsig\n", base64.StdEncoding.EncodeToString(h))
 
+	// With a checkpoint size of 300, the implied geometry is:
+	// Level 1: [1]
+	// Level 0: [256] [44]
+	// Entries: [256] [44]
 	if err := mw.UpdateCheckpoint(ctx, func(old []byte) ([]byte, error) {
 		return []byte(cpStr), nil
 	}); err != nil {
 		t.Fatalf("UpdateCheckpoint: %v", err)
 	}
 
-	// Verify that the partial entry bundle of size 100 exists and has correct contents (first 100 entries).
-	partialBundlePath := filepath.Join(s.cfg.Path, mwConcrete.logStorage.entriesPath(0, 100))
-	if _, err := os.Stat(partialBundlePath); err != nil {
-		t.Fatalf("expected partial entry bundle file to exist: %v", err)
+	// Verify that the partial entry bundle of size 44 (300-256) at tile index 1 exists and has correct contents (entries 256 to 299).
+	eb := mustReadEntryBundle(t, lr, 1, 44)
+	if l := len(eb.Entries); l != 44 {
+		t.Fatalf("expected 44 entries in partial bundle, got %d", l)
 	}
-
-	bundleData, err := os.ReadFile(partialBundlePath)
-	if err != nil {
-		t.Fatalf("failed to read partial entry bundle: %v", err)
-	}
-
-	eb := &api.EntryBundle{}
-	if err := eb.UnmarshalText(bundleData); err != nil {
-		t.Fatalf("failed to unmarshal partial entry bundle: %v", err)
-	}
-
-	if l := len(eb.Entries); l != 100 {
-		t.Fatalf("expected 100 entries in partial bundle, got %d", l)
-	}
-	for i := range 100 {
-		if !bytes.Equal(eb.Entries[i], entries[i]) {
-			t.Errorf("entry %d: expected %q, got %q", i, string(entries[i]), string(eb.Entries[i]))
+	for i := range 44 {
+		if !bytes.Equal(eb.Entries[i], entries[256+i]) {
+			t.Errorf("entry %d: expected %q, got %q", i, string(entries[256+i]), string(eb.Entries[i]))
 		}
 	}
 
-	// 2. Verify that the partial tile of size 100 exists.
-	partialTilePath := filepath.Join(s.cfg.Path, layout.TilePath(0, 0, 100))
-	if _, err := os.Stat(partialTilePath); err != nil {
-		t.Fatalf("expected partial tile file to exist: %v", err)
+	// Verify that the partial tile of size 44 at Level 0, index 1 exists.
+	tile := mustReadTile(t, lr, 0, 1, 44)
+	if len(tile.Nodes) != 44 {
+		t.Fatalf("expected 44 nodes in partial tile, got %d", len(tile.Nodes))
 	}
 
-	tileData, err := os.ReadFile(partialTilePath)
+	// Verify that the partial tile of size 1 at Level 1, index 0 exists.
+	level1Tile := mustReadTile(t, lr, 1, 0, 1)
+	if len(level1Tile.Nodes) != 1 {
+		t.Fatalf("expected 1 node in partial Level 1 tile, got %d", len(level1Tile.Nodes))
+	}
+}
+
+func mustReadTile(t *testing.T, lr tessera.LogReader, level, idx uint64, p uint8) *api.HashTile {
+	t.Helper()
+	d, err := lr.ReadTile(t.Context(), level, idx, p)
 	if err != nil {
-		t.Fatalf("failed to read partial tile: %v", err)
+		t.Fatalf("failed to read tile: %v", err)
 	}
-
 	tile := &api.HashTile{}
-	if err := tile.UnmarshalText(tileData); err != nil {
-		t.Fatalf("failed to unmarshal partial tile: %v", err)
+	if err := tile.UnmarshalText(d); err != nil {
+		t.Fatalf("failed to unmarshal tile: %v", err)
 	}
-	if len(tile.Nodes) != 100 {
-		t.Fatalf("expected 100 nodes in partial tile, got %d", len(tile.Nodes))
+	return tile
+}
+
+func mustReadEntryBundle(t *testing.T, lr tessera.LogReader, idx uint64, p uint8) *api.EntryBundle {
+	t.Helper()
+	d, err := lr.ReadEntryBundle(t.Context(), idx, p)
+	if err != nil {
+		t.Fatalf("failed to read entry bundle: %v", err)
 	}
+	eb := &api.EntryBundle{}
+	if err := eb.UnmarshalText(d); err != nil {
+		t.Fatalf("failed to unmarshal entry bundle: %v", err)
+	}
+	return eb
 }

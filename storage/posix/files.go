@@ -1388,7 +1388,7 @@ func (m *MirrorWriter) ensureGeometry(ctx context.Context, cpSize, treeSize uint
 	if cpSize > treeSize {
 		return fmt.Errorf("new size %d is greater than integrated size %d", cpSize, treeSize)
 	}
-	levels := uint64(1 << bits.Len64(cpSize-1))
+	levels := uint64(1<<bits.Len64(cpSize-1)) / 8
 	idx := (cpSize - 1) / layout.EntryBundleWidth
 	for l := uint64(0); l < levels; l, idx = l+1, idx>>layout.TileHeight {
 		treeP := layout.PartialTileSize(l, idx, treeSize)
