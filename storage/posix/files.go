@@ -1213,7 +1213,7 @@ func (m *MirrorWriter) initialise(ctx context.Context) error {
 	return nil
 }
 
-// marshalTlogEntryBundle returns a tlog-tiles compatible serialization of the provided entrybundle.
+// marshalTlogEntryBundle returns a tlog-tiles compatible serialization of the provided entry bundle.
 func marshalTlogEntryBundle(b *api.EntryBundle) ([]byte, error) {
 	// Prealloc the max size we could possibly write out (about 16MB for a full bundle of max size entries).
 	// If this causes problems we may want to default this to some lower
@@ -1388,12 +1388,9 @@ func (m *MirrorWriter) ensureGeometry(ctx context.Context, cpSize, treeSize uint
 	if cpSize > treeSize {
 		return fmt.Errorf("new size %d is greater than integrated size %d", cpSize, treeSize)
 	}
-	levels := uint64(1)
-	if cpSize > 1 {
-		levels = 1 << bits.Len64(cpSize-1)
-	}
+	levels := uint64(1 << bits.Len64(cpSize-1))
 	idx := (cpSize - 1) / layout.EntryBundleWidth
-	for l := uint64(0); l < levels; l, idx = l+layout.TileHeight, idx>>layout.TileHeight {
+	for l := uint64(0); l < levels; l, idx = l+1, idx>>layout.TileHeight {
 		treeP := layout.PartialTileSize(l, idx, treeSize)
 		cpP := layout.PartialTileSize(l, idx, cpSize)
 		if cpP != treeP {
@@ -1431,21 +1428,21 @@ func (m *MirrorWriter) ensurePartialBundle(ctx context.Context, idx uint64, cpP,
 	// Read bundle implied by the tree size...
 	d, err := m.logStorage.ReadEntryBundle(ctx, idx, treeP)
 	if err != nil {
-		return fmt.Errorf("failed to read entrybundle @%d.%d: %v", idx, treeP, err)
+		return fmt.Errorf("failed to read entry bundle @%d.%d: %v", idx, treeP, err)
 	}
 	eb := &api.EntryBundle{}
 	if err := eb.UnmarshalText(d); err != nil {
-		return fmt.Errorf("failed to unmarshal entrybundle @%d.%d: %v", idx, treeP, err)
+		return fmt.Errorf("failed to unmarshal entry bundle @%d.%d: %v", idx, treeP, err)
 	}
 
 	// Then trim it down to the size implied by the checkpoint, and write it out.
 	eb.Entries = eb.Entries[:cpP]
 	d, err = marshalTlogEntryBundle(eb)
 	if err != nil {
-		return fmt.Errorf("failed to marshal entrybundle @%d.%d: %v", idx, cpP, err)
+		return fmt.Errorf("failed to marshal entry bundle @%d.%d: %v", idx, cpP, err)
 	}
 	if err := m.logStorage.writeBundleIdempotent(ctx, idx, cpP, d); err != nil {
-		return fmt.Errorf("failed to write entrybundle @%d.%d: %v", idx, cpP, err)
+		return fmt.Errorf("failed to write entry bundle @%d.%d: %v", idx, cpP, err)
 	}
 	return nil
 }
