@@ -410,16 +410,19 @@ func (mt *MirrorTarget) openOrCreateTicket(ctx context.Context, ticketBytes []by
 	var pendingNote *note.Note
 	userTicketValid := false
 
-	ticketCP, err := mt.open(ticketBytes)
-	if err != nil {
-		slog.DebugContext(ctx, "Failed to open ticket", slog.Any("error", err))
-	} else {
-		pendingCP, _, pendingNote, err = log.ParseCheckpoint(ticketCP, mt.logVerifier.Name(), mt.logVerifier)
+	var ticketCP []byte
+	if len(ticketBytes) > 0 {
+		ticketCP, err = mt.open(ticketBytes)
 		if err != nil {
-			slog.DebugContext(ctx, "Failed to parse ticket", slog.Any("error", err))
+			slog.DebugContext(ctx, "Failed to open ticket", slog.Any("error", err))
 		} else {
-			slog.DebugContext(ctx, "Valid ticket", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingCP.Size))
-			userTicketValid = true
+			pendingCP, _, pendingNote, err = log.ParseCheckpoint(ticketCP, mt.logVerifier.Name(), mt.logVerifier)
+			if err != nil {
+				slog.DebugContext(ctx, "Failed to parse ticket", slog.Any("error", err))
+			} else {
+				slog.DebugContext(ctx, "Valid ticket", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingCP.Size))
+				userTicketValid = true
+			}
 		}
 	}
 
