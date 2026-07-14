@@ -197,14 +197,16 @@ func TestAwait_multiClient(t *testing.T) {
 	}
 	awaiter := NewPublicationAwaiter(ctx, readCheckpoint, 10*time.Millisecond)
 
-	wg := sync.WaitGroup{}
+	var wg sync.WaitGroup
 	for i := range 300 {
 		index := uint64(i)
 		future := func() (Index, error) {
 			<-time.After(15 * time.Millisecond)
 			return Index{Index: index}, nil
 		}
-		wg.Go(func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			i, cpRaw, err := awaiter.Await(ctx, future)
 			if err != nil {
 				t.Errorf("function for %d failed: %v", i.Index, err)
@@ -220,7 +222,7 @@ func TestAwait_multiClient(t *testing.T) {
 				t.Errorf("got cp size of %d for index %d", cp.Size, i.Index)
 			}
 
-		})
+		}()
 	}
 	wg.Wait()
 }
@@ -256,10 +258,12 @@ func TestAwait_contextCancel(t *testing.T) {
 	awaiter := NewPublicationAwaiter(ctx, readCheckpoint, 10*time.Millisecond)
 	awaiter.preWaitSignaller = make(chan struct{}, 2)
 
-	wg := sync.WaitGroup{}
+	var wg sync.WaitGroup
 
 	// This one should succeed
-	wg.Go(func() {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		future := func() (Index, error) {
 			return Index{Index: 50}, nil
 		}
@@ -267,11 +271,13 @@ func TestAwait_contextCancel(t *testing.T) {
 		if err != nil {
 			t.Error(err)
 		}
-	})
+	}()
 
 	timeoutSuccess := make(chan struct{})
 	// This one is expected to hit deadline exceeded
-	wg.Go(func() {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		cctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 		defer cancel()
 		defer close(timeoutSuccess)
@@ -282,7 +288,7 @@ func TestAwait_contextCancel(t *testing.T) {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("Expected context deadline exceeded, got %v", err)
 		}
-	})
+	}()
 
 	// Block until both of the goroutines are waiting
 	<-awaiter.preWaitSignaller
