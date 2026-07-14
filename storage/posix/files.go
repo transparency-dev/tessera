@@ -1385,26 +1385,35 @@ func (m *MirrorWriter) UpdateCheckpoint(ctx context.Context, fn func(old []byte)
 // If an implied partial resource is not already present, this function will attempt to create
 // it from a strictly larger resource whose presence is implied by treeSize.
 func (m *MirrorWriter) ensureGeometry(ctx context.Context, cpSize, treeSize uint64) error {
+	if cpSize == 0 {
+		return nil
+	}
 	if cpSize > treeSize {
 		return fmt.Errorf("new size %d is greater than integrated size %d", cpSize, treeSize)
 	}
-	levels := uint64(1<<bits.Len64(cpSize-1)) / 8
-	idx := (cpSize - 1) / layout.EntryBundleWidth
-	for l := uint64(0); l < levels; l, idx = l+1, idx>>layout.TileHeight {
+	ml := maxLevel(cpSize)
+	idx := (cpSize - 1) >> layout.TileHeight
+	for l := uint64(0); l <= uint64(ml); l, idx = l+1, idx>>layout.TileHeight {
 		treeP := layout.PartialTileSize(l, idx, treeSize)
 		cpP := layout.PartialTileSize(l, idx, cpSize)
-		if cpP != treeP {
-			if l == 0 {
-				if err := m.ensurePartialBundle(ctx, idx, cpP, treeP); err != nil {
-					return err
-				}
-			}
-			if err := m.ensurePartialTile(ctx, l, idx, cpP, treeP); err != nil {
+		if l == 0 {
+			if err := m.ensurePartialBundle(ctx, idx, cpP, treeP); err != nil {
 				return err
 			}
 		}
+		if err := m.ensurePartialTile(ctx, l, idx, cpP, treeP); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// maxLevel returns the maximum tile level for a tree of the given size.
+func maxLevel(sz uint64) int {
+	if sz == 0 {
+		return 0
+	}
+	return (bits.Len64(sz) - 1) / layout.TileHeight
 }
 
 // ensurePartialBundle ensures that the partial entry bundle implied by the new size is
@@ -1413,6 +1422,10 @@ func (m *MirrorWriter) ensureGeometry(ctx context.Context, cpSize, treeSize uint
 // If the implied partial entry bundle is not already present, this function will attempt to create
 // it from the entry bundle implied by treeSize.
 func (m *MirrorWriter) ensurePartialBundle(ctx context.Context, idx uint64, cpP, treeP uint8) error {
+	if cpP == treeP {
+		return nil
+	}
+
 	// Check if the entry bundle already exists.
 	_, err := m.s.stat(m.logStorage.entriesPath(idx, cpP))
 	switch {
@@ -1436,7 +1449,11 @@ func (m *MirrorWriter) ensurePartialBundle(ctx context.Context, idx uint64, cpP,
 	}
 
 	// Then trim it down to the size implied by the checkpoint, and write it out.
-	eb.Entries = eb.Entries[:cpP]
+	// Handle cpP == 0 where a full-bundle is implied - we should never actually hit this case since cpP must
+	// equal treeP in this case, but it doesn't hurt to be defensive.
+	if cpP > 0 {
+		eb.Entries = eb.Entries[:cpP]
+	}
 	d, err = marshalTlogEntryBundle(eb)
 	if err != nil {
 		return fmt.Errorf("failed to marshal entry bundle @%d.%d: %v", idx, cpP, err)
@@ -1453,6 +1470,10 @@ func (m *MirrorWriter) ensurePartialBundle(ctx context.Context, idx uint64, cpP,
 // If the implied partial tile is not already present, this function will attempt to create
 // it from the tile implied by treeSize.
 func (m *MirrorWriter) ensurePartialTile(ctx context.Context, l uint64, idx uint64, cpP, treeP uint8) error {
+	if cpP == treeP {
+		return nil
+	}
+
 	// Check if the tile already exists.
 	_, err := m.s.stat(layout.TilePath(l, idx, cpP))
 	switch {
@@ -1476,7 +1497,11 @@ func (m *MirrorWriter) ensurePartialTile(ctx context.Context, l uint64, idx uint
 	}
 
 	// Then trim it down to the size implied by the checkpoint, and write it out.
-	t.Nodes = t.Nodes[:cpP]
+	// Handle cpP == 0 where a full-tile is implied - we should never actually hit this case since cpP must
+	// equal treeP in this case, but it doesn't hurt to be defensive.
+	if cpP > 0 {
+		t.Nodes = t.Nodes[:cpP]
+	}
 	d, err = t.MarshalText()
 	if err != nil {
 		return fmt.Errorf("failed to marshal tile @%d/%d.%d: %v", l, idx, cpP, err)

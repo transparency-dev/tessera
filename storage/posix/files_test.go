@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -759,6 +760,27 @@ func TestMirrorWriter_IntegrateBundles(t *testing.T) {
 	}
 }
 
+func TestMaxLevel(t *testing.T) {
+	for _, tc := range []struct {
+		size uint64
+		want int
+	}{
+		{0, 0},
+		{1, 0},
+		{256, 1},
+		{257, 1},
+		{32769, 1},
+		{65535, 1},
+		{65536, 2},
+	} {
+		t.Run(fmt.Sprintf("size_%d", tc.size), func(t *testing.T) {
+			if got := maxLevel(tc.size); got != tc.want {
+				t.Fatalf("maxLevel(%d): got %d, want %d", tc.size, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMirrorWriter_UpdateCheckpointGeometry(t *testing.T) {
 	ctx := t.Context()
 	s := &Storage{
@@ -794,8 +816,8 @@ func TestMirrorWriter_UpdateCheckpointGeometry(t *testing.T) {
 	// Integrate to size 600.
 	// Tiles layout should then be:
 	// Level 1: [2]
-	// Level 0: [256] [256] [44]
-	// Entries: [256] [256] [44]
+	// Level 0: [256] [256] [88]
+	// Entries: [256] [256] [88]
 	size, _, err := mw.IntegrateBundles(ctx, 0, bundlesIter)
 	if err != nil {
 		t.Fatalf("IntegrateBundles: %v", err)
@@ -804,41 +826,48 @@ func TestMirrorWriter_UpdateCheckpointGeometry(t *testing.T) {
 		t.Fatalf("expected integrated size 600, got %d", size)
 	}
 
-	// Update the checkpoint to size 300.
-	h := make([]byte, 32)
-	cpStr := fmt.Sprintf("origin\n300\n%s\nsig\n", base64.StdEncoding.EncodeToString(h))
+	for _, test := range []struct {
+		size        uint64
+		wantRHSizes []int
+	}{
+		{0, []int{}},
+		{1, []int{1}},
+		{129, []int{129}},
+		{256, []int{256, 1}},
+		{300, []int{44, 2}},
+		{600, []int{88, 2}},
+	} {
+		t.Run(fmt.Sprintf("size_%d", test.size), func(t *testing.T) {
+			h := make([]byte, 32)
+			cpStr1 := fmt.Sprintf("origin\n%d\n%s\nsig\n", test.size, base64.StdEncoding.EncodeToString(h))
+			if err := mw.UpdateCheckpoint(ctx, func(old []byte) ([]byte, error) {
+				return []byte(cpStr1), nil
+			}); err != nil {
+				t.Fatalf("UpdateCheckpoint (size %d): %v", test.size, err)
+			}
 
-	// With a checkpoint size of 300, the implied geometry is:
-	// Level 1: [1]
-	// Level 0: [256] [44]
-	// Entries: [256] [44]
-	if err := mw.UpdateCheckpoint(ctx, func(old []byte) ([]byte, error) {
-		return []byte(cpStr), nil
-	}); err != nil {
-		t.Fatalf("UpdateCheckpoint: %v", err)
-	}
+			if test.size == 0 {
+				return
+			}
 
-	// Verify that the partial entry bundle of size 44 (300-256) at tile index 1 exists and has correct contents (entries 256 to 299).
-	eb := mustReadEntryBundle(t, lr, 1, 44)
-	if l := len(eb.Entries); l != 44 {
-		t.Fatalf("expected 44 entries in partial bundle, got %d", l)
-	}
-	for i := range 44 {
-		if !bytes.Equal(eb.Entries[i], entries[256+i]) {
-			t.Errorf("entry %d: expected %q, got %q", i, string(entries[256+i]), string(eb.Entries[i]))
-		}
-	}
-
-	// Verify that the partial tile of size 44 at Level 0, index 1 exists.
-	tile := mustReadTile(t, lr, 0, 1, 44)
-	if len(tile.Nodes) != 44 {
-		t.Fatalf("expected 44 nodes in partial tile, got %d", len(tile.Nodes))
-	}
-
-	// Verify that the partial tile of size 1 at Level 1, index 0 exists.
-	level1Tile := mustReadTile(t, lr, 1, 0, 1)
-	if len(level1Tile.Nodes) != 1 {
-		t.Fatalf("expected 1 node in partial Level 1 tile, got %d", len(level1Tile.Nodes))
+			idx := (test.size - 1) / layout.EntryBundleWidth
+			p := uint8(test.wantRHSizes[0])
+			eb := mustReadEntryBundle(t, lr, idx, p)
+			if l := len(eb.Entries); l != test.wantRHSizes[0] {
+				t.Fatalf("expected %d entries in partial bundle %d.%d, got %d", test.wantRHSizes[0], idx, p, l)
+			}
+			if got, want := eb.Entries, bundles[idx].Entries[:test.wantRHSizes[0]]; !slices.EqualFunc(got, want, bytes.Equal) {
+				t.Errorf("entrybundle doesn't match:\ngot %v\nwant %v", got, want)
+			}
+			// Verify the existence/correctness of the partial tiles for the given size.
+			for level, p := range test.wantRHSizes {
+				tile := mustReadTile(t, lr, uint64(level), idx, uint8(p))
+				if len(tile.Nodes) != p {
+					t.Errorf("expected %d nodes in partial tile %d/%d.%d, got %d", p, level, idx, p, len(tile.Nodes))
+				}
+				idx >>= layout.TileHeight
+			}
+		})
 	}
 }
 
