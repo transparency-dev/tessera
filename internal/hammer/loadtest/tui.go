@@ -17,7 +17,6 @@ package loadtest
 import (
 	"context"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -69,6 +68,9 @@ func NewController(h *Hammer, a *HammerAnalyser) *tuiController {
 }
 
 func (c *tuiController) Run(ctx context.Context) {
+	// Redirect logs to the view.
+	slog.SetDefault(slog.New(slog.NewTextHandler(c.logView, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
 	go c.updateStatsLoop(ctx, 500*time.Millisecond)
 
 	c.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
@@ -143,9 +145,4 @@ func (c *tuiController) updateStatsLoop(ctx context.Context, interval time.Durat
 			c.app.Draw()
 		}
 	}
-}
-
-// LogWriter returns a writer that writes to the log TextView.
-func (c *tuiController) LogWriter() io.Writer {
-	return c.logView
 }

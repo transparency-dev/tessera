@@ -189,7 +189,6 @@ func main() {
 
 	if *showUI {
 		c := loadtest.NewController(hammer, ha)
-		slog.SetDefault(slog.New(slog.NewTextHandler(c.LogWriter(), &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 		c.Run(ctx)
 	} else {
 		<-ctx.Done()
