@@ -17,11 +17,13 @@ package posix
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -756,4 +758,141 @@ func TestMirrorWriter_IntegrateBundles(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMaxLevel(t *testing.T) {
+	for _, tc := range []struct {
+		size uint64
+		want int
+	}{
+		{0, 0},
+		{1, 0},
+		{256, 1},
+		{257, 1},
+		{32769, 1},
+		{65535, 1},
+		{65536, 2},
+	} {
+		t.Run(fmt.Sprintf("size_%d", tc.size), func(t *testing.T) {
+			if got := maxLevel(tc.size); got != tc.want {
+				t.Fatalf("maxLevel(%d): got %d, want %d", tc.size, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMirrorWriter_UpdateCheckpointGeometry(t *testing.T) {
+	ctx := t.Context()
+	s := &Storage{
+		cfg: Config{
+			Path: t.TempDir(),
+		},
+	}
+	opts := tessera.NewMirrorOptions()
+	mw, lr, err := s.MirrorWriter(ctx, opts)
+	if err != nil {
+		t.Fatalf("MirrorWriter: %v", err)
+	}
+
+	// Create 600 entries to span multiple tile levels.
+	entries := make([][]byte, 600)
+	for i := range 600 {
+		entries[i] = fmt.Appendf(nil, "entry %d", i)
+	}
+
+	bundles := []*api.EntryBundle{
+		{Entries: entries[0:256]},
+		{Entries: entries[256:512]},
+		{Entries: entries[512:600]},
+	}
+	bundlesIter := func(yield func(*api.EntryBundle, error) bool) {
+		for _, b := range bundles {
+			if !yield(b, nil) {
+				return
+			}
+		}
+	}
+
+	// Integrate to size 600.
+	// Tiles layout should then be:
+	// Level 1: [2]
+	// Level 0: [256] [256] [88]
+	// Entries: [256] [256] [88]
+	size, _, err := mw.IntegrateBundles(ctx, 0, bundlesIter)
+	if err != nil {
+		t.Fatalf("IntegrateBundles: %v", err)
+	}
+	if size != 600 {
+		t.Fatalf("expected integrated size 600, got %d", size)
+	}
+
+	for _, test := range []struct {
+		size        uint64
+		wantRHSizes []int
+	}{
+		{0, []int{}},
+		{1, []int{1}},
+		{129, []int{129}},
+		{256, []int{256, 1}},
+		{300, []int{44, 2}},
+		{600, []int{88, 2}},
+	} {
+		t.Run(fmt.Sprintf("size_%d", test.size), func(t *testing.T) {
+			h := make([]byte, 32)
+			cpStr1 := fmt.Sprintf("origin\n%d\n%s\nsig\n", test.size, base64.StdEncoding.EncodeToString(h))
+			if err := mw.UpdateCheckpoint(ctx, func(old []byte) ([]byte, error) {
+				return []byte(cpStr1), nil
+			}); err != nil {
+				t.Fatalf("UpdateCheckpoint (size %d): %v", test.size, err)
+			}
+
+			if test.size == 0 {
+				return
+			}
+
+			idx := (test.size - 1) / layout.EntryBundleWidth
+			p := uint8(test.wantRHSizes[0])
+			eb := mustReadEntryBundle(t, lr, idx, p)
+			if l := len(eb.Entries); l != test.wantRHSizes[0] {
+				t.Fatalf("expected %d entries in partial bundle %d.%d, got %d", test.wantRHSizes[0], idx, p, l)
+			}
+			if got, want := eb.Entries, bundles[idx].Entries[:test.wantRHSizes[0]]; !slices.EqualFunc(got, want, bytes.Equal) {
+				t.Errorf("entrybundle doesn't match:\ngot %v\nwant %v", got, want)
+			}
+			// Verify the existence/correctness of the partial tiles for the given size.
+			for level, p := range test.wantRHSizes {
+				tile := mustReadTile(t, lr, uint64(level), idx, uint8(p))
+				if len(tile.Nodes) != p {
+					t.Errorf("expected %d nodes in partial tile %d/%d.%d, got %d", p, level, idx, p, len(tile.Nodes))
+				}
+				idx >>= layout.TileHeight
+			}
+		})
+	}
+}
+
+func mustReadTile(t *testing.T, lr tessera.LogReader, level, idx uint64, p uint8) *api.HashTile {
+	t.Helper()
+	d, err := lr.ReadTile(t.Context(), level, idx, p)
+	if err != nil {
+		t.Fatalf("failed to read tile: %v", err)
+	}
+	tile := &api.HashTile{}
+	if err := tile.UnmarshalText(d); err != nil {
+		t.Fatalf("failed to unmarshal tile: %v", err)
+	}
+	return tile
+}
+
+func mustReadEntryBundle(t *testing.T, lr tessera.LogReader, idx uint64, p uint8) *api.EntryBundle {
+	t.Helper()
+	d, err := lr.ReadEntryBundle(t.Context(), idx, p)
+	if err != nil {
+		t.Fatalf("failed to read entry bundle: %v", err)
+	}
+	eb := &api.EntryBundle{}
+	if err := eb.UnmarshalText(d); err != nil {
+		t.Fatalf("failed to unmarshal entry bundle: %v", err)
+	}
+	return eb
 }

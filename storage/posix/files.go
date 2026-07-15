@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io/fs"
 	"iter"
+	"math/bits"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -533,6 +534,17 @@ func (lrs *logResourceStorage) writeBundleIdempotent(ctx context.Context, index 
 	return otel.TraceErr(ctx, "tessera.storage.posix.writeBundleIdempotent", tracer, func(ctx context.Context, span trace.Span) error {
 		bf := lrs.entriesPath(index, partial)
 		if err := lrs.s.createIdempotent(bf, bundle); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+// writeTileIdempotent takes care of writing out the serialised tile file if it doesn't already exist.
+func (lrs *logResourceStorage) writeTileIdempotent(ctx context.Context, level uint64, index uint64, partial uint8, tile []byte) error {
+	return otel.TraceErr(ctx, "tessera.storage.posix.writeTileIdempotent", tracer, func(ctx context.Context, span trace.Span) error {
+		tPath := layout.TilePath(level, index, partial)
+		if err := lrs.s.createIdempotent(tPath, tile); err != nil {
 			return err
 		}
 		return nil
@@ -1201,7 +1213,7 @@ func (m *MirrorWriter) initialise(ctx context.Context) error {
 	return nil
 }
 
-// marshalTlogEntryBundle returns a tlog-tiles compatible serialization of the provided entrybundle.
+// marshalTlogEntryBundle returns a tlog-tiles compatible serialization of the provided entry bundle.
 func marshalTlogEntryBundle(b *api.EntryBundle) ([]byte, error) {
 	// Prealloc the max size we could possibly write out (about 16MB for a full bundle of max size entries).
 	// If this causes problems we may want to default this to some lower
@@ -1351,5 +1363,151 @@ func (m *MirrorWriter) UpdateCheckpoint(ctx context.Context, fn func(old []byte)
 		return fmt.Errorf("update function returned error: %w", err)
 	}
 
+	_, newSize, _, err := parse.CheckpointUnsafe(newCP)
+	if err != nil {
+		return fmt.Errorf("failed to parse checkpoint: %v", err)
+	}
+
+	treeSize, err := m.IntegratedSize(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get integrated size: %v", err)
+	}
+	if err := m.ensureGeometry(ctx, newSize, treeSize); err != nil {
+		return err
+	}
+
 	return m.s.createOverwrite(layout.CheckpointPath, newCP)
+}
+
+// ensureGeometry checks that the partial tiles and entry bundles implied by the new size are
+// present in the stored resources.
+//
+// If an implied partial resource is not already present, this function will attempt to create
+// it from a strictly larger resource whose presence is implied by treeSize.
+func (m *MirrorWriter) ensureGeometry(ctx context.Context, cpSize, treeSize uint64) error {
+	if cpSize == 0 {
+		return nil
+	}
+	if cpSize > treeSize {
+		return fmt.Errorf("new size %d is greater than integrated size %d", cpSize, treeSize)
+	}
+	ml := maxLevel(cpSize)
+	idx := (cpSize - 1) >> layout.TileHeight
+	for l := uint64(0); l <= uint64(ml); l, idx = l+1, idx>>layout.TileHeight {
+		treeP := layout.PartialTileSize(l, idx, treeSize)
+		cpP := layout.PartialTileSize(l, idx, cpSize)
+		if l == 0 {
+			if err := m.ensurePartialBundle(ctx, idx, cpP, treeP); err != nil {
+				return err
+			}
+		}
+		if err := m.ensurePartialTile(ctx, l, idx, cpP, treeP); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// maxLevel returns the maximum tile level for a tree of the given size.
+func maxLevel(sz uint64) int {
+	if sz == 0 {
+		return 0
+	}
+	return (bits.Len64(sz) - 1) / layout.TileHeight
+}
+
+// ensurePartialBundle ensures that the partial entry bundle implied by the new size is
+// present in the stored resources.
+//
+// If the implied partial entry bundle is not already present, this function will attempt to create
+// it from the entry bundle implied by treeSize.
+func (m *MirrorWriter) ensurePartialBundle(ctx context.Context, idx uint64, cpP, treeP uint8) error {
+	if cpP == treeP {
+		return nil
+	}
+
+	// Check if the entry bundle already exists.
+	_, err := m.s.stat(m.logStorage.entriesPath(idx, cpP))
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		// Need to do the work.
+	case err != nil:
+		return fmt.Errorf("failed to stat entry bundle @%d.%d: %v", idx, cpP, err)
+	default:
+		// Already exists, we're done!
+		return nil
+	}
+
+	// Read bundle implied by the tree size...
+	d, err := m.logStorage.ReadEntryBundle(ctx, idx, treeP)
+	if err != nil {
+		return fmt.Errorf("failed to read entry bundle @%d.%d: %v", idx, treeP, err)
+	}
+	eb := &api.EntryBundle{}
+	if err := eb.UnmarshalText(d); err != nil {
+		return fmt.Errorf("failed to unmarshal entry bundle @%d.%d: %v", idx, treeP, err)
+	}
+
+	// Then trim it down to the size implied by the checkpoint, and write it out.
+	// Handle cpP == 0 where a full-bundle is implied - we should never actually hit this case since cpP must
+	// equal treeP in this case, but it doesn't hurt to be defensive.
+	if cpP > 0 {
+		eb.Entries = eb.Entries[:cpP]
+	}
+	d, err = marshalTlogEntryBundle(eb)
+	if err != nil {
+		return fmt.Errorf("failed to marshal entry bundle @%d.%d: %v", idx, cpP, err)
+	}
+	if err := m.logStorage.writeBundleIdempotent(ctx, idx, cpP, d); err != nil {
+		return fmt.Errorf("failed to write entry bundle @%d.%d: %v", idx, cpP, err)
+	}
+	return nil
+}
+
+// ensurePartialTile ensures that the partial tile implied by the new size is
+// present in the stored resources.
+//
+// If the implied partial tile is not already present, this function will attempt to create
+// it from the tile implied by treeSize.
+func (m *MirrorWriter) ensurePartialTile(ctx context.Context, l uint64, idx uint64, cpP, treeP uint8) error {
+	if cpP == treeP {
+		return nil
+	}
+
+	// Check if the tile already exists.
+	_, err := m.s.stat(layout.TilePath(l, idx, cpP))
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		// Need to do the work.
+	case err != nil:
+		return fmt.Errorf("failed to stat tile @%d/%d.%d: %v", l, idx, cpP, err)
+	default:
+		// Already exists, we're done!
+		return nil
+	}
+
+	// Read tile implied by the tree size...
+	d, err := m.logStorage.ReadTile(ctx, l, idx, treeP)
+	if err != nil {
+		return fmt.Errorf("failed to read tile @%d/%d.%d: %v", l, idx, treeP, err)
+	}
+	t := &api.HashTile{}
+	if err := t.UnmarshalText(d); err != nil {
+		return fmt.Errorf("failed to unmarshal tile @%d/%d.%d: %v", l, idx, treeP, err)
+	}
+
+	// Then trim it down to the size implied by the checkpoint, and write it out.
+	// Handle cpP == 0 where a full-tile is implied - we should never actually hit this case since cpP must
+	// equal treeP in this case, but it doesn't hurt to be defensive.
+	if cpP > 0 {
+		t.Nodes = t.Nodes[:cpP]
+	}
+	d, err = t.MarshalText()
+	if err != nil {
+		return fmt.Errorf("failed to marshal tile @%d/%d.%d: %v", l, idx, cpP, err)
+	}
+	if err := m.logStorage.writeTileIdempotent(ctx, l, idx, cpP, d); err != nil {
+		return fmt.Errorf("failed to write tile @%d/%d.%d: %v", l, idx, cpP, err)
+	}
+	return nil
 }
