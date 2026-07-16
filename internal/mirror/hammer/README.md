@@ -42,8 +42,8 @@ Example usage to test a deployment of [`cmd/mtc/mirror/posix`](/cmd/mtc/mirror/p
 ```shell
 go run ./internal/mirror/hammer \
   --mirror_url=http://localhost:8080 \
-  --storage_dir=/tmp/hammer-log \
-  --log_private_key=/tmp/hammer-log.key \
+  --local_log_storage_dir=/tmp/hammer-log \
+  --local_log_private_key=/tmp/hammer-log.key \
   --num_writers=256 \
   --max_write_ops=42
 ```
@@ -55,8 +55,8 @@ If the timeout of 1 minute is reached first, then it exits with an exit code of 
 ```shell
 go run ./internal/mirror/hammer \
   --mirror_url=http://localhost:8080 \
-  --storage_dir=/tmp/hammer-log \
-  --log_private_key=/tmp/hammer-log.key \
+  --local_log_storage_dir=/tmp/hammer-log \
+  --local_log_private_key=/tmp/hammer-log.key \
   --num_writers=512 \
   --max_write_ops=512 \
   --max_runtime=1m \
@@ -76,6 +76,6 @@ Then start the hammer in replication mode, e.g.:
 go run ./internal/mirror/hammer \
   --mirror_url=http://localhost:8080 \
   --source_log_url=https://example.com/source-log \
-  --source_log_pubkey_path=/tmp/source-log.pub \
+  --source_log_public_key=/tmp/source-log.pub \
   --show_ui=false
 ```

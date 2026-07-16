@@ -49,10 +49,11 @@ func init() {
 var (
 	mirrorURL multiStringFlag
 
-	storageDir = flag.String("storage_dir", "", "Root directory to store log data")
-	logPrivKey = flag.String("log_private_key", "", "Location of private key file")
-	sourceLogURL        = flag.String("source_log_url", "", "URL of the log to mirror, or empty if using a locally created log.")
-	sourceLogPubKeyPath = flag.String("source_log_public_key_path", "", "Path to the public key of the log to mirror. Required if --source_log_url is set.")
+	sourceLogURL    = flag.String("source_log_url", "", "URL of the log to mirror, or empty if using a locally created log.")
+	sourceLogPubKey = flag.String("source_log_public_key", "", "Path to the public key of the log to mirror. Required if --source_log_url is set.")
+
+	localLogStorageDir = flag.String("local_log_storage_dir", "", "Root directory to store the locally created source log. Only relevant if --source_log_url is not set.")
+	localLogPrivKey    = flag.String("local_log_private_key", "", "Path to the private key of the local log created as a source for mirroring. Required if --source_log_url is not set.")
 
 	maxWriteOpsPerSecond = flag.Int("max_write_ops", 0, "The maximum number of write operations per second")
 	numWriters           = flag.Int("num_writers", 0, "The number of independent write tasks to run")
@@ -273,12 +274,12 @@ func getSignerOrDie(ctx context.Context) note.Signer {
 	var privKey string
 	var err error
 
-	if len(*logPrivKey) == 0 {
-		slog.ErrorContext(ctx, "Supply log private key file path using --log_private_key")
+	if len(*localLogPrivKey) == 0 {
+		slog.ErrorContext(ctx, "Supply local log private key file path using --local_log_private_key")
 		os.Exit(1)
 	}
 
-	privKey, err = getKeyFile(*logPrivKey)
+	privKey, err = getKeyFile(*localLogPrivKey)
 	if err != nil {
 		slog.ErrorContext(ctx, "Unable to get private key", slog.Any("error", err))
 		os.Exit(1)
@@ -330,11 +331,11 @@ func runMirrorSync(ctx context.Context, tracker *client.LogStateTracker, mClient
 
 func logFromFlags(ctx context.Context) (*tessera.Appender, logReader, func(context.Context) error, sdbNote.Verifier) {
 	if *sourceLogURL != "" {
-		if *sourceLogPubKeyPath == "" {
+		if *sourceLogPubKey == "" {
 			slog.ErrorContext(ctx, "Source log URL provided but no public key path.")
 			os.Exit(1)
 		}
-		lr, shutdown, v, err := newRemoteLog(ctx, *sourceLogURL, *sourceLogPubKeyPath)
+		lr, shutdown, v, err := newRemoteLog(ctx, *sourceLogURL, *sourceLogPubKey)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to create remote log", slog.Any("error", err))
 			os.Exit(1)
@@ -342,11 +343,11 @@ func logFromFlags(ctx context.Context) (*tessera.Appender, logReader, func(conte
 		return nil, lr, shutdown, v
 	}
 
-	if *storageDir == "" {
-		slog.ErrorContext(ctx, "No storage directory provided.")
+	if *localLogStorageDir == "" {
+		slog.ErrorContext(ctx, "No local log storage directory provided. Either provide --local_log_storage_dir or --source_log_url.")
 		os.Exit(1)
 	}
-	app, lr, shutdown, v, err := newLocalLog(ctx, *storageDir, getSignerOrDie(ctx))
+	app, lr, shutdown, v, err := newLocalLog(ctx, *localLogStorageDir, getSignerOrDie(ctx))
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create local log", slog.Any("error", err))
 		os.Exit(1)
@@ -398,8 +399,10 @@ func newRemoteLog(_ context.Context, logURL string, pubKeyPath string) (logReade
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to create HTTP fetcher: %v", err)
 		}
+	case "file":
+		lr = client.FileFetcher{Root: u.Path}
 	default:
-		lr = client.FileFetcher{Root: logURL}
+		return nil, nil, nil, fmt.Errorf("unsupported log URL scheme: %s", u.Scheme)
 	}
 
 	return lr, func(context.Context) error { return nil }, pubKey, nil
