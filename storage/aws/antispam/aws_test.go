@@ -27,6 +27,7 @@ import (
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/testonly"
 	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 var (
