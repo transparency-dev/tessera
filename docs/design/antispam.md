@@ -25,6 +25,14 @@ expensive, and have a profound impact on log performance.
 
 If your transparency application needs such properties you will need to handle this in the personality.
 
+## Comparison with Trillian's LeafIdentityHash
+
+Trillian operators may be familiar with the `LeafIdentityHash` mechanism, which Trillian uses to detect and reject duplicate leaves during queueing.
+
+Trillian provided stronger guarantees to prevent duplicates from entering the queue by using a database-level unique constraint on the leaf identity hash. This constraint requires synchronous database lookups and writes during the critical path of submission, which reduced the write throughput and increased the cost of operation.
+
+Tessera antispam relaxes these guarantees; it is possible for duplicates to be integrated if they are submitted in close succession to different frontend instances. This keeps the write path fast and cheap.
+
 ## Overview
 
 The anti-spam support is optional, and needs to be explicitly provisioned in the infrastructure and enabled
@@ -126,9 +134,23 @@ anti-spam index will perform better than, e.g., attempting to update the index d
 `SetEntryBundle()`. This is borne out by experimental evidence; early tests on GCP show that this approach delivers twice the
 throughput (tested with 10% dupe traffic) compared with the "competing batched updates" approach briefly described above.
 
-## Tuning
+## Operational Considerations
 
-### In-memory cache size
+### Operator Recommendations
+
+When deploying Tessera with antispam enabled, operators should consider:
+
+*   **Cache vs. Lag**: Ensure the in-memory cache capacity (`WithAntispam`) is sized to cover the expected integration latency.
+*   **Pushback Configuration**: Configure the pushback threshold to protect the database from being overwhelmed if the antispam follower lags. A threshold that is too low may cause unnecessary errors for clients, while too high may render the persistent antispam ineffective.
+*   **Monitoring**: Operators should monitor:
+    *   `ErrPushback` rate: High rates indicate the follower cannot keep up with the write rate.
+    *   Follower lag: Metric showing how far behind the integration point the antispam follower is.
+    *   Cache hit rate: High hit rate indicates the in-memory cache is effective.
+*   **Upstream Enforcement**: If strict uniqueness (like Trillian's `LeafIdentityHash`) is required, this must be enforced upstream before writing leaves to Tessera.
+
+### Tuning
+
+#### In-memory cache size
 
 Ideally, the in-memory anti-spam decorator should have a sufficiently large cache to cover the window before newly added entries are
 seen by the follower and added to the persistent anti-spam storage. Fortunately, anti-spam index entries are `32+8` bytes plus overhead,
@@ -137,7 +159,7 @@ so having even a very large cache depth of 100's of 1000's of entries is not exp
 The `tessera.WithAntispam` option allows the capacity of the in-memory cache to be configured, and internally ensures that the in-memory
 cache and persistent anti-spam index are applied in the correct order.
 
-### Persistent index
+#### Persistent index
 
 Applications should configure the push-back threshold according to their expected throughput &
 log performance numbers. A reasonable starting point is probably a few seconds' worth of the peak expected log 
