@@ -31,7 +31,7 @@ Trillian operators may be familiar with the `LeafIdentityHash` mechanism, which 
 
 Trillian provided stronger guarantees to prevent duplicates from entering the queue by using a database-level unique constraint on the leaf identity hash. This constraint requires synchronous database lookups and writes during the critical path of submission, which reduced the write throughput and increased the cost of operation.
 
-Tessera antispam relaxes these guarantees; it is possible for duplicates to be integrated if they are submitted in close succession to different frontend instances. This keeps the write path fast and cheap.
+Tessera antispam relaxes these guarantees; it is possible for duplicates to be integrated if they are submitted in close succession to different frontend instances. However, in return, this enables the write path to be cheaper and much more scalable while still providing a defense against unbounded additions from a malicious source.
 
 ## Overview
 
