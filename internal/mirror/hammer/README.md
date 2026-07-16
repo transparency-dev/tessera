@@ -3,12 +3,12 @@
 This hammer sets up write traffic to a mirror to test correctness and performance under load.
 The write traffic is sent according to the [tlog-mirror](https://c2sp.org/tlog-mirror) spec, and thus could be used to load test any tlog-mirror server.
 
-The target log must support `POST` requests to both `/add-checkpoint` and `add-entries` paths.
+The target mirror server must support `POST` requests to both `/add-checkpoint` and `/add-entries` paths.
 
 ## UI
 
 The hammer runs using a text-based UI in the terminal that shows the current status, logs, and supports increasing/decreasing read and write traffic.
-The process can be killed with `<Ctrl-C>`.
+The process can be killed with <kbd>Ctrl</kbd>+<kbd>C</kbd>.
 This TUI allows for a level of interactivity when probing a new configuration of a log in order to find any cliffs where performance degrades.
 
 For real load-testing applications, especially headless runs as part of a CI pipeline, it is recommended to run the tool with `show_ui=false` in order to disable the UI.
@@ -27,7 +27,7 @@ go run github.com/transparency-dev/witness/cmd/generate_keys@latest \
 
 Then, add the hammer log public key to the mirror server's configuration.
 
-Example usage to test a deployment of `cmd/mtc/mirror/posix` server:
+Example usage to test a deployment of [`cmd/mtc/mirror/posix`](/cmd/mtc/mirror/posix) server:
 
 ```shell
 go run ./internal/mirror/hammer \
