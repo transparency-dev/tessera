@@ -15,9 +15,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -28,7 +28,6 @@ import (
 
 	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
-	"github.com/transparency-dev/tessera/cmd/mtc/mirror/internal/config"
 	"github.com/transparency-dev/tessera/cmd/mtc/mirror/internal/handler"
 	"github.com/transparency-dev/tessera/storage/posix"
 	witnessConfig "github.com/transparency-dev/witness/config"
@@ -70,14 +69,9 @@ func main() {
 
 	mux := handler.NewMirrorMux()
 	cfg := mirrorConfigFromFlags(ctx)
-	for _, l := range cfg.Logs {
-		v, err := fnote.NewVerifier(l.VKey)
-		if err != nil {
-			slog.ErrorContext(ctx, "Failed to create verifier", slog.String("vkey", l.VKey), slog.Any("error", err))
-			os.Exit(1)
-		}
-
-		origin := v.Name()
+	for _, l := range cfg {
+		origin := l.Origin
+		v := l.Verifier
 
 		// Create the mirror
 		t, err := newMirrorTarget(ctx, w, v, mirrorCosigner)
@@ -91,9 +85,7 @@ func main() {
 		}
 
 		// Ensure log is known by the witness
-		if err := wp.AddLogs(ctx, []witnessConfig.Log{
-			{Origin: origin, VKey: l.VKey},
-		}); err != nil {
+		if err := wp.AddLogs(ctx, []witnessConfig.Log{l}); err != nil {
 			slog.ErrorContext(ctx, "Failed to add target log to witness", slog.String("origin", origin), slog.Any("error", err))
 			os.Exit(1)
 		}
@@ -134,7 +126,7 @@ func newMirrorTarget(ctx context.Context, w *witness.Witness, logVerifier note.V
 
 // mirrorConfigFromFlags returns a mirror configuration loaded from the provided flags.
 // Exits if the mirror configuration could not be loaded.
-func mirrorConfigFromFlags(ctx context.Context) config.Config {
+func mirrorConfigFromFlags(ctx context.Context) []witnessConfig.Log {
 	if *mirrorConfigPath == "" {
 		slog.ErrorContext(ctx, "Mirror config path not specified")
 		os.Exit(1)
@@ -144,9 +136,9 @@ func mirrorConfigFromFlags(ctx context.Context) config.Config {
 		slog.ErrorContext(ctx, "Failed to read mirror config file", slog.String("path", *mirrorConfigPath), slog.Any("error", err))
 		os.Exit(1)
 	}
-	var cfg config.Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		slog.ErrorContext(ctx, "Failed to unmarshal mirror config", slog.Any("error", err))
+	cfg, err := witnessConfig.ParsePublicWitnessConfig(bytes.NewReader(data))
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to parse mirror config", slog.Any("error", err))
 		os.Exit(1)
 	}
 	return cfg
