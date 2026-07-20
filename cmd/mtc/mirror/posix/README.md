@@ -80,10 +80,9 @@ go run github.com/transparency-dev/witness/cmd/generate_keys@main \
 > Ensure that these keys are stored somewhere safe, and not in a location which could accidentally be made
 > public when exporting the mirrored log data!
 
-### Configure log access
-
-Currently, deciding which logs are permitted to be pushed to the mirror is done with a simple JSON config file.
-An example file is provided as [`example_config.json`](./example_config.json).
+The set of logs which are permitted to be pushed to the mirror is defined by a configuration
+file which uses the same format as the public witness network configuration file. An example is provided in the
+[`example_config`](./example_config) file.
 
 Edit this or create your own with appropriate entries. Then, place the config file in a suitable location.
 
@@ -95,6 +94,6 @@ An example command for starting the server is given below:
 go run ./cmd/mtc/mirror/posix \
   --storage_dir="/tmp/mirrorroot" \
   --mirror_cosigner_path=./mirror.sec \
-  --config_path=cmd/mtc/mirror/posix/example_config.json \
+  --config_path=cmd/mtc/mirror/posix/example_config \
   --slog_level=-9
 ```
