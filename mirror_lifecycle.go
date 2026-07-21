@@ -73,7 +73,7 @@ func NewMirrorOptions() *MirrorOptions {
 }
 
 // WithOrigin allows the source log's origin to be specified.
-// If unsed, the name of the log verifier will be used.
+// If unset, the name of the log verifier will be used.
 func (o *MirrorOptions) WithOrigin(origin string) *MirrorOptions {
 	o.origin = origin
 	return o

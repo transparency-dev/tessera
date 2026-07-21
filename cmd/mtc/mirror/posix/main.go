@@ -151,6 +151,7 @@ func mirrorConfigFromFlags(ctx context.Context) []witnessConfig.Log {
 		}
 		if _, seen := seenOrigins[o]; seen {
 			slog.ErrorContext(ctx, "Duplicate origin in mirror config", slog.String("origin", o))
+			os.Exit(1)
 		}
 		seenOrigins[o]=struct{}{}
 	}
