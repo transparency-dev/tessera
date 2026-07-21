@@ -97,6 +97,7 @@ var (
 
 func TestTicketRoundTrip(t *testing.T) {
 	mt := &MirrorTarget{
+		origin:      testPendingCPOrigin,
 		logVerifier: testLogVerifier,
 		cpSource: func(ctx context.Context) ([]byte, error) {
 			return testPendingCP, nil
@@ -133,6 +134,7 @@ func TestTicketRoundTrip(t *testing.T) {
 func TestCreateNewTicket(t *testing.T) {
 	testPendingCPLessOne := mustSignCP(testPendingCPOrigin, testPendingCPSize-1, testPendingCPRoot, testLogSigner)
 	mt := &MirrorTarget{
+		origin:      testPendingCPOrigin,
 		logVerifier: testLogVerifier,
 		cpSource: func(ctx context.Context) ([]byte, error) {
 			return testPendingCPLessOne, nil
@@ -240,6 +242,7 @@ func TestMirrorTarget_AddEntries_NoTicket(t *testing.T) {
 	)
 	ctx := context.Background()
 	mt := &MirrorTarget{
+		origin:      testPendingCPOrigin,
 		logVerifier: testLogVerifier,
 		signer:      testMirrorSigner,
 		writer: &fakeMirrorWriter{
@@ -283,6 +286,7 @@ func TestMirrorTarget_AddEntries_CompleteUpload(t *testing.T) {
 	ctx := context.Background()
 	var gotUpdatedCP []byte
 	mt := &MirrorTarget{
+		origin:      testPendingCPOrigin,
 		logVerifier: testLogVerifier,
 		signer:      testMirrorSigner,
 		writer: &fakeMirrorWriter{
@@ -334,6 +338,7 @@ func TestMirrorTarget_AddEntries_ZeroCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	var gotUpdatedCP []byte
 	mt := &MirrorTarget{
+		origin:      testPendingCPOrigin,
 		logVerifier: testLogVerifier,
 		signer:      testMirrorSigner,
 		writer: &fakeMirrorWriter{
@@ -457,6 +462,7 @@ func TestMirrorTarget_AddEntries_VerifySubtreeProof(t *testing.T) {
 			var gotRoot []byte
 
 			mt := &MirrorTarget{
+				origin:      testPendingCPOrigin,
 				logVerifier: testLogVerifier,
 				signer:      testMirrorSigner,
 				writer: &fakeMirrorWriter{
@@ -547,6 +553,7 @@ func TestMirrorTarget_AddEntries_Unaligned_PadsFirstBundle(t *testing.T) {
 	padBundleRaw := make([]byte, 2*padEntries)
 
 	mt := &MirrorTarget{
+		origin:      testPendingCPOrigin,
 		logVerifier: testLogVerifier,
 		signer:      testMirrorSigner,
 		writer: &fakeMirrorWriter{
@@ -609,6 +616,7 @@ func TestMirrorTarget_AddEntries_NoPendingCheckpoint(t *testing.T) {
 	ctx := t.Context()
 
 	mt := &MirrorTarget{
+		origin:      testPendingCPOrigin,
 		logVerifier: testLogVerifier,
 		signer:      testMirrorSigner,
 		writer: &fakeMirrorWriter{
@@ -667,6 +675,7 @@ func TestMirrorTarget_AddEntries_UploadStartConflicts(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mt := &MirrorTarget{
+				origin:      testPendingCPOrigin,
 				logVerifier: testLogVerifier,
 				signer:      testMirrorSigner,
 				writer: &fakeMirrorWriter{
@@ -707,4 +716,105 @@ func TestMirrorTarget_AddEntries_UploadStartConflicts(t *testing.T) {
 
 		})
 	}
+}
+
+func TestMirrorTarget_CustomOrigin(t *testing.T) {
+	_, verifier := mustGenerateKey("verifier-name")
+	signer, _ := mustGenerateKey("test-mirror")
+	ctx := t.Context()
+
+	for _, tc := range []struct {
+		name       string
+		origin     string
+		wantOrigin string
+	}{
+		{
+			name:       "defaults to verifier name",
+			origin:     "",
+			wantOrigin: verifier.Name(),
+		},
+		{
+			name:       "respects custom origin",
+			origin:     "custom-origin",
+			wantOrigin: "custom-origin",
+		},
+		{
+			name:       "respects same origin",
+			origin:     verifier.Name(),
+			wantOrigin: verifier.Name(),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := NewMirrorOptions().
+				WithLogVerifier(verifier).
+				WithSigner(signer).
+				WithCheckpointSource(func(ctx context.Context) ([]byte, error) {
+					return nil, nil
+				})
+			if tc.origin != "" {
+				opts = opts.WithOrigin(tc.origin)
+			}
+
+			mt, err := NewMirrorTarget(ctx, &fakeDriver{}, opts)
+			if err != nil {
+				t.Fatalf("NewMirrorTarget: %v", err)
+			}
+			if mt.origin != tc.wantOrigin {
+				t.Errorf("got origin %q, want %q", mt.origin, tc.wantOrigin)
+			}
+		})
+	}
+}
+
+func TestMirrorTarget_CustomOrigin_AddEntries(t *testing.T) {
+	const (
+		customOrigin = "custom-origin"
+		verifierName = "verifier-name"
+		testSize     = uint64(512)
+		testRoot     = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+	)
+
+	ctx := t.Context()
+
+	signer, verifier := mustGenerateKey(verifierName)
+	cpRaw := mustSignCP(customOrigin, testSize, testRoot, signer)
+
+	opts := NewMirrorOptions().
+		WithLogVerifier(verifier).
+		WithSigner(testMirrorSigner).
+		WithOrigin(customOrigin).
+		WithCheckpointSource(func(ctx context.Context) ([]byte, error) {
+			return cpRaw, nil
+		})
+
+	mt, err := NewMirrorTarget(ctx, &fakeDriver{}, opts)
+	if err != nil {
+		t.Fatalf("NewMirrorTarget failed: %v", err)
+	}
+
+	mt.writer = &fakeMirrorWriter{
+		sizeFunc: func(ctx context.Context) (uint64, error) { return testSize, nil },
+		updateCheckpointFunc: func(ctx context.Context, f func(oldCP []byte) (newCP []byte, err error)) error {
+			return nil
+		},
+	}
+	mt.reader = &fakeLogReader{
+		sizeFunc: func(ctx context.Context) (uint64, error) { return testSize, nil },
+	}
+
+	_, pendingSize, _, _, err := mt.AddEntries(ctx, 0, 0, nil, func() (*MirrorPackage, error) {
+		return nil, io.EOF
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("got error %v, want ErrConflict", err)
+	}
+	if pendingSize != testSize {
+		t.Errorf("expected pending size %d, got %d", testSize, pendingSize)
+	}
+}
+
+type fakeDriver struct{}
+
+func (f *fakeDriver) MirrorWriter(ctx context.Context, opts *MirrorOptions) (MirrorWriter, LogReader, error) {
+	return &fakeMirrorWriter{}, &fakeLogReader{}, nil
 }

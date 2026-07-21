@@ -105,6 +105,9 @@ func main() {
 // The target directory for the driver is derived from the storage directory and the origin in accordance
 // with the `tlog-mirror` spec, allowing the root of the storage directory to be exported directly to read-only clients.
 func newMirrorTarget(ctx context.Context, w *witness.Witness, origin string, logVerifier note.Verifier, mirrorSigner note.Signer) (*tessera.MirrorTarget, error) {
+	if origin == "" {
+		return nil, fmt.Errorf("origin cannot be empty")
+	}
 	targetDir := filepath.Join(*storageDir, mirrorsDir, fmt.Sprintf("%0x", sha256.Sum256([]byte(origin))))
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir %q: %v", targetDir, err)
@@ -139,6 +142,17 @@ func mirrorConfigFromFlags(ctx context.Context) []witnessConfig.Log {
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to parse mirror config", slog.Any("error", err))
 		os.Exit(1)
+	}
+	seenOrigins := make(map[string]struct{})
+	for _, c := range cfg {
+		o := c.Origin
+		if o == "" {
+			o = c.Verifier.Name()
+		}
+		if _, seen := seenOrigins[o]; seen {
+			slog.ErrorContext(ctx, "Duplicate origin in mirror config", slog.String("origin", o))
+		}
+		seenOrigins[o]=struct{}{}
 	}
 	return cfg
 }
