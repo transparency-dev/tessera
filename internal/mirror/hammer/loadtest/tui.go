@@ -25,21 +25,24 @@ import (
 	movingaverage "github.com/RobinUS2/golang-moving-average"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+	"github.com/transparency-dev/tessera/client"
 )
 
 type tuiController struct {
 	hammer     *Hammer
 	analyser   *HammerAnalyser
+	tracker    *client.LogStateTracker
 	app        *tview.Application
 	statusView *tview.TextView
 	logView    *tview.TextView
 	helpView   *tview.TextView
 }
 
-func NewController(h *Hammer, a *HammerAnalyser) *tuiController {
+func NewController(h *Hammer, a *HammerAnalyser, t *client.LogStateTracker) *tuiController {
 	c := tuiController{
 		hammer:   h,
 		analyser: a,
+		tracker:  t,
 		app:      tview.NewApplication(),
 	}
 	grid := tview.NewGrid()
@@ -74,29 +77,31 @@ func (c *tuiController) Run(ctx context.Context) {
 	go c.updateStatsLoop(ctx, 500*time.Millisecond)
 
 	c.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		switch event.Rune() {
-		case '+':
-			slog.InfoContext(ctx, "Increasing the read operations per second")
-			c.hammer.readThrottle.Increase()
-		case '-':
-			slog.InfoContext(ctx, "Decreasing the read operations per second")
-			c.hammer.readThrottle.Decrease()
-		case '>':
-			slog.InfoContext(ctx, "Increasing the write operations per second")
-			c.hammer.writeThrottle.Increase()
-		case '<':
-			slog.InfoContext(ctx, "Decreasing the write operations per second")
-			c.hammer.writeThrottle.Decrease()
-		case 'w':
-			slog.InfoContext(ctx, "Increasing the number of workers")
-			c.hammer.randomReaders.Grow(ctx)
-			c.hammer.fullReaders.Grow(ctx)
-			c.hammer.writers.Grow(ctx)
-		case 'W':
-			slog.InfoContext(ctx, "Decreasing the number of workers")
-			c.hammer.randomReaders.Shrink(ctx)
-			c.hammer.fullReaders.Shrink(ctx)
-			c.hammer.writers.Shrink(ctx)
+		if c.hammer != nil {
+			switch event.Rune() {
+			case '+':
+				slog.InfoContext(ctx, "Increasing the read operations per second")
+				c.hammer.readThrottle.Increase()
+			case '-':
+				slog.InfoContext(ctx, "Decreasing the read operations per second")
+				c.hammer.readThrottle.Decrease()
+			case '>':
+				slog.InfoContext(ctx, "Increasing the write operations per second")
+				c.hammer.writeThrottle.Increase()
+			case '<':
+				slog.InfoContext(ctx, "Decreasing the write operations per second")
+				c.hammer.writeThrottle.Decrease()
+			case 'w':
+				slog.InfoContext(ctx, "Increasing the number of workers")
+				c.hammer.randomReaders.Grow(ctx)
+				c.hammer.fullReaders.Grow(ctx)
+				c.hammer.writers.Grow(ctx)
+			case 'W':
+				slog.InfoContext(ctx, "Decreasing the number of workers")
+				c.hammer.randomReaders.Shrink(ctx)
+				c.hammer.fullReaders.Shrink(ctx)
+				c.hammer.writers.Shrink(ctx)
+			}
 		}
 		return event
 	})
@@ -114,7 +119,7 @@ func (c *tuiController) updateStatsLoop(ctx context.Context, interval time.Durat
 	}
 
 	ticker := time.NewTicker(interval)
-	lastSize := c.hammer.tracker.Latest().Size
+	lastSize := c.tracker.Latest().Size
 	maSlots := int((30 * time.Second) / interval)
 	growth := movingaverage.New(maSlots)
 	for {
@@ -122,24 +127,33 @@ func (c *tuiController) updateStatsLoop(ctx context.Context, interval time.Durat
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s := c.hammer.tracker.Latest().Size
+			s := c.tracker.Latest().Size
 			growth.Add(float64(s - lastSize))
 			lastSize = s
 			qps := growth.Avg() * float64(time.Second/interval)
-			readWorkersLine := fmt.Sprintf("Read (%d workers): %s",
-				c.hammer.fullReaders.Size()+c.hammer.randomReaders.Size(),
-				c.hammer.readThrottle.String())
-			writeWorkersLine := fmt.Sprintf("Write (%d workers): %s",
-				c.hammer.writers.Size(),
-				c.hammer.writeThrottle.String())
+
+			var numR, numW int
+			var rThrottle, wThrottle string
+			if c.hammer != nil {
+				numR = c.hammer.fullReaders.Size() + c.hammer.randomReaders.Size()
+				rThrottle = c.hammer.readThrottle.String()
+				numW = c.hammer.writers.Size()
+				wThrottle = c.hammer.writeThrottle.String()
+			}
+			readWorkersLine := fmt.Sprintf("Read (%d workers): %s", numR, rThrottle)
+			writeWorkersLine := fmt.Sprintf("Write (%d workers): %s", numW, wThrottle)
 			treeSizeLine := fmt.Sprintf("TreeSize: %d (Δ %.0fqps over %ds)",
 				s,
 				qps,
 				time.Duration(maSlots*int(interval))/time.Second)
-			queueLine := fmt.Sprintf("Time-in-queue: %s",
-				formatMovingAverage(c.analyser.QueueTime))
-			integrateLine := fmt.Sprintf("Observed-time-to-integrate: %s",
-				formatMovingAverage(c.analyser.IntegrationTime))
+
+			var qTime, iTime string
+			if c.analyser != nil {
+				qTime = formatMovingAverage(c.analyser.QueueTime)
+				iTime = formatMovingAverage(c.analyser.IntegrationTime)
+			}
+			queueLine := fmt.Sprintf("Time-in-queue: %s", qTime)
+			integrateLine := fmt.Sprintf("Observed-time-to-integrate: %s", iTime)
 			text := strings.Join([]string{readWorkersLine, writeWorkersLine, treeSizeLine, queueLine, integrateLine}, "\n")
 			c.statusView.SetText(text)
 			c.app.Draw()

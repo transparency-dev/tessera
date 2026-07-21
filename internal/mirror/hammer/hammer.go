@@ -37,6 +37,8 @@ import (
 	"github.com/transparency-dev/tessera/storage/posix"
 	"golang.org/x/net/http2"
 
+	sdbNote "golang.org/x/mod/sumdb/note"
+
 	"log/slog"
 )
 
@@ -47,8 +49,11 @@ func init() {
 var (
 	mirrorURL multiStringFlag
 
-	storageDir = flag.String("storage_dir", "", "Root directory to store log data")
-	logPrivKey = flag.String("log_private_key", "", "Location of private key file")
+	sourceLogURL    = flag.String("source_log_url", "", "URL of the log to mirror, or empty if using a locally created log.")
+	sourceLogPubKey = flag.String("source_log_public_key", "", "Path to the public key of the log to mirror. Required if --source_log_url is set.")
+
+	localLogStorageDir = flag.String("local_log_storage_dir", "", "Root directory to store the locally created source log. Only relevant if --source_log_url is not set.")
+	localLogPrivKey    = flag.String("local_log_private_key", "", "Path to the private key of the local log created as a source for mirroring. Required if --source_log_url is not set.")
 
 	maxWriteOpsPerSecond = flag.Int("max_write_ops", 0, "The maximum number of write operations per second")
 	numWriters           = flag.Int("num_writers", 0, "The number of independent write tasks to run")
@@ -70,6 +75,12 @@ var (
 
 	hc *http.Client
 )
+
+type logReader interface {
+	ReadCheckpoint(ctx context.Context) ([]byte, error)
+	ReadEntryBundle(ctx context.Context, index uint64, p uint8) ([]byte, error)
+	ReadTile(ctx context.Context, level, index uint64, p uint8) ([]byte, error)
+}
 
 func main() {
 	flag.Parse()
@@ -102,42 +113,15 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Gather the info needed for reading/writing checkpoints.
-	s := getSignerOrDie(ctx)
-
-	// Create the Tessera POSIX storage, using the directory from the --storage_dir flag.
-	driver, err := posix.New(ctx, posix.Config{Path: *storageDir})
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to construct storage", slog.Any("error", err))
-		os.Exit(1)
-	}
-
-	appender, shutdown, logReader, err := tessera.NewAppender(ctx, driver, tessera.NewAppendOptions().
-		WithCheckpointSigner(s).
-		WithCheckpointInterval(time.Second).
-		WithCheckpointRepublishInterval(time.Minute).
-		WithBatching(tessera.DefaultBatchMaxSize, time.Second))
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to create new appender", slog.Any("error", err))
-		os.Exit(1)
-	}
+	appender, logReader, shutdown, verifier := logFromFlags(ctx)
 	defer func() {
 		if err := shutdown(ctx); err != nil {
 			slog.ErrorContext(ctx, "Failed to shutdown appender", slog.Any("error", err))
 		}
 	}()
 
-	leafWriter := func(ctx context.Context, newLeaf []byte) (uint64, error) {
-		idx, err := appender.Add(ctx, tessera.NewEntry(newLeaf))()
-		if err != nil {
-			return 0, fmt.Errorf("failed to add leaf: %v", err)
-		}
-		return idx.Index, nil
-	}
-
-	var cpRaw []byte
 	cons := client.UnilateralConsensus(logReader.ReadCheckpoint)
-	tracker, err := client.NewLogStateTracker(ctx, logReader.ReadTile, cpRaw, s.Verifier(), s.Verifier().Name(), cons)
+	tracker, err := client.NewLogStateTracker(ctx, logReader.ReadTile, nil, verifier, verifier.Name(), cons)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create LogStateTracker", slog.Any("error", err))
 		os.Exit(1)
@@ -160,7 +144,7 @@ func main() {
 		mOpts := mirror.NewOptions().
 			WithMirrorURL(mURL).
 			WithHTTPClient(hc).
-			WithLogOrigin(s.Verifier().Name()).
+			WithLogOrigin(verifier.Name()).
 			WithTileFetcher(logReader.ReadTile).
 			WithBundleFetcher(logReader.ReadEntryBundle).
 			WithMirrorCheckpointFetcher(func(ctx context.Context) ([]byte, error) {
@@ -175,18 +159,13 @@ func main() {
 		go runMirrorSync(ctx, tracker, mc, mURL)
 	}
 
-	ha := loadtest.NewHammerAnalyser(func() uint64 { return tracker.Latest().Size })
-	ha.Run(ctx)
-
-	gen := newLeafGenerator(tracker.Latest().Size, *leafMinSize, *dupChance)
-	opts := loadtest.HammerOpts{
-		MaxReadOpsPerSecond:  0,
-		MaxWriteOpsPerSecond: *maxWriteOpsPerSecond,
-		NumReadersRandom:     0,
-		NumReadersFull:       0,
-		NumWriters:           *numWriters,
+	// Don't do any writes if we don't have an appender...
+	if appender != nil {
+		(*maxWriteOpsPerSecond) = 0
 	}
-	hammer := loadtest.NewHammer(tracker, logReader.ReadEntryBundle, leafWriter, gen, ha.SeqLeafChan, ha.ErrChan, opts)
+	hammer, ha := newHammer(ctx, appender, logReader, tracker)
+	ha.Run(ctx)
+	hammer.Run(ctx)
 
 	exitCode := 0
 	if *leafWriteGoal > 0 {
@@ -226,10 +205,9 @@ func main() {
 			}
 		}()
 	}
-	hammer.Run(ctx)
 
 	if *showUI {
-		c := loadtest.NewController(hammer, ha)
+		c := loadtest.NewController(hammer, ha, tracker)
 		c.Run(ctx)
 	} else {
 		<-ctx.Done()
@@ -296,12 +274,12 @@ func getSignerOrDie(ctx context.Context) note.Signer {
 	var privKey string
 	var err error
 
-	if len(*logPrivKey) == 0 {
-		slog.ErrorContext(ctx, "Supply log private key file path using --log_private_key")
+	if len(*localLogPrivKey) == 0 {
+		slog.ErrorContext(ctx, "Supply local log private key file path using --local_log_private_key")
 		os.Exit(1)
 	}
 
-	privKey, err = getKeyFile(*logPrivKey)
+	privKey, err = getKeyFile(*localLogPrivKey)
 	if err != nil {
 		slog.ErrorContext(ctx, "Unable to get private key", slog.Any("error", err))
 		os.Exit(1)
@@ -349,4 +327,106 @@ func runMirrorSync(ctx context.Context, tracker *client.LogStateTracker, mClient
 			lastSyncedSize = latest.Size
 		}
 	}
+}
+
+func logFromFlags(ctx context.Context) (*tessera.Appender, logReader, func(context.Context) error, sdbNote.Verifier) {
+	if *sourceLogURL != "" {
+		if *sourceLogPubKey == "" {
+			slog.ErrorContext(ctx, "Source log URL provided but no public key path.")
+			os.Exit(1)
+		}
+		lr, shutdown, v, err := newRemoteLog(ctx, *sourceLogURL, *sourceLogPubKey)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to create remote log", slog.Any("error", err))
+			os.Exit(1)
+		}
+		return nil, lr, shutdown, v
+	}
+
+	if *localLogStorageDir == "" {
+		slog.ErrorContext(ctx, "No local log storage directory provided. Either provide --local_log_storage_dir or --source_log_url.")
+		os.Exit(1)
+	}
+	app, lr, shutdown, v, err := newLocalLog(ctx, *localLogStorageDir, getSignerOrDie(ctx))
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to create local log", slog.Any("error", err))
+		os.Exit(1)
+	}
+	return app, lr, shutdown, v
+}
+
+// newLocalLog creates a new local POSIX log which can be used by a hammer to hammer the mirror.
+//
+// Returns an Appender for adding leaves to the log, a LogReader that reads from the local log,
+func newLocalLog(ctx context.Context, storageDir string, s note.Signer) (*tessera.Appender, logReader, func(context.Context) error, sdbNote.Verifier, error) {
+	// Create the Tessera POSIX storage, using the provided directory.
+	driver, err := posix.New(ctx, posix.Config{Path: storageDir})
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("failed to construct storage: %w", err)
+	}
+
+	appender, shutdown, logReader, err := tessera.NewAppender(ctx, driver, tessera.NewAppendOptions().
+		WithCheckpointSigner(s).
+		WithCheckpointInterval(time.Second).
+		WithCheckpointRepublishInterval(time.Minute).
+		WithBatching(tessera.DefaultBatchMaxSize, time.Second))
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return appender, logReader, shutdown, s.Verifier(), nil
+}
+
+// newRemoteLog creates a logReader that reads from a remote log, and a shutdown func.
+func newRemoteLog(_ context.Context, logURL string, pubKeyPath string) (logReader, func(context.Context) error, sdbNote.Verifier, error) {
+	pubKRaw, err := getKeyFile(pubKeyPath)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to read public key %q: %v", pubKeyPath, err)
+	}
+
+	pubKey, err := note.NewVerifier(pubKRaw)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to parse public key %q: %v", pubKeyPath, err)
+	}
+
+	var lr logReader
+	u, err := url.Parse(logURL)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to parse log URL %q: %v", logURL, err)
+	}
+	switch u.Scheme {
+	case "http", "https":
+		lr, err = client.NewHTTPFetcher(u, hc)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to create HTTP fetcher: %v", err)
+		}
+	case "file":
+		lr = client.FileFetcher{Root: u.Path}
+	default:
+		return nil, nil, nil, fmt.Errorf("unsupported log URL scheme: %s", u.Scheme)
+	}
+
+	return lr, func(context.Context) error { return nil }, pubKey, nil
+}
+
+func newHammer(_ context.Context, appender *tessera.Appender, logReader logReader, tracker *client.LogStateTracker) (*loadtest.Hammer, *loadtest.HammerAnalyser) {
+	leafWriter := func(ctx context.Context, newLeaf []byte) (uint64, error) {
+		idx, err := appender.Add(ctx, tessera.NewEntry(newLeaf))()
+		if err != nil {
+			return 0, fmt.Errorf("failed to add leaf: %v", err)
+		}
+		return idx.Index, nil
+	}
+	ha := loadtest.NewHammerAnalyser(func() uint64 { return tracker.Latest().Size })
+
+	gen := newLeafGenerator(tracker.Latest().Size, *leafMinSize, *dupChance)
+	opts := loadtest.HammerOpts{
+		MaxReadOpsPerSecond:  0,
+		MaxWriteOpsPerSecond: *maxWriteOpsPerSecond,
+		NumReadersRandom:     0,
+		NumReadersFull:       0,
+		NumWriters:           *numWriters,
+	}
+	hammer := loadtest.NewHammer(tracker, logReader.ReadEntryBundle, leafWriter, gen, ha.SeqLeafChan, ha.ErrChan, opts)
+
+	return hammer, ha
 }

@@ -15,6 +15,16 @@ For real load-testing applications, especially headless runs as part of a CI pip
 
 ## Usage
 
+There are two modes in which the hammer can be run, in both modes the hammer continuously tracks a source log and replicates its data to one or more target mirrors.
+The difference between the two modes is where the data for the source log originates:
+
+1. **Standalone log**: The hammer creates and continuously populates its own local POSIX log.
+2. **Replication**: The hammer reads from an existing log.
+
+In both cases the hammer uses the data from the source log as the data to send to the mirror server.
+
+### Mode 1: Standalone Hammer Log
+
 First, store the hammer log test private key:
 
 ```shell
@@ -32,8 +42,8 @@ Example usage to test a deployment of [`cmd/mtc/mirror/posix`](/cmd/mtc/mirror/p
 ```shell
 go run ./internal/mirror/hammer \
   --mirror_url=http://localhost:8080 \
-  --storage_dir=/tmp/hammer-log \
-  --log_private_key=/tmp/hammer-log.key \
+  --local_log_storage_dir=/tmp/hammer-log \
+  --local_log_private_key=/tmp/hammer-log.key \
   --num_writers=256 \
   --max_write_ops=42
 ```
@@ -45,11 +55,27 @@ If the timeout of 1 minute is reached first, then it exits with an exit code of 
 ```shell
 go run ./internal/mirror/hammer \
   --mirror_url=http://localhost:8080 \
-  --storage_dir=/tmp/hammer-log \
-  --log_private_key=/tmp/hammer-log.key \
+  --local_log_storage_dir=/tmp/hammer-log \
+  --local_log_private_key=/tmp/hammer-log.key \
   --num_writers=512 \
   --max_write_ops=512 \
   --max_runtime=1m \
   --leaf_write_goal=2500 \
+  --show_ui=false
+```
+
+### Mode 2: Replication
+
+Determine the source log's public key and URL, and ensure that the target mirror is configured to accept data from this log.
+
+Write the source log's `vkey` to a file, e.g. `/tmp/source-log.pub`.
+
+Then start the hammer in replication mode, e.g.:
+
+```shell
+go run ./internal/mirror/hammer \
+  --mirror_url=http://localhost:8080 \
+  --source_log_url=https://example.com/source-log \
+  --source_log_public_key=/tmp/source-log.pub \
   --show_ui=false
 ```
