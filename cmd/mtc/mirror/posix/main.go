@@ -74,7 +74,7 @@ func main() {
 		v := l.Verifier
 
 		// Create the mirror
-		t, err := newMirrorTarget(ctx, w, v, mirrorCosigner)
+		t, err := newMirrorTarget(ctx, w, origin, v, mirrorCosigner)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to create mirror target", slog.String("origin", origin), slog.Any("error", err))
 			os.Exit(1)
@@ -104,9 +104,7 @@ func main() {
 //
 // The target directory for the driver is derived from the storage directory and the origin in accordance
 // with the `tlog-mirror` spec, allowing the root of the storage directory to be exported directly to read-only clients.
-func newMirrorTarget(ctx context.Context, w *witness.Witness, logVerifier note.Verifier, mirrorSigner note.Signer) (*tessera.MirrorTarget, error) {
-	origin := logVerifier.Name()
-
+func newMirrorTarget(ctx context.Context, w *witness.Witness, origin string, logVerifier note.Verifier, mirrorSigner note.Signer) (*tessera.MirrorTarget, error) {
 	targetDir := filepath.Join(*storageDir, mirrorsDir, fmt.Sprintf("%0x", sha256.Sum256([]byte(origin))))
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir %q: %v", targetDir, err)
@@ -119,6 +117,7 @@ func newMirrorTarget(ctx context.Context, w *witness.Witness, logVerifier note.V
 		WithCheckpointSource(func(ctx context.Context) ([]byte, error) {
 			return w.GetCheckpoint(ctx, origin)
 		}).
+		WithOrigin(origin).
 		WithLogVerifier(logVerifier).
 		WithSigner(mirrorSigner)
 	return tessera.NewMirrorTarget(ctx, d, mOpts)

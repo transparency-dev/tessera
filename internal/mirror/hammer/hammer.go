@@ -51,6 +51,7 @@ var (
 
 	sourceLogURL    = flag.String("source_log_url", "", "URL of the log to mirror, or empty if using a locally created log.")
 	sourceLogPubKey = flag.String("source_log_public_key", "", "Path to the public key of the log to mirror. Required if --source_log_url is set.")
+	sourceLogOrigin = flag.String("source_log_origin", "", "Origin string of source log. If unset, uses the name of the vkey provided by --source_log_public_key.")
 
 	localLogStorageDir = flag.String("local_log_storage_dir", "", "Root directory to store the locally created source log. Only relevant if --source_log_url is not set.")
 	localLogPrivKey    = flag.String("local_log_private_key", "", "Path to the private key of the local log created as a source for mirroring. Required if --source_log_url is not set.")
@@ -121,7 +122,11 @@ func main() {
 	}()
 
 	cons := client.UnilateralConsensus(logReader.ReadCheckpoint)
-	tracker, err := client.NewLogStateTracker(ctx, logReader.ReadTile, nil, verifier, verifier.Name(), cons)
+	origin := *sourceLogOrigin
+	if origin == "" {
+		origin = verifier.Name()
+	}
+	tracker, err := client.NewLogStateTracker(ctx, logReader.ReadTile, nil, verifier, origin, cons)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create LogStateTracker", slog.Any("error", err))
 		os.Exit(1)
@@ -144,7 +149,7 @@ func main() {
 		mOpts := mirror.NewOptions().
 			WithMirrorURL(mURL).
 			WithHTTPClient(hc).
-			WithLogOrigin(verifier.Name()).
+			WithLogOrigin(origin).
 			WithTileFetcher(logReader.ReadTile).
 			WithBundleFetcher(logReader.ReadEntryBundle).
 			WithMirrorCheckpointFetcher(func(ctx context.Context) ([]byte, error) {
@@ -383,7 +388,7 @@ func newRemoteLog(_ context.Context, logURL string, pubKeyPath string) (logReade
 		return nil, nil, nil, fmt.Errorf("failed to read public key %q: %v", pubKeyPath, err)
 	}
 
-	pubKey, err := note.NewVerifier(pubKRaw)
+	pubKey, err := note.NewVerifierForCosignatureV1(pubKRaw)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to parse public key %q: %v", pubKeyPath, err)
 	}

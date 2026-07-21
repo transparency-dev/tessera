@@ -64,11 +64,19 @@ type MirrorOptions struct {
 	signer      note.Signer
 	cpSource    func(context.Context) ([]byte, error)
 	logVerifier note.Verifier
+	origin		string
 }
 
 // NewMirrorOptions creates a new options struct with defaults.
 func NewMirrorOptions() *MirrorOptions {
 	return &MirrorOptions{}
+}
+
+// WithOrigin allows the source log's origin to be specified.
+// If unsed, the name of the log verifier will be used.
+func (o *MirrorOptions) WithOrigin(origin string) *MirrorOptions {
+	o.origin = origin
+	return o
 }
 
 // WithLogVerifier sets the note.Verifier used to verify log checkpoint signatures.
@@ -139,6 +147,7 @@ type MirrorTarget struct {
 	writer             MirrorWriter
 	reader             LogReader
 	cpSource           func(context.Context) ([]byte, error)
+	origin			   string
 	signer             note.Signer
 	logVerifier        note.Verifier
 	verifySubtreeProof func(hasher merkle.LogHasher, start, end, size uint64, proof [][]byte, subRoot []byte, root []byte) error
@@ -164,7 +173,10 @@ func NewMirrorTarget(ctx context.Context, d Driver, opts *MirrorOptions) (*Mirro
 	if err != nil {
 		return nil, fmt.Errorf("failed to init MirrorTarget lifecycle: %v", err)
 	}
-	tK, err := ticketKey(opts.signer.Name(), opts.logVerifier.Name())
+	if opts.origin == "" {
+		opts.origin = opts.logVerifier.Name()
+	}
+	tK, err := ticketKey(opts.signer.Name(), opts.origin)
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive ticket key: %v", err)
 	}
@@ -174,6 +186,7 @@ func NewMirrorTarget(ctx context.Context, d Driver, opts *MirrorOptions) (*Mirro
 		cpSource:           opts.cpSource,
 		signer:             opts.signer,
 		logVerifier:        opts.logVerifier,
+		origin:				opts.origin,
 		verifySubtreeProof: proof.VerifySubtreeConsistency,
 		ticketKey:          tK,
 	}, nil
@@ -364,7 +377,7 @@ func (mt *MirrorTarget) publishCheckpoint(ctx context.Context, newCP *log.Checkp
 		// 			HTTP status code. The response body MUST be formatted as in a witness's successful add-checkpoint
 		// 			response: a sequence of one or more note signature lines.
 		if len(oldCP) > 0 {
-			publishedCP, _, _, err := log.ParseCheckpoint(oldCP, mt.logVerifier.Name(), mt.logVerifier)
+			publishedCP, _, _, err := log.ParseCheckpoint(oldCP, mt.origin, mt.logVerifier)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse published checkpoint: %v", err)
 			}
@@ -416,7 +429,7 @@ func (mt *MirrorTarget) openOrCreateTicket(ctx context.Context, ticketBytes []by
 		if err != nil {
 			slog.DebugContext(ctx, "Failed to open ticket", slog.Any("error", err))
 		} else {
-			pendingCP, _, pendingNote, err = log.ParseCheckpoint(ticketCP, mt.logVerifier.Name(), mt.logVerifier)
+			pendingCP, _, pendingNote, err = log.ParseCheckpoint(ticketCP, mt.origin, mt.logVerifier)
 			if err != nil {
 				slog.DebugContext(ctx, "Failed to parse ticket", slog.Any("error", err))
 			} else {
@@ -450,7 +463,7 @@ func (mt *MirrorTarget) createNewTicket(ctx context.Context) (ticket []byte, pen
 	if len(pendingCPRaw) == 0 {
 		return nil, nil, nil, ErrNoPendingCheckpoint
 	}
-	pendingCP, _, pendingNote, err = log.ParseCheckpoint(pendingCPRaw, mt.logVerifier.Name(), mt.logVerifier)
+	pendingCP, _, pendingNote, err = log.ParseCheckpoint(pendingCPRaw, mt.origin, mt.logVerifier)
 	if err != nil {
 		slog.ErrorContext(ctx, "Invalid pending checkpoint from source", slog.String("pending_checkpoint", string(pendingCPRaw)), slog.String("error", err.Error()))
 		return nil, nil, nil, fmt.Errorf("failed to parse pending checkpoint while creating ticket: %v", err)
