@@ -159,13 +159,13 @@ func main() {
 		go runMirrorSync(ctx, tracker, mc, mURL)
 	}
 
-	var hammer *loadtest.Hammer
-	var ha *loadtest.HammerAnalyser
+	// Don't do any writes if we don't have an appender...
 	if appender != nil {
-		hammer, ha = newHammer(ctx, appender, logReader, tracker)
-		ha.Run(ctx)
-		hammer.Run(ctx)
+		(*maxWriteOpsPerSecond) = 0
 	}
+	hammer, ha := newHammer(ctx, appender, logReader, tracker)
+	ha.Run(ctx)
+	hammer.Run(ctx)
 
 	exitCode := 0
 	if *leafWriteGoal > 0 {
