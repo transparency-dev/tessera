@@ -165,7 +165,7 @@ func main() {
 	}
 
 	// Don't do any writes if we don't have an appender...
-	if appender != nil {
+	if appender == nil {
 		(*maxWriteOpsPerSecond) = 0
 	}
 	hammer, ha := newHammer(ctx, appender, logReader, tracker)
