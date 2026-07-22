@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
@@ -48,6 +49,12 @@ var (
 	mirrorCosignerPath  = flag.String("mirror_cosigner_path", "", "The path to the note-formatted mirror cosigner secret key.")
 	mirrorConfigPath    = flag.String("config_path", "", "The path to the mirror configuration file.")
 	slogLevel           = flag.Int("slog_level", 0, "The cut-off threshold for structured logging.")
+
+	readHeaderTimeout = flag.Duration("read_header_timeout", 5*time.Second, "The maximum duration for reading request headers.")
+	idleTimeout       = flag.Duration("idle_timeout", 60*time.Second, "The maximum amount of time to wait for the next request when keep-alives are enabled.")
+	readTimeout       = flag.Duration("read_timeout", 0, "The maximum duration for reading the entire request. Default 0 permits streaming add-entries uploads.")
+	writeTimeout      = flag.Duration("write_timeout", 0, "The maximum duration before timing out writes of the response.")
+	maxHeaderBytes    = flag.Int("max_header_bytes", http.DefaultMaxHeaderBytes, "Maximum number of bytes the server will read parsing request headers.")
 )
 
 func main() {
@@ -93,8 +100,23 @@ func main() {
 
 	h := handler.New(mux, w)
 
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+
+	server := &http.Server{
+		Addr:              *listenAddr,
+		Handler:           h,
+		Protocols:         &protocols,
+		ReadHeaderTimeout: *readHeaderTimeout,
+		IdleTimeout:       *idleTimeout,
+		ReadTimeout:       *readTimeout,
+		WriteTimeout:      *writeTimeout,
+		MaxHeaderBytes:    *maxHeaderBytes,
+	}
+
 	slog.InfoContext(ctx, "Starting mirror service", slog.String("addr", *listenAddr))
-	if err := http.ListenAndServe(*listenAddr, h); err != nil {
+	if err := server.ListenAndServe(); err != nil {
 		slog.ErrorContext(ctx, "ListenAndServe failed", slog.Any("error", err))
 		os.Exit(1)
 	}
