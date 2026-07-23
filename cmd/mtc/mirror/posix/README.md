@@ -81,7 +81,10 @@ go run github.com/transparency-dev/witness/cmd/generate_keys@main \
 > public when exporting the mirrored log data!
 
 The set of logs which are permitted to be pushed to the mirror is defined by a configuration
-file which uses the same format as the public witness network configuration file. An example is provided in the
+file which uses the same format as the
+[public witness network configuration file](https://witness-network.org/log-list-format/).
+
+An example is provided in the
 [`example_config`](./example_config) file.
 
 Edit this or create your own with appropriate entries. Then, place the config file in a suitable location.
