@@ -77,14 +77,14 @@ func TestWitnessGateway_Update(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		switch r.URL.String() {
-		case w1u.Path:
+		switch r.URL.Path {
+		case w1u.Path + "/add-checkpoint":
 			witCalls.Add(1)
 			_, _ = w.Write(sigForSigner(t, cp, wit1Skey))
-		case w2u.Path:
+		case w2u.Path + "/add-checkpoint":
 			witCalls.Add(1)
 			_, _ = w.Write(sigForSigner(t, cp, wit2Skey))
-		case wbu.Path:
+		case wbu.Path + "/add-checkpoint":
 			witCalls.Add(1)
 			_, _ = w.Write([]byte("this is not a signature\n"))
 		case "/wit_multi/add-checkpoint":
@@ -414,7 +414,7 @@ func TestWitnessConflict(t *testing.T) {
 			var wit1 tessera.Witness
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w1u := mustURL(t, wit1.URL)
-				if got, want := r.URL.String(), w1u.Path; got != want {
+				if got, want := r.URL.String(), w1u.Path+"/add-checkpoint"; got != want {
 					t.Fatalf("got request to URL %q but expected %q", got, want)
 				}
 
@@ -474,7 +474,7 @@ func TestWitnessStateEvolution(t *testing.T) {
 	var count int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w1u := mustURL(t, wit1.URL)
-		if got, want := r.URL.String(), w1u.Path; got != want {
+		if got, want := r.URL.String(), w1u.Path+"/add-checkpoint"; got != want {
 			t.Fatalf("got request to URL %q but expected %q", got, want)
 		}
 
@@ -539,7 +539,7 @@ func TestSlipperyWitness(t *testing.T) {
 	var count int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w1u := mustURL(t, wit1.URL)
-		if got, want := r.URL.String(), w1u.Path; got != want {
+		if got, want := r.URL.String(), w1u.Path+"/add-checkpoint"; got != want {
 			t.Fatalf("Got request to URL %q but expected %q", got, want)
 		}
 
@@ -587,9 +587,9 @@ func TestWitnessReusesProofs(t *testing.T) {
 		w2u := mustURL(t, wit2.URL)
 
 		switch r.URL.String() {
-		case w1u.Path:
+		case w1u.Path + "/add-checkpoint":
 			_, _ = w.Write(sigForSigner(t, n.Text, wit1Skey))
-		case w2u.Path:
+		case w2u.Path + "/add-checkpoint":
 			_, _ = w.Write(sigForSigner(t, n.Text, wit2Skey))
 		default:
 			t.Fatalf("Unknown case: %s", r.URL.String())

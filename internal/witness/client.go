@@ -124,8 +124,11 @@ func NewWitnessGateway(group WitnessGroup, client *http.Client, oldSize uint64, 
 		vs := dedupVerifiers(vs)
 		if len(vs) > 0 {
 			witnesses = append(witnesses, &witnessClient{
-				client:    client,
-				url:       u,
+				client: client,
+				// Can't use path.Join here as it'll nobble the double-slash in URLs.
+				// url.JoinPath returns an error, which we can't handle here, but we already know that the URL is valid since
+				// it's coming via WitnessGroup.WitnessEndpoints(). So we'll just do the string manipulation ourselves.
+				url:       strings.TrimRight(u, "/") + "/add-checkpoint",
 				verifiers: vs,
 				size:      oldSize,
 			})
