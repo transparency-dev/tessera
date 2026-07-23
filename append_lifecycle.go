@@ -58,7 +58,8 @@ const (
 	DefaultAntispamInMemorySize = 256 << 10
 	// DefaultWitnessTimeout is the default maximum time to wait for responses from configured witnesses.
 	DefaultWitnessTimeout = 1 * time.Second
-
+	// DefaultMirrorTimeout is the default maximum time to wait for responses from configured mirrors.
+	DefaultMirrorTimeout = 10 * time.Second
 	// DefaultEntrySizeLimit is the maximum possible size of data for a single entry, as specified by C2SP tlog-tiles.
 	DefaultEntrySizeLimit = 1<<16 - 1
 
@@ -670,6 +671,9 @@ type AppendOptions struct {
 	witnesses   WitnessGroup
 	witnessOpts WitnessOptions
 
+	mirrors    WitnessGroup
+	mirrorOpts MirroringOptions
+
 	addDecorators []func(AddFn) AddFn
 	followers     []Follower
 
@@ -735,12 +739,31 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 			span.AddEvent("Created CP")
 			appenderSignedSize.Record(ctx, otel.Clamp64(size))
 
-			wSigs, err := witnessCheckpoint(ctx, cp, size, o.witnesses, lr, httpClient, o.witnessOpts)
-			if err != nil {
-				return nil, err
+			eg := errgroup.Group{}
+			sigC := make(chan []byte, 2)
+			eg.Go(func() error {
+				ws, err := witnessCheckpoint(ctx, cp, size, o.witnesses, lr, httpClient, o.witnessOpts)
+				if ws != nil {
+					sigC <- ws
+				}
+				return err
+			})
+			eg.Go(func() error {
+				ms, err := mirrorCheckpoint(ctx, cp, size, o.mirrors, lr, httpClient, o.mirrorOpts)
+				if ms != nil {
+					sigC <- ms
+				}
+				return err
+			})
+
+			if err := eg.Wait(); err != nil {
+				return nil, fmt.Errorf("failed to fetch cosignatures: %v", err)
 			}
 
-			cp = append(cp, wSigs...)
+			close(sigC)
+			for sigs := range sigC {
+				cp = append(cp, sigs...)
+			}
 
 			return cp, nil
 		})
@@ -793,6 +816,18 @@ func witnessCheckpoint(ctx context.Context, cp []byte, cpSize uint64, witnesses 
 		d := time.Since(start)
 		appenderWitnessHistogram.Record(ctx, d.Milliseconds(), metric.WithAttributes(witAttr...))
 		return cpSigs, nil
+	})
+}
+
+// mirrorCheckpoint takes care of mirroring the given checkpoint with the provided mirror policy.
+// Returns signatures from mirrors, ready to append to the checkpoint, or an error.
+func mirrorCheckpoint(ctx context.Context, cp []byte, cpSize uint64, mirrors WitnessGroup, lr LogReader, httpClient *http.Client, opts MirroringOptions) ([]byte, error) {
+	return otel.Trace(ctx, "tessera.mirrorCheckpoint", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		if len(mirrors.Components) == 0 {
+			return nil, nil
+		}
+		span.AddEvent("Starting mirroring")
+		return nil, nil
 	})
 }
 
@@ -950,6 +985,27 @@ func (o *AppendOptions) WithWitnesses(witnesses WitnessGroup, opts *WitnessOptio
 	return o
 }
 
+// WithMirrors configures the set of tlog-mirror servers that Tessera will contact in order to obtain
+// mirror counter-signatures on a checkpoint before publishing it.
+//
+// Requests will be sent to every mirror referenced by the group using the tlog-mirror API at the configured URL.
+// The checkpoint will be accepted for publishing when a sufficient number of mirrors to satisfy the group
+// have responded.
+//
+// If this method is not called, then no mirror counter signatures will be required to publish.
+func (o *AppendOptions) WithMirrors(mirrors WitnessGroup, opts *MirroringOptions) *AppendOptions {
+	if opts == nil {
+		opts = &MirroringOptions{}
+	}
+	if opts.Timeout == 0 {
+		opts.Timeout = DefaultMirrorTimeout
+	}
+
+	o.mirrors = mirrors
+	o.mirrorOpts = *opts
+	return o
+}
+
 // WitnessOptions contains extra optional configuration for how Tessera should use/interact with
 // a user-provided WitnessGroup policy.
 type WitnessOptions struct {
@@ -966,6 +1022,26 @@ type WitnessOptions struct {
 	// should still be published.
 	//
 	// This setting is intended only for facilitating early "non-blocking" adoption of witnessing,
+	// and will be disabled and/or removed in the future.
+	FailOpen bool
+}
+
+// MirroringOptions contains extra optional configuration for how Tessera should use/interact with
+// the tlog-mirror servers.
+type MirroringOptions struct {
+	// Timeout is the maximum time to wait while attempting to satisfy the configured mirror policy.
+	//
+	// If the policy has not already been satisfied at the point this duration has passed, Tessera
+	// will stop waiting for more responses. The FailOpen option below controls whether or not the
+	// checkpoint will be published in this case.
+	//
+	// If unset, uses DefaultMirrorTimeout.
+	Timeout time.Duration
+
+	// FailOpen controls whether a checkpoint, for which the mirror policy was unable to be met,
+	// should still be published.
+	//
+	// This setting is intended only for facilitating early "non-blocking" adoption of mirroring,
 	// and will be disabled and/or removed in the future.
 	FailOpen bool
 }
