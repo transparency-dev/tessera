@@ -169,12 +169,12 @@ type WitnessGateway struct {
 }
 
 // Witness sends out a new checkpoint (which must be signed by the log), to all witnesses
-// and returns the checkpoint as soon as the policy the WitnessGateway was constructed with
+// and returns gathered cosignatures as soon as the policy the WitnessGateway was constructed with
 // is Satisfied.
 func (wg *WitnessGateway) Witness(ctx context.Context, cp []byte) ([]byte, error) {
 	return otel.Trace(ctx, "tessera.witnessgateway.Witness", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
 		if len(wg.witnesses) == 0 {
-			return cp, nil
+			return nil, nil
 		}
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
@@ -227,7 +227,6 @@ func (wg *WitnessGateway) Witness(ctx context.Context, cp []byte) ([]byte, error
 		span.AddEvent("Waiting for signatures")
 		// Consume the results coming back from each witness
 		var sigBlock bytes.Buffer
-		sigBlock.Write(cp)
 		for r := range results {
 			if r.err != nil {
 				err = errors.Join(err, r.err)
@@ -245,9 +244,9 @@ func (wg *WitnessGateway) Witness(ctx context.Context, cp []byte) ([]byte, error
 			sigBlock.Write(r.sig)
 
 			// See whether the group is satisfied now
-			if newCp := sigBlock.Bytes(); wg.group.Satisfied(newCp) {
+			if newCp := append(slices.Clone(cp), sigBlock.Bytes()...); wg.group.Satisfied(newCp) {
 				span.AddEvent("Policy satisfied")
-				return newCp, nil
+				return sigBlock.Bytes(), nil
 			}
 		}
 
