@@ -3,6 +3,7 @@ package tessera_test
 import (
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
 
 	f_note "github.com/transparency-dev/formats/note"
@@ -146,34 +147,34 @@ func TestWitnessGroup_URLs(t *testing.T) {
 		{
 			desc:         "witness 1",
 			group:        tessera.NewWitnessGroup(1, wit1),
-			expectedURLs: []string{"https://b1.example.com/wit1prefix/add-checkpoint"},
+			expectedURLs: []string{"https://b1.example.com/wit1prefix"},
 		},
 		{
 			desc:         "witness 2",
 			group:        tessera.NewWitnessGroup(1, wit2),
-			expectedURLs: []string{"https://b1.example.com/wit2prefix/add-checkpoint"},
+			expectedURLs: []string{"https://b1.example.com/wit2prefix"},
 		},
 		{
 			desc:         "witness 3",
 			group:        tessera.NewWitnessGroup(1, wit3),
-			expectedURLs: []string{"https://witness.example.com/add-checkpoint"},
+			expectedURLs: []string{"https://witness.example.com"},
 		},
 		{
 			desc:  "all witnesses in one group",
 			group: tessera.NewWitnessGroup(1, wit1, wit2, wit3),
 			expectedURLs: []string{
-				"https://b1.example.com/wit1prefix/add-checkpoint",
-				"https://b1.example.com/wit2prefix/add-checkpoint",
-				"https://witness.example.com/add-checkpoint",
+				"https://b1.example.com/wit1prefix",
+				"https://b1.example.com/wit2prefix",
+				"https://witness.example.com",
 			},
 		},
 		{
 			desc:  "all witnesses with duplicates in nests",
 			group: tessera.NewWitnessGroup(2, tessera.NewWitnessGroup(1, wit1, wit2), tessera.NewWitnessGroup(1, wit1, wit3)),
 			expectedURLs: []string{
-				"https://b1.example.com/wit1prefix/add-checkpoint",
-				"https://b1.example.com/wit2prefix/add-checkpoint",
-				"https://witness.example.com/add-checkpoint",
+				"https://b1.example.com/wit1prefix",
+				"https://b1.example.com/wit2prefix",
+				"https://witness.example.com",
 			},
 		},
 	}
@@ -181,7 +182,7 @@ func TestWitnessGroup_URLs(t *testing.T) {
 		t.Run(tC.desc, func(t *testing.T) {
 			gotURLs := make([]string, 0)
 			for u := range tC.group.WitnessEndpoints() {
-				gotURLs = append(gotURLs, u)
+				gotURLs = append(gotURLs, strings.TrimRight(u, "/"))
 			}
 			slices.Sort(gotURLs)
 			slices.Sort(tC.expectedURLs)

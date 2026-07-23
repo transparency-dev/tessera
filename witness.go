@@ -195,12 +195,10 @@ func NewWitness(vkey string, witnessRoot *url.URL) (Witness, error) {
 		return Witness{}, err
 	}
 
-	u := witnessRoot.JoinPath("/add-checkpoint")
-
 	return Witness{
 		Key: v,
-		URL: u.String(),
-	}, err
+		URL: witnessRoot.String(),
+	}, nil
 }
 
 // Witness represents a single witness that can be reached in order to perform a witnessing operation.
