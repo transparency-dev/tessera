@@ -735,51 +735,65 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 			span.AddEvent("Created CP")
 			appenderSignedSize.Record(ctx, otel.Clamp64(size))
 
-			span.AddEvent("Starting witnessing")
-			// Handle witnessing
-			if len(o.witnesses.Components) != 0 {
-				// Figure out the likely size the witnesses are aware of, but don't fail hard if we're unable
-				// to do so:
-				// a) it could be that this is the first checkpoint we're publishing
-				// b) the witnessing protocol has a fallback path in case we get it wrong, anyway.
-				var oldSize uint64
-				oldCP, err := lr.ReadCheckpoint(ctx)
-				if err != nil {
-					slog.InfoContext(ctx, "Failed to fetch old checkpoint", slog.Any("error", err))
-				} else {
-					_, oldSize, _, err = parse.CheckpointUnsafe(oldCP)
-					if err != nil {
-						return nil, fmt.Errorf("failed to parse old checkpoint: %v", err)
-					}
-				}
-				wg := witness.NewWitnessGateway(o.witnesses, httpClient, oldSize, lr.ReadTile)
-
-				start := time.Now()
-
-				ctx, cancel := context.WithTimeout(ctx, o.witnessOpts.Timeout)
-				defer cancel()
-
-				span.AddEvent("Sending witness requests")
-				witAttr := []attribute.KeyValue{}
-				cp, err = wg.Witness(ctx, cp)
-				if err != nil {
-					if !o.witnessOpts.FailOpen {
-						appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(attribute.String("error.type", "failed")))
-						return nil, err
-					}
-					slog.WarnContext(ctx, "WitnessGateway: failing-open despite error", slog.Any("error", err))
-					witAttr = append(witAttr, attribute.String("error.type", "failed_open"))
-				}
-
-				appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(witAttr...))
-				appenderWitnessedSize.Record(ctx, otel.Clamp64(size))
-				d := time.Since(start)
-				appenderWitnessHistogram.Record(ctx, d.Milliseconds(), metric.WithAttributes(witAttr...))
+			wSigs, err := witnessCheckpoint(ctx, cp, size, o.witnesses, lr, httpClient, o.witnessOpts)
+			if err != nil {
+				return nil, err
 			}
+
+			cp = append(cp, wSigs...)
 
 			return cp, nil
 		})
 	}
+}
+
+// witnessCheckpoint takes care of witnessing the given checkpoint with the provided witness policy.
+// Returns signatures from witnesses, ready to append to the checkpoint, or an error.
+func witnessCheckpoint(ctx context.Context, cp []byte, cpSize uint64, witnesses WitnessGroup, lr LogReader, httpClient *http.Client, opts WitnessOptions) ([]byte, error) {
+	return otel.Trace(ctx, "tessera.witnessCheckpoint", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		if len(witnesses.Components) == 0 {
+			return nil, nil
+		}
+		span.AddEvent("Starting witnessing")
+		// Figure out the likely size the witnesses are aware of, but don't fail hard if we're unable
+		// to do so:
+		// a) it could be that this is the first checkpoint we're publishing
+		// b) the witnessing protocol has a fallback path in case we get it wrong, anyway.
+		var oldSize uint64
+		oldCP, err := lr.ReadCheckpoint(ctx)
+		if err != nil {
+			slog.InfoContext(ctx, "Failed to fetch old checkpoint", slog.Any("error", err))
+		} else {
+			_, oldSize, _, err = parse.CheckpointUnsafe(oldCP)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse old checkpoint: %v", err)
+			}
+		}
+		wg := witness.NewWitnessGateway(witnesses, httpClient, oldSize, lr.ReadTile)
+
+		start := time.Now()
+
+		ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
+		defer cancel()
+
+		span.AddEvent("Sending witness requests")
+		witAttr := []attribute.KeyValue{}
+		cpSigs, err := wg.Witness(ctx, cp)
+		if err != nil {
+			if !opts.FailOpen {
+				appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(attribute.String("error.type", "failed")))
+				return nil, err
+			}
+			slog.WarnContext(ctx, "WitnessGateway: failing-open despite error", slog.Any("error", err))
+			witAttr = append(witAttr, attribute.String("error.type", "failed_open"))
+		}
+
+		appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(witAttr...))
+		appenderWitnessedSize.Record(ctx, otel.Clamp64(cpSize))
+		d := time.Since(start)
+		appenderWitnessHistogram.Record(ctx, d.Milliseconds(), metric.WithAttributes(witAttr...))
+		return cpSigs, nil
+	})
 }
 
 func (o AppendOptions) BatchMaxAge() time.Duration {

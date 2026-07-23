@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -186,13 +187,14 @@ func TestWitnessGateway_Update(t *testing.T) {
 
 			g := witness.NewWitnessGateway(tC.group, ts.Client(), 0, testLogTileFetcher)
 
-			witnessedCP, err := g.Witness(ctx, logSignedCheckpoint)
+			cpSigs, err := g.Witness(ctx, logSignedCheckpoint)
 			if got, want := err != nil, tC.wantErr; got != want {
 				t.Fatalf("got != want (%t != %t): %v", got, want, err)
 			}
 			if tC.wantErr {
 				return
 			}
+			witnessedCP := append(slices.Clone(logSignedCheckpoint), cpSigs...)
 			n, err := note.Open(witnessedCP, note.VerifierList(logVerifier, wit1.Key, wit2.Key))
 			if err != nil {
 				t.Fatalf("failed to open note %q: %v", witnessedCP, err)
@@ -366,7 +368,7 @@ func TestWitness_UpdateResponse(t *testing.T) {
 				t.Fatal(err)
 			}
 			g := witness.NewWitnessGateway(tessera.NewWitnessGroup(1, wit1), ts.Client(), 0, testLogTileFetcher)
-			witnessed, err := g.Witness(ctx, logSignedCheckpoint)
+			cpSigs, err := g.Witness(ctx, logSignedCheckpoint)
 			if got, want := err != nil, tC.wantErr; got != want {
 				t.Fatalf("got != want (%t != %t): %v", got, want, err)
 			}
@@ -374,9 +376,8 @@ func TestWitness_UpdateResponse(t *testing.T) {
 				return
 			}
 
-			sigs := witnessed[len(logSignedCheckpoint):]
-			if !bytes.Equal(sigs, tC.wantResult) {
-				t.Errorf("expected result %q but got %q", tC.body, sigs)
+			if !bytes.Equal(cpSigs, tC.wantResult) {
+				t.Errorf("expected result %q but got %q", tC.body, cpSigs)
 			}
 		})
 	}
