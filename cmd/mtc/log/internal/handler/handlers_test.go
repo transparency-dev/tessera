@@ -25,6 +25,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/log"
@@ -51,12 +52,18 @@ func setupTestLog(t *testing.T) *log.MTCLog {
 	}
 
 	opts := tessera.NewAppendOptions().WithCheckpointSigner(signer)
-	appender, _, _, err := tessera.NewAppender(ctx, driver, opts)
+	appender, _, reader, err := tessera.NewAppender(ctx, driver, opts)
 	if err != nil {
 		t.Fatalf("Failed to initialize Tessera appender: %v", err)
 	}
 
-	return log.NewMTCLog(ctx, appender)
+	mtcLog, err := log.NewMTCLog(ctx, appender, log.NewOptions().
+		WithTesseraReader(reader).
+		WithAwaiterPollInterval(20*time.Millisecond))
+	if err != nil {
+		t.Fatalf("Failed to initialize MTC log: %v", err)
+	}
+	return mtcLog
 }
 
 func dummySeq(data string) []byte {

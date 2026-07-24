@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/entry"
@@ -26,8 +27,52 @@ import (
 	"golang.org/x/crypto/cryptobyte/asn1"
 )
 
+const (
+	// DefaultAwaiterPollInterval is the fallback polling period for the publication awaiter.
+	DefaultAwaiterPollInterval = 200 * time.Millisecond
+)
+
+// Options holds settings for configuring MTCLog instances.
+type Options struct {
+	reader     tessera.LogReader
+	pollPeriod time.Duration
+}
+
+// NewOptions creates a new options struct for configuring MTCLog instances.
+func NewOptions() *Options {
+	return &Options{
+		pollPeriod: DefaultAwaiterPollInterval,
+	}
+}
+
+// valid returns an error if an invalid combination of options has been set, or nil otherwise.
+func (o *Options) valid() error {
+	if o.reader == nil {
+		return errors.New("invalid Options: WithTesseraReader must be set")
+	}
+	if o.pollPeriod < 0 {
+		return errors.New("invalid Options: pollPeriod must be >= 0")
+	}
+	return nil
+}
+
+// WithTesseraReader configures the Tessera LogReader used for checkpoint reading.
+func (o *Options) WithTesseraReader(r tessera.LogReader) *Options {
+	o.reader = r
+	return o
+}
+
+// WithAwaiterPollInterval configures the polling period for the publication awaiter.
+// duration MUST be strictly positive, otherwise valid() will fail.
+// If 0, falls back to DefaultAwaiterPollInterval.
+func (o *Options) WithAwaiterPollInterval(duration time.Duration) *Options {
+	o.pollPeriod = duration
+	return o
+}
+
 type MTCLog struct {
-	a *tessera.Appender
+	a       *tessera.Appender
+	awaiter *tessera.PublicationAwaiter
 }
 
 // MTCProof represents an MTC inclusion proof as per
@@ -182,20 +227,34 @@ func (l *MTCLog) accept(tbs TBSCertificateLogEntry) error {
 
 // NewMTCLog creates a new MTCLog compliant with
 // draft-ietf-plants-merkle-tree-certs and http://c2sp.org/mtc-tlog.
-func NewMTCLog(ctx context.Context, a *tessera.Appender) *MTCLog {
+func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog, error) {
 	// TODO: schedule landmark publishing
-	return &MTCLog{a: a}
+	if a == nil {
+		return nil, errors.New("appender must not be nil")
+	}
+	if opts == nil {
+		return nil, errors.New("options must not be nil")
+	}
+	if err := opts.valid(); err != nil {
+		return nil, err
+	}
+
+	l := &MTCLog{
+		a:       a,
+		awaiter: tessera.NewPublicationAwaiter(ctx, opts.reader.ReadCheckpoint, opts.pollPeriod),
+	}
+	return l, nil
 }
 
 // AddTBS adds a TBSCertificateLogEntry to the log.
 func (l *MTCLog) AddTBS(ctx context.Context, tbs TBSCertificateLogEntry) (*AddTBSRsp, error) {
 	if err := l.accept(tbs); err != nil {
-		return nil, fmt.Errorf("invalid entry: %w", err)
+		return nil, fmt.Errorf("invalid entry: %v", err)
 	}
 
 	tbsb, err := tbs.Marshal()
 	if err != nil {
-		return nil, fmt.Errorf("marshal contents: %w", err)
+		return nil, fmt.Errorf("marshal contents: %v", err)
 	}
 
 	e := entry.New(tbsb)
@@ -206,16 +265,16 @@ func (l *MTCLog) AddTBS(ctx context.Context, tbs TBSCertificateLogEntry) (*AddTB
 
 	future := l.a.Add(ctx, tessera.NewEntry(eb))
 
-	index, err := future()
+	idx, _, err := l.awaiter.Await(ctx, future)
 	if err != nil {
-		return nil, fmt.Errorf("could not resolve tessera future: %v", err)
+		return nil, fmt.Errorf("error waiting for Tessera index future and its integration: %v", err)
 	}
 
 	// TODO: get subtree cosignatures
 	// TODO: build MTCProof
 
 	return &AddTBSRsp{
-		Index:    index.Index,
+		Index:    idx.Index,
 		MTCProof: MTCProof{},
 	}, nil
 }

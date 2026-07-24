@@ -43,6 +43,7 @@ var (
 	checkpointInterval        = flag.Duration("checkpoint_interval", 1500*time.Millisecond, "Interval between publishing checkpoints when the log has grown")
 	batchMaxSize              = flag.Uint("batch_max_size", tessera.DefaultBatchMaxSize, "Maximum number of entries to process in a single sequencing batch.")
 	batchMaxAge               = flag.Duration("batch_max_age", tessera.DefaultBatchMaxAge, "Maximum age of entries in a single sequencing batch.")
+	awaiterPollInterval       = flag.Duration("awaiter_poll_interval", 100*time.Millisecond, "Interval between checkpoint polls by the publication awaiter.")
 	pushbackMaxOutstanding    = flag.Uint("pushback_max_outstanding", tessera.DefaultPushbackMaxOutstanding, "Maximum number of in-flight add requests - i.e. the number of entries with sequence numbers assigned, but which are not yet integrated into the log.")
 	garbageCollectionInterval = flag.Duration("garbage_collection_interval", 10*time.Second, "Interval between scans to remove obsolete partial tiles and entry bundles. Set to 0 to disable.")
 
@@ -56,8 +57,15 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 	ctx := context.Background()
 
-	appender, shutdown := newAppenderFromFlags(ctx)
-	mtcLog := log.NewMTCLog(ctx, appender)
+	appender, shutdown, reader := newAppenderFromFlags(ctx)
+	opts := log.NewOptions().
+		WithTesseraReader(reader).
+		WithAwaiterPollInterval(*awaiterPollInterval)
+	mtcLog, err := log.NewMTCLog(ctx, appender, opts)
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to initialize MTC log", slog.Any("error", err))
+		os.Exit(1)
+	}
 	mux := handler.New(mtcLog)
 
 	var protocols http.Protocols
@@ -117,7 +125,7 @@ func getKeyFile(path string) (string, error) {
 	return string(k), nil
 }
 
-func newAppenderFromFlags(ctx context.Context) (*tessera.Appender, func(ctx context.Context) error) {
+func newAppenderFromFlags(ctx context.Context) (*tessera.Appender, func(ctx context.Context) error, tessera.LogReader) {
 	if *storageDir == "" {
 		slog.ErrorContext(ctx, "flag --storage_dir is required")
 		os.Exit(1)
@@ -150,10 +158,10 @@ func newAppenderFromFlags(ctx context.Context) (*tessera.Appender, func(ctx cont
 		slog.ErrorContext(ctx, "failed to initialize POSIX Tessera storage", slog.Any("error", err))
 		os.Exit(1)
 	}
-	appender, shutdown, _, err := tessera.NewAppender(ctx, driver, opts)
+	appender, shutdown, reader, err := tessera.NewAppender(ctx, driver, opts)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to initialize Tessera appender", slog.Any("error", err))
 		os.Exit(1)
 	}
-	return appender, shutdown
+	return appender, shutdown, reader
 }

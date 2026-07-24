@@ -18,7 +18,9 @@ import (
 	"bytes"
 	"fmt"
 	"testing"
+	"time"
 
+	"github.com/transparency-dev/tessera"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
 )
@@ -281,3 +283,41 @@ func TestTBSCertificateLogEntry_Validate(t *testing.T) {
 		})
 	}
 }
+
+type dummyLogReader struct {
+	tessera.LogReader
+}
+
+func TestMTCOptionsValid(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		opts    *Options
+		wantErr bool
+	}{
+		{
+			name:    "Valid",
+			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}),
+			wantErr: false,
+		}, {
+			name:    "Valid: custom poll period",
+			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithAwaiterPollInterval(10 * time.Millisecond),
+			wantErr: false,
+		}, {
+			name:    "Error: Negative poll period",
+			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithAwaiterPollInterval(-10 * time.Millisecond),
+			wantErr: true,
+		}, {
+			name:    "Error: No TesseraReader",
+			opts:    NewOptions(),
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.opts.valid()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("valid() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
