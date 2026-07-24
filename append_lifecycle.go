@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -739,20 +740,16 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 			span.AddEvent("Created CP")
 			appenderSignedSize.Record(ctx, otel.Clamp64(size))
 
+			var ws, ms []byte
 			eg := errgroup.Group{}
-			sigC := make(chan []byte, 2)
 			eg.Go(func() error {
-				ws, err := witnessCheckpoint(ctx, cp, size, o.witnesses, lr, httpClient, o.witnessOpts)
-				if ws != nil {
-					sigC <- ws
-				}
+				var err error
+				ws, err = witnessCheckpoint(ctx, cp, size, o.witnesses, lr, httpClient, o.witnessOpts)
 				return err
 			})
 			eg.Go(func() error {
-				ms, err := mirrorCheckpoint(ctx, cp, size, o.mirrors, lr, httpClient, o.mirrorOpts)
-				if ms != nil {
-					sigC <- ms
-				}
+				var err error
+				ms, err = mirrorCheckpoint(ctx, cp, size, o.mirrors, lr, httpClient, o.mirrorOpts)
 				return err
 			})
 
@@ -760,11 +757,7 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 				return nil, fmt.Errorf("failed to fetch cosignatures: %v", err)
 			}
 
-			close(sigC)
-			for sigs := range sigC {
-				cp = append(cp, sigs...)
-			}
-
+			cp = append(append(slices.Clone(cp), ws...), ms...)
 			return cp, nil
 		})
 	}
@@ -965,7 +958,7 @@ func (o *AppendOptions) WithCheckpointRepublishInterval(interval time.Duration) 
 	return o
 }
 
-// WithWitnesses configures the set of witnesses that Tessera will contact in order to counter-sign
+// WithWitnesses configures the set of witnesses that Tessera will contact in order to cosign
 // a checkpoint before publishing it. A request will be sent to every witness referenced by the group
 // using the URLs method. The checkpoint will be accepted for publishing when a sufficient number of
 // witnesses to Satisfy the group have responded.
@@ -986,13 +979,13 @@ func (o *AppendOptions) WithWitnesses(witnesses WitnessGroup, opts *WitnessOptio
 }
 
 // WithMirrors configures the set of tlog-mirror servers that Tessera will contact in order to obtain
-// mirror counter-signatures on a checkpoint before publishing it.
+// mirror cosignatures on a checkpoint before publishing it.
 //
 // Requests will be sent to every mirror referenced by the group using the tlog-mirror API at the configured URL.
 // The checkpoint will be accepted for publishing when a sufficient number of mirrors to satisfy the group
 // have responded.
 //
-// If this method is not called, then no mirror counter signatures will be required to publish.
+// If this method is not called, then no mirror cosignatures will be required to publish.
 func (o *AppendOptions) WithMirrors(mirrors WitnessGroup, opts *MirroringOptions) *AppendOptions {
 	if opts == nil {
 		opts = &MirroringOptions{}

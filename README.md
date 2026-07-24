@@ -140,7 +140,7 @@ and
 [WithCheckpointRepublishInterval](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithCheckpointRepublishInterval))
 and performs the following steps:
   1. Create a new Checkpoint and sign it with the signer provided by [WithCheckpointSigner](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithCheckpointSigner)
-  2. Contact witnesses and collect enough countersignatures to satisfy any witness policy configured by [WithWitnesses](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithWitnesses)
+  2. Contact witnesses and collect enough cosignatures to satisfy any witness policy configured by [WithWitnesses](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithWitnesses)
   3. If the witness policy is satisfied, make this new Checkpoint public available
 
 An entry is considered published once it is committed to by a published Checkpoint (i.e. a published Checkpoint's size is larger than the entry's assigned index).
