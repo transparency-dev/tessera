@@ -58,29 +58,6 @@ func (f *fakeMirrorWriter) UpdateCheckpoint(ctx context.Context, g func(oldCP []
 	return nil
 }
 
-type fakeLogReader struct {
-	sizeFunc            func(ctx context.Context) (uint64, error)
-	readEntryBundleFunc func(ctx context.Context, index uint64, p uint8) ([]byte, error)
-}
-
-func (f *fakeLogReader) IntegratedSize(ctx context.Context) (uint64, error) {
-	if f.sizeFunc != nil {
-		return f.sizeFunc(ctx)
-	}
-	return 0, nil
-}
-func (f *fakeLogReader) ReadCheckpoint(ctx context.Context) ([]byte, error) { return nil, nil }
-func (f *fakeLogReader) ReadTile(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
-	return nil, nil
-}
-func (f *fakeLogReader) ReadEntryBundle(ctx context.Context, index uint64, p uint8) ([]byte, error) {
-	if f.readEntryBundleFunc != nil {
-		return f.readEntryBundleFunc(ctx, index, p)
-	}
-	return nil, nil
-}
-func (f *fakeLogReader) NextIndex(ctx context.Context) (uint64, error) { return 0, nil }
-
 const (
 	testPendingCPOrigin = "test-origin"
 	testPendingCPSize   = uint64(512)
@@ -579,7 +556,7 @@ func TestMirrorTarget_AddEntries_Unaligned_PadsFirstBundle(t *testing.T) {
 		},
 		reader: &fakeLogReader{
 			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
-			readEntryBundleFunc: func(ctx context.Context, index uint64, p uint8) ([]byte, error) {
+			readEntryBundle: func(ctx context.Context, index uint64, p uint8) ([]byte, error) {
 				readEntryBundleCalled = true
 				if got, want := index, testUploadStart/layout.EntryBundleWidth; got != want {
 					t.Errorf("ReadEntryBundle index: got %d, want %d", got, want)

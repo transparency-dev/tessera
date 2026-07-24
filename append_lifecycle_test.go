@@ -226,41 +226,6 @@ func TestAddUpdatesWantTreeSize(t *testing.T) {
 	}
 }
 
-type appendFakeLogReader struct {
-	readCheckpoint  func(context.Context) ([]byte, error)
-	readTile        func(context.Context, uint64, uint64, uint8) ([]byte, error)
-	readEntryBundle func(context.Context, uint64, uint8) ([]byte, error)
-}
-
-func (f *appendFakeLogReader) ReadCheckpoint(ctx context.Context) ([]byte, error) {
-	if f.readCheckpoint != nil {
-		return f.readCheckpoint(ctx)
-	}
-	return nil, nil
-}
-
-func (f *appendFakeLogReader) ReadTile(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
-	if f.readTile != nil {
-		return f.readTile(ctx, level, index, p)
-	}
-	return nil, nil
-}
-
-func (f *appendFakeLogReader) ReadEntryBundle(ctx context.Context, index uint64, p uint8) ([]byte, error) {
-	if f.readEntryBundle != nil {
-		return f.readEntryBundle(ctx, index, p)
-	}
-	return nil, nil
-}
-
-func (f *appendFakeLogReader) IntegratedSize(ctx context.Context) (uint64, error) {
-	return 0, nil
-}
-
-func (f *appendFakeLogReader) NextIndex(ctx context.Context) (uint64, error) {
-	return 0, nil
-}
-
 func TestWithMirrors(t *testing.T) {
 	u, err := url.Parse("https://mirror.example.com")
 	if err != nil {
@@ -438,7 +403,7 @@ func TestCheckpointPublisher(t *testing.T) {
 				test.opts.WithWitnesses(failingWitnesses, wOpts)
 			}
 
-			lr := &appendFakeLogReader{
+			lr := &fakeLogReader{
 				readCheckpoint: func(ctx context.Context) ([]byte, error) {
 					return nil, errors.New("no checkpoint yet")
 				},
