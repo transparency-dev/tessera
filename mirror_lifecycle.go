@@ -64,7 +64,7 @@ type MirrorOptions struct {
 	signer      note.Signer
 	cpSource    func(context.Context) ([]byte, error)
 	logVerifier note.Verifier
-	origin		string
+	origin      string
 }
 
 // NewMirrorOptions creates a new options struct with defaults.
@@ -147,7 +147,7 @@ type MirrorTarget struct {
 	writer             MirrorWriter
 	reader             LogReader
 	cpSource           func(context.Context) ([]byte, error)
-	origin			   string
+	origin             string
 	signer             note.Signer
 	logVerifier        note.Verifier
 	verifySubtreeProof func(hasher merkle.LogHasher, start, end, size uint64, proof [][]byte, subRoot []byte, root []byte) error
@@ -186,7 +186,7 @@ func NewMirrorTarget(ctx context.Context, d Driver, opts *MirrorOptions) (*Mirro
 		cpSource:           opts.cpSource,
 		signer:             opts.signer,
 		logVerifier:        opts.logVerifier,
-		origin:				opts.origin,
+		origin:             opts.origin,
 		verifySubtreeProof: proof.VerifySubtreeConsistency,
 		ticketKey:          tK,
 	}, nil

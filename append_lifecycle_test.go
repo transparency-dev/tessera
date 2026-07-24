@@ -18,10 +18,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	f_note "github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/witness/config"
+	"github.com/transparency-dev/witness/persistence/inmemory"
+	"github.com/transparency-dev/witness/witness"
 	"golang.org/x/mod/sumdb/note"
 )
 
@@ -216,5 +223,249 @@ func TestAddUpdatesWantTreeSize(t *testing.T) {
 
 	if got := term.wantTreeSize.Load(); got != wantIdx+1 {
 		t.Fatalf("wantTreeSize should be %d after adding index %d, got %d", wantIdx+1, wantIdx, got)
+	}
+}
+
+type appendFakeLogReader struct {
+	readCheckpoint  func(context.Context) ([]byte, error)
+	readTile        func(context.Context, uint64, uint64, uint8) ([]byte, error)
+	readEntryBundle func(context.Context, uint64, uint8) ([]byte, error)
+}
+
+func (f *appendFakeLogReader) ReadCheckpoint(ctx context.Context) ([]byte, error) {
+	if f.readCheckpoint != nil {
+		return f.readCheckpoint(ctx)
+	}
+	return nil, nil
+}
+
+func (f *appendFakeLogReader) ReadTile(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
+	if f.readTile != nil {
+		return f.readTile(ctx, level, index, p)
+	}
+	return nil, nil
+}
+
+func (f *appendFakeLogReader) ReadEntryBundle(ctx context.Context, index uint64, p uint8) ([]byte, error) {
+	if f.readEntryBundle != nil {
+		return f.readEntryBundle(ctx, index, p)
+	}
+	return nil, nil
+}
+
+func (f *appendFakeLogReader) IntegratedSize(ctx context.Context) (uint64, error) {
+	return 0, nil
+}
+
+func (f *appendFakeLogReader) NextIndex(ctx context.Context) (uint64, error) {
+	return 0, nil
+}
+
+func TestWithMirrors(t *testing.T) {
+	u, err := url.Parse("https://mirror.example.com")
+	if err != nil {
+		t.Fatalf("failed to parse url: %v", err)
+	}
+	wit, err := NewWitness("Wit1+55ee4561+AVhZSmQj9+SoL+p/nN0Hh76xXmF7QcHfytUrI1XfSClk", u)
+	if err != nil {
+		t.Fatalf("failed to create witness: %v", err)
+	}
+	mirrors := NewWitnessGroup(1, wit)
+
+	for _, test := range []struct {
+		desc           string
+		mirrorOpts     *MirroringOptions
+		expectTimeout  time.Duration
+		expectFailOpen bool
+	}{
+		{
+			desc:           "nil options",
+			mirrorOpts:     nil,
+			expectTimeout:  DefaultMirrorTimeout,
+			expectFailOpen: false,
+		},
+		{
+			desc: "custom options",
+			mirrorOpts: &MirroringOptions{
+				Timeout:  5 * time.Second,
+				FailOpen: true,
+			},
+			expectTimeout:  5 * time.Second,
+			expectFailOpen: true,
+		},
+		{
+			desc: "zero timeout uses default",
+			mirrorOpts: &MirroringOptions{
+				Timeout:  0,
+				FailOpen: true,
+			},
+			expectTimeout:  DefaultMirrorTimeout,
+			expectFailOpen: true,
+		},
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			opts := NewAppendOptions().WithMirrors(mirrors, test.mirrorOpts)
+			if len(opts.mirrors.Components) != 1 {
+				t.Errorf("expected 1 mirror component, got %d", len(opts.mirrors.Components))
+			}
+			if got, want := opts.mirrorOpts.Timeout, test.expectTimeout; got != want {
+				t.Errorf("expected timeout %v, got %v", want, got)
+			}
+			if got, want := opts.mirrorOpts.FailOpen, test.expectFailOpen; got != want {
+				t.Errorf("expected FailOpen %t, got %t", want, got)
+			}
+		})
+	}
+}
+
+const (
+	testWit1VKey = "Wit1+55ee4561+AVhZSmQj9+SoL+p/nN0Hh76xXmF7QcHfytUrI1XfSClk"
+	testWit1SKey = "PRIVATE+KEY+Wit1+55ee4561+AeadRiG7XM4XiieCHzD8lxysXMwcViy5nYsoXURWGrlE"
+)
+
+func newWitnessHandler(t *testing.T, logVerifier note.Verifier, witnessSKey string) http.HandlerFunc {
+	witnessSigner, err := f_note.NewSignerForCosignatureV1(witnessSKey)
+	if err != nil {
+		t.Fatalf("failed to create witness signer: %v", err)
+	}
+
+	p := inmemory.New()
+	logCfg := config.Log{
+		Origin:   "example.com/log/testdata",
+		Verifier: logVerifier,
+		VKey:     "example.com/log/testdata+33d7b496+AeHTu4Q3hEIMHNqc6fASMsq3rKNx280NI+oO5xCFkkSx",
+	}
+	if err := p.AddLogs(t.Context(), []config.Log{logCfg}); err != nil {
+		t.Fatalf("failed to add log config to persistence: %v", err)
+	}
+
+	wOpts := witness.Opts{
+		Persistence: p,
+		Signers:     []note.Signer{witnessSigner},
+		VerifierForLog: func(ctx context.Context, origin string) (note.Verifier, bool, error) {
+			if origin == "example.com/log/testdata" {
+				return logVerifier, true, nil
+			}
+			return nil, false, nil
+		},
+	}
+	witSvc, err := witness.New(t.Context(), wOpts)
+	if err != nil {
+		t.Fatalf("failed to create witness service: %v", err)
+	}
+
+	return witness.NewHTTPHandler(witSvc).AddCheckpoint
+}
+
+func TestCheckpointPublisher(t *testing.T) {
+	logSigner := mustCreateSigner(t, testSignerKey)
+	logVerifier, err := note.NewVerifier("example.com/log/testdata+33d7b496+AeHTu4Q3hEIMHNqc6fASMsq3rKNx280NI+oO5xCFkkSx")
+	if err != nil {
+		t.Fatalf("failed to create log verifier: %v", err)
+	}
+
+	witnessServer := httptest.NewServer(newWitnessHandler(t, logVerifier, testWit1SKey))
+	t.Cleanup(witnessServer.Close)
+
+	witnessServerURL, err := url.Parse(witnessServer.URL)
+	if err != nil {
+		t.Fatalf("failed to parse witness server url: %v", err)
+	}
+
+	wit, err := NewWitness(testWit1VKey, witnessServerURL)
+	if err != nil {
+		t.Fatalf("failed to create witness: %v", err)
+	}
+	witnesses := NewWitnessGroup(1, wit)
+	witVerifier, err := f_note.NewVerifierForCosignatureV1(testWit1VKey)
+	if err != nil {
+		t.Fatalf("failed to create witness verifier: %v", err)
+	}
+
+	dummyMirrors := NewWitnessGroup(1, wit)
+
+	for _, test := range []struct {
+		desc               string
+		opts               *AppendOptions
+		witnessFails       bool
+		expectCosignatures []note.Verifier
+		expectErr          bool
+	}{
+		{
+			desc: "no witnesses, no mirrors",
+			opts: NewAppendOptions().WithCheckpointSigner(logSigner),
+		},
+		{
+			desc:               "witnesses only",
+			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, nil),
+			expectCosignatures: []note.Verifier{witVerifier},
+		},
+		{
+			desc: "mirrors only",
+			opts: NewAppendOptions().WithCheckpointSigner(logSigner).WithMirrors(dummyMirrors, nil),
+		},
+		{
+			desc:               "witnesses and mirrors",
+			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, nil).WithMirrors(dummyMirrors, nil),
+			expectCosignatures: []note.Verifier{witVerifier},
+		},
+		{
+			desc:         "witness fails, failOpen=false",
+			opts:         NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, &WitnessOptions{FailOpen: false}),
+			witnessFails: true,
+			expectErr:    true,
+		},
+		{
+			desc:         "witness fails, failOpen=true",
+			opts:         NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, &WitnessOptions{FailOpen: true}),
+			witnessFails: true,
+		},
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			client := http.DefaultClient
+			if test.witnessFails {
+				failingWitnessServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					http.Error(w, "internal error", http.StatusInternalServerError)
+				}))
+				defer failingWitnessServer.Close()
+
+				failingURL, _ := url.Parse(failingWitnessServer.URL)
+				failingWit, _ := NewWitness(testWit1VKey, failingURL)
+				failingWitnesses := NewWitnessGroup(1, failingWit)
+
+				// Re-configure option to use failing witnesses
+				wOpts := &WitnessOptions{FailOpen: test.opts.witnessOpts.FailOpen}
+				test.opts.WithWitnesses(failingWitnesses, wOpts)
+			}
+
+			lr := &appendFakeLogReader{
+				readCheckpoint: func(ctx context.Context) ([]byte, error) {
+					return nil, errors.New("no checkpoint yet")
+				},
+			}
+
+			publisher := test.opts.CheckpointPublisher(lr, client)
+			cp, err := publisher(t.Context(), 5, []byte("12345678901234567890123456789012"))
+			if (err != nil) != test.expectErr {
+				t.Fatalf("expected error %v but got: %v", test.expectErr, err)
+			}
+			if err != nil {
+				return
+			}
+
+			// Open checkpoint to verify signatures
+			wantV := append([]note.Verifier{logVerifier}, test.expectCosignatures...)
+			n, err := note.Open(cp, note.VerifierList(wantV...))
+			if err != nil {
+				t.Fatalf("failed to open signed checkpoint: %v", err)
+			}
+
+			// Check that all required verifiers signed it
+			if len(n.Sigs) != len(wantV) {
+				t.Logf("cp = %q", string(cp))
+				t.Logf("n.Sigs = %+v", n.Sigs)
+				t.Errorf("expected %d signatures, got %d", len(wantV), len(n.Sigs))
+			}
+		})
 	}
 }
