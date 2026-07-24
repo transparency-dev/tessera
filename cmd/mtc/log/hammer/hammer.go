@@ -1,4 +1,4 @@
-// Copyright 2024 The Tessera authors. All Rights Reserved.
+// Copyright 2026 The Tessera authors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// hammer is a tool to load test a Tessera log.
+// hammer is a tool to load test a Tessera MTC log.
 package main
 
 import (
@@ -33,9 +33,18 @@ import (
 	"sync"
 	"time"
 
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
+	"encoding/json"
+
+	"github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera/client"
+	"github.com/transparency-dev/tessera/cmd/mtc/log"
 	"github.com/transparency-dev/tessera/internal/hammer/loadtest"
-	"golang.org/x/mod/sumdb/note"
+
 	"golang.org/x/net/http2"
 
 	"log/slog"
@@ -45,6 +54,14 @@ func init() {
 	flag.Var(&logURL, "log_url", "Log storage root URL (can be specified multiple times), e.g. https://log.server/and/path/")
 	flag.Var(&writeLogURL, "write_log_url", "Root URL for writing to a log (can be specified multiple times), e.g. https://log.server/and/path/ (optional, defaults to log_url)")
 }
+
+const (
+	oidPrefix = "oid/1.3.6.1.4.1."
+)
+
+var (
+	oidPublicKeyRSA = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 1}
+)
 
 var (
 	logURL      multiStringFlag
@@ -59,8 +76,10 @@ var (
 	maxWriteOpsPerSecond = flag.Int("max_write_ops", 0, "The maximum number of write operations per second")
 	numWriters           = flag.Int("num_writers", 0, "The number of independent write tasks to run")
 
-	leafMinSize = flag.Int("leaf_min_size", 0, "Minimum size in bytes of individual leaves")
-	dupChance   = flag.Float64("dup_chance", 0.1, "The probability of a generated leaf being a duplicate of a previous value")
+	caID         = flag.String("ca_id", "44363.47", "The CA ID (e.g. 44363.47)")
+	logNumber    = flag.Uint64("log_number", 1, "The issuance log number (strictly positive)")
+	certLifetime = flag.Duration("cert_lifetime", 24*time.Hour, "Validity duration for generated certificates")
+	dupChance    = flag.Float64("dup_chance", 0.1, "The probability of a generated leaf being a duplicate of a previous value")
 
 	leafWriteGoal = flag.Int64("leaf_write_goal", 0, "Exit after writing this number of leaves, or 0 to keep going indefinitely")
 	maxRunTime    = flag.Duration("max_runtime", 0, "Fail after this amount of time has passed, or 0 to keep going indefinitely")
@@ -108,9 +127,9 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	logSigV, err := note.NewVerifier(*logPubKey)
+	logSigV, err := note.NewVerifierForCosignatureV1(*logPubKey)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to create verifier", slog.Any("error", err))
+		slog.ErrorContext(context.Background(), "failed to create verifier", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -122,7 +141,8 @@ func main() {
 
 	var cpRaw []byte
 	cons := client.UnilateralConsensus(r.ReadCheckpoint)
-	tracker, err := client.NewLogStateTracker(ctx, r.ReadTile, cpRaw, logSigV, logSigV.Name(), cons)
+	originName := fmt.Sprintf("%s%s.0.%d", oidPrefix, *caID, *logNumber)
+	tracker, err := client.NewLogStateTracker(ctx, r.ReadTile, cpRaw, logSigV, originName, cons)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create LogStateTracker", slog.Any("error", err))
 		os.Exit(1)
@@ -137,7 +157,7 @@ func main() {
 	ha := loadtest.NewHammerAnalyser(func() uint64 { return tracker.Latest().Size })
 	ha.Run(ctx)
 
-	gen := newLeafGenerator(tracker.Latest().Size, *leafMinSize, *dupChance)
+	gen := newLeafGenerator(tracker.Latest().Size, *caID, *dupChance, *certLifetime)
 	opts := loadtest.HammerOpts{
 		MaxReadOpsPerSecond:  *maxReadOpsPerSecond,
 		MaxWriteOpsPerSecond: *maxWriteOpsPerSecond,
@@ -196,27 +216,102 @@ func main() {
 	os.Exit(exitCode)
 }
 
-// newLeafGenerator returns a function that generates values to append to a log.
-// The leaves are constructed to be at least minLeafSize bytes long.
+// newLeafGenerator returns a function that generates values to append to an MTC log.
 // The generator can be used by concurrent threads.
 //
 // dupChance provides the probability that a new leaf will be a duplicate of a previous entry.
 // Leaves will be unique if dupChance is 0, and if set to 1 then all values will be duplicates.
 // startSize should be set to the initial size of the log so that repeated runs of the
 // hammer can start seeding leaves to avoid duplicates with previous runs.
-func newLeafGenerator(startSize uint64, minLeafSize int, dupChance float64) func() []byte {
-	// genLeaf MUST be determinstic given n
+type randReader struct {
+	r *rand.Rand
+}
+
+func (rr randReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(rr.r.Int())
+	}
+	return len(p), nil
+}
+
+func newLeafGenerator(startSize uint64, caID string, dupChance float64, certLifetime time.Duration) func() []byte {
+	issuer := pkix.Name{
+		CommonName: caID,
+	}
+	issuerDER, err := asn1.Marshal(issuer.ToRDNSequence())
+	if err != nil {
+		slog.ErrorContext(context.Background(), "Failed to marshal issuer RDN sequence", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	type validity struct {
+		NotBefore time.Time `asn1:"utc"`
+		NotAfter  time.Time `asn1:"utc"`
+	}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	valDER, err := asn1.Marshal(validity{
+		NotBefore: now,
+		NotAfter:  now.Add(certLifetime),
+	})
+	if err != nil {
+		slog.ErrorContext(context.Background(), "Failed to marshal validity sequence", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	// TODO:move to ML-DSA when available in go1.27
+	source := rand.New(rand.NewPCG(0, 42))
+	type algorithmIdentifier struct {
+		Algorithm  asn1.ObjectIdentifier
+		Parameters asn1.RawValue `asn1:"optional"`
+	}
+	spkiAlgDER, err := asn1.Marshal(algorithmIdentifier{
+		Algorithm:  oidPublicKeyRSA,
+		Parameters: asn1.RawValue{Tag: asn1.TagNull},
+	})
+	if err != nil {
+		slog.ErrorContext(context.Background(), "Failed to marshal subjectPublicKeyAlgorithm", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	privKey, err := rsa.GenerateKey(randReader{source}, 2048)
+	if err != nil {
+		slog.ErrorContext(context.Background(), "Failed to generate RSA key", slog.Any("error", err))
+		os.Exit(1)
+	}
+	spkiDER, err := x509.MarshalPKIXPublicKey(&privKey.PublicKey)
+	if err != nil {
+		slog.ErrorContext(context.Background(), "Failed to marshal SubjectPublicKeyInfo DER", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	hash := sha256.Sum256(spkiDER)
+
+	// genLeaf MUST be deterministic given n
 	genLeaf := func(n uint64) []byte {
-		// Make a slice with half the number of requested bytes since we'll
-		// hex-encode them below which gets us back up to the full amount.
-		filler := make([]byte, minLeafSize/2)
-		source := rand.New(rand.NewPCG(0, n))
-		for i := range filler {
-			// This throws away a lot of the generated data. An exercise to a future
-			// coder is to fill in multiple bytes at a time.
-			filler[i] = byte(source.Int())
+		subject := pkix.Name{
+			CommonName: fmt.Sprintf("leaf-%d.example.com", n),
 		}
-		return fmt.Appendf(nil, "%x %d", filler, n)
+		subjectDER, err := asn1.Marshal(subject.ToRDNSequence())
+		if err != nil {
+			slog.ErrorContext(context.Background(), "Failed to marshal subject RDN sequence", slog.Any("error", err))
+			return nil
+		}
+
+		entry := log.TBSCertificateLogEntry{
+			Version:                   0,
+			Issuer:                    issuerDER,
+			Validity:                  valDER,
+			Subject:                   subjectDER,
+			SubjectPublicKeyAlgorithm: spkiAlgDER,
+			SubjectPublicKeyInfoHash:  hash[:],
+		}
+
+		jsonBytes, err := json.Marshal(entry)
+		if err != nil {
+			slog.ErrorContext(context.Background(), "Failed to marshal TBSCertificateLogEntry JSON", slog.Any("error", err))
+			return nil
+		}
+		return jsonBytes
 	}
 
 	sizeLocked := startSize
@@ -276,7 +371,7 @@ func mustCreateWriters(ctx context.Context, us []string) loadtest.LeafWriter {
 		if !strings.HasSuffix(u, "/") {
 			u += "/"
 		}
-		u += "add"
+		u += "add-tbs"
 		wURL, err := url.Parse(u)
 		if err != nil {
 			slog.ErrorContext(ctx, "Invalid log writer URL", slog.String("u", u), slog.Any("error", err))
@@ -289,7 +384,9 @@ func mustCreateWriters(ctx context.Context, us []string) loadtest.LeafWriter {
 
 func httpWriter(ctx context.Context, u *url.URL, hc *http.Client, bearerToken string) loadtest.LeafWriter {
 	cTrace := &httptrace.ClientTrace{
-		GotConn: func(info httptrace.GotConnInfo) { slog.InfoContext(ctx, "connection established", slog.Any("info", info)) },
+		GotConn: func(info httptrace.GotConnInfo) {
+			slog.InfoContext(ctx, "connection established", slog.Any("info", info))
+		},
 	}
 	return func(ctx context.Context, newLeaf []byte) (uint64, error) {
 		req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(newLeaf))
@@ -313,7 +410,7 @@ func httpWriter(ctx context.Context, u *url.URL, hc *http.Client, bearerToken st
 			return 0, fmt.Errorf("failed to read body: %v", err)
 		}
 		switch resp.StatusCode {
-		case http.StatusOK:
+		case http.StatusOK, http.StatusCreated:
 			if resp.Request.Method != http.MethodPost {
 				return 0, fmt.Errorf("write leaf was redirected to %s", resp.Request.URL)
 			}
@@ -326,12 +423,11 @@ func httpWriter(ctx context.Context, u *url.URL, hc *http.Client, bearerToken st
 		default:
 			return 0, fmt.Errorf("write leaf was not OK. Status code: %d. Body: %q", resp.StatusCode, body)
 		}
-		parts := bytes.Split(body, []byte("\n"))
-		index, err := strconv.ParseUint(string(parts[0]), 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("write leaf failed to parse response: %v", body)
+		var rsp log.AddTBSRsp
+		if err := json.Unmarshal(body, &rsp); err != nil {
+			return 0, fmt.Errorf("write leaf failed to parse response JSON: %w. Body: %q", err, body)
 		}
-		return index, nil
+		return rsp.Index, nil
 	}
 }
 
