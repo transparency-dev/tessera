@@ -239,7 +239,7 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq sequencer, op
 	r := &Appender{
 		logStore:        logStore,
 		sequencer:       seq,
-		newCP:           opts.CheckpointPublisher(logStore, s.cfg.HTTPClient),
+		newCP:           opts.CheckpointPublisher(ctx, logStore, s.cfg.HTTPClient),
 		treeUpdated:     make(chan struct{}),
 		entriesAssigned: make(chan struct{}, 1),
 	}

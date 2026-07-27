@@ -151,7 +151,7 @@ func (s *Storage) newAppender(ctx context.Context, o *logResourceStorage, opts *
 		s:          s,
 		logStorage: o,
 		cpUpdated:  make(chan struct{}),
-		newCP:      opts.CheckpointPublisher(o, s.cfg.HTTPClient),
+		newCP:      opts.CheckpointPublisher(ctx, o, s.cfg.HTTPClient),
 	}
 	if err := a.initialise(ctx); err != nil {
 		return nil, nil, err

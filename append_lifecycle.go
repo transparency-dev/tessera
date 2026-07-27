@@ -15,6 +15,7 @@
 package tessera
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ import (
 	f_log "github.com/transparency-dev/formats/log"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api/layout"
+	m_gateway "github.com/transparency-dev/tessera/internal/mirror/gateway"
 	"github.com/transparency-dev/tessera/internal/otel"
 	"github.com/transparency-dev/tessera/internal/parse"
 	"github.com/transparency-dev/tessera/internal/witness"
@@ -745,7 +747,22 @@ func (o *AppendOptions) WithAntispam(inMemEntries uint, as Antispam) *AppendOpti
 }
 
 // CheckpointPublisher returns a function which should be used to create, sign, and potentially witness a new checkpoint.
+// Deprecated: Use CheckpointPublisherContex.
 func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client) func(context.Context, uint64, []byte) ([]byte, error) {
+	return func(ctx context.Context, size uint64, root []byte) ([]byte, error) {
+		return o.CheckpointPublisherContext(ctx, lr, httpClient)(ctx, size, root)
+	}
+}
+
+// CheckpointPublisherContext returns a function which should be used to create, sign, and potentially witness a new checkpoint.
+func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogReader, httpClient *http.Client) func(context.Context, uint64, []byte) ([]byte, error) {
+	gw := sync.OnceValue(func() *m_gateway.Gateway {
+		if len(o.mirrors.Components) > 0 {
+			return m_gateway.NewGateway(ctx, httpClient, o.mirrors, lr, o.primarySigner.Name())
+		}
+		return nil
+	})
+
 	return func(ctx context.Context, size uint64, root []byte) ([]byte, error) {
 		return otel.Trace(ctx, "tessera.CheckpointPublisher", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
 			cp, err := o.newCP(ctx, size, root)
@@ -763,8 +780,13 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 				return err
 			})
 			eg.Go(func() error {
+				if gw == nil {
+					return nil
+				}
+				mirrorCtx, cancel := context.WithTimeout(ctx, o.mirrorOpts.Timeout)
+				defer cancel()
 				var err error
-				ms, err = mirrorCheckpoint(ctx, cp, size, o.mirrors, lr, httpClient, o.mirrorOpts)
+				ms, err = mirrorCheckpoint(mirrorCtx, gw, &o.mirrors, cp, size, o.mirrorOpts.FailOpen)
 				return err
 			})
 
@@ -827,15 +849,38 @@ func witnessCheckpoint(ctx context.Context, cp []byte, cpSize uint64, witnesses 
 	})
 }
 
-// mirrorCheckpoint takes care of mirroring the given checkpoint with the provided mirror policy.
-// Returns signatures from mirrors, ready to append to the checkpoint, or an error.
-func mirrorCheckpoint(ctx context.Context, cp []byte, cpSize uint64, mirrors WitnessGroup, lr LogReader, httpClient *http.Client, opts MirroringOptions) ([]byte, error) {
-	return otel.Trace(ctx, "tessera.mirrorCheckpoint", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
-		if len(mirrors.Components) == 0 {
-			return nil, nil
+func mirrorCheckpoint(ctx context.Context, gw *m_gateway.Gateway, policy *WitnessGroup, cp []byte, size uint64, failOpen bool) ([]byte, error) {
+	// TODO(al): Add metrics
+	checkPolicy := func(sigs []byte) ([]byte, error) {
+		newCP := append(slices.Clone(cp), sigs...)
+		if policy.Satisfied(newCP) {
+			return sigs, nil
 		}
-		span.AddEvent("Starting mirroring")
-		return nil, nil
+		if failOpen {
+			slog.WarnContext(ctx, "MirrorGateway: policy not met, failing-open")
+			return sigs, nil
+		}
+		return sigs, fmt.Errorf("MirrorGateway: policy not met")
+	}
+
+	return otel.Trace(ctx, "tessera.mirrorCheckpoint", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		sigCh := gw.CosignCheckpoint(ctx, cp, size)
+		var sigBlock bytes.Buffer
+		for {
+			select {
+			case <-ctx.Done():
+				return checkPolicy(sigBlock.Bytes())
+			case sig, ok := <-sigCh:
+				if !ok {
+					return checkPolicy(sigBlock.Bytes())
+				}
+				sigBlock.Write(sig)
+				newCP := append(slices.Clone(cp), sigBlock.Bytes()...)
+				if policy.Satisfied(newCP) {
+					return sigBlock.Bytes(), nil
+				}
+			}
+		}
 	})
 }
 

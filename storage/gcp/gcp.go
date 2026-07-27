@@ -311,7 +311,7 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoord
 		},
 		nextIndex: a.sequencer.nextIndex,
 	}
-	a.newCP = opts.CheckpointPublisher(reader, s.cfg.HTTPClient)
+	a.newCP = opts.CheckpointPublisher(ctx, reader, s.cfg.HTTPClient)
 
 	if err := a.init(ctx); err != nil {
 		return nil, nil, fmt.Errorf("failed to initialise log storage: %v", err)
