@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"github.com/transparency-dev/tessera"
+	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/entry"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
 )
@@ -32,6 +33,13 @@ type MTCLog struct {
 // MTCProof represents an MTC inclusion proof as per
 // draft-ietf-plants-merkle-tree-certs section 6.2.
 type MTCProof struct{}
+
+// AddTBSRsp contains enough information from the log
+// to build a standalone certificate.
+type AddTBSRsp struct {
+	Index    uint64   `json:"index"`
+	MTCProof MTCProof `json:"mtcproof"`
+}
 
 // TBSCertificateLogEntry represents a log entry as per
 // draft-ietf-plants-merkle-tree-certs section 7.2.
@@ -120,8 +128,7 @@ func validateASN1Element(data []byte, expectedTag asn1.Tag, fieldName string) er
 }
 
 // Validate checks that TBSCertificateLogEntry fields are correct.
-// It checks that mandatory fields are present, and that all fields are well
-// formatted.
+// It checks that mandatory fields are present, and that all fields are well formatted.
 func (e *TBSCertificateLogEntry) Validate() error {
 	if e.Version < 0 || e.Version > 2 {
 		return fmt.Errorf("invalid version %d", e.Version)
@@ -169,20 +176,48 @@ func (e *TBSCertificateLogEntry) Validate() error {
 	return nil
 }
 
+func (l *MTCLog) accept(tbs TBSCertificateLogEntry) error {
+	return tbs.Validate()
+}
+
 // NewMTCLog creates a new MTCLog compliant with
 // draft-ietf-plants-merkle-tree-certs and http://c2sp.org/mtc-tlog.
 func NewMTCLog(ctx context.Context, a *tessera.Appender) *MTCLog {
 	// TODO: schedule landmark publishing
-	return &MTCLog{a}
+	return &MTCLog{a: a}
 }
 
 // AddTBS adds a TBSCertificateLogEntry to the log.
-func (l *MTCLog) AddTBS(ctx context.Context, e TBSCertificateLogEntry) (uint64, MTCProof, error) {
-	// TODO: marshal
-	// TODO: add to log
+func (l *MTCLog) AddTBS(ctx context.Context, tbs TBSCertificateLogEntry) (*AddTBSRsp, error) {
+	if err := l.accept(tbs); err != nil {
+		return nil, fmt.Errorf("invalid entry: %w", err)
+	}
+
+	tbsb, err := tbs.Marshal()
+	if err != nil {
+		return nil, fmt.Errorf("marshal contents: %w", err)
+	}
+
+	e := entry.New(tbsb)
+	eb, err := e.Marshal()
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %v", err)
+	}
+
+	future := l.a.Add(ctx, tessera.NewEntry(eb))
+
+	index, err := future()
+	if err != nil {
+		return nil, fmt.Errorf("could not resolve tessera future: %v", err)
+	}
+
 	// TODO: get subtree cosignatures
 	// TODO: build MTCProof
-	return 0, MTCProof{}, nil
+
+	return &AddTBSRsp{
+		Index:    index.Index,
+		MTCProof: MTCProof{},
+	}, nil
 }
 
 // ProofToLandmark builds an MTCProof for the entry at idx to a

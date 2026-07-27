@@ -49,9 +49,39 @@ type EntryType uint16
 // MTCLogEntry represents leaf node as defined in
 // draft-ietf-plants-merkle-tree-certs section 5.2.1.
 type MTCLogEntry struct {
-	Extensions []MTCLogEntryExtension
-	Type       EntryType // MTCLogEntryTypeNull, MTCLogEntryTypeTBSCert
-	EntryData  []byte    // Raw DER bytes of TBSCertificateLogEntry if Type is TBSCert
+	extensions []MTCLogEntryExtension
+	entryType  EntryType // MTCLogEntryTypeNull, MTCLogEntryTypeTBSCert
+	entryData  []byte    // Raw DER bytes of TBSCertificateLogEntry if Type is TBSCert
+}
+
+// New creates a new MTCLogEntry containing entryData and optional extensions.
+// If entryData is empty, Type is set to MTCLogEntryTypeNull.
+// Otherwise, Type is set to MTCLogEntryTypeTBSCert.
+func New(entryData []byte, extensions ...MTCLogEntryExtension) *MTCLogEntry {
+	entryType := MTCLogEntryTypeTBSCert
+	if len(entryData) == 0 {
+		entryType = MTCLogEntryTypeNull
+	}
+	return &MTCLogEntry{
+		extensions: extensions,
+		entryType:  entryType,
+		entryData:  entryData,
+	}
+}
+
+// Extensions returns the entry's extensions list.
+func (e *MTCLogEntry) Extensions() []MTCLogEntryExtension {
+	return e.extensions
+}
+
+// Type returns the entry's Type.
+func (e *MTCLogEntry) Type() EntryType {
+	return e.entryType
+}
+
+// EntryData returns the raw entry data payload.
+func (e *MTCLogEntry) EntryData() []byte {
+	return e.entryData
 }
 
 // Marshal encodes the MTCLogEntry into TLS Presentation bytes.
@@ -59,7 +89,7 @@ type MTCLogEntry struct {
 // Returns an error if the extensions are not specs compliant, or if the
 // resulting bytes do not fit in a t-log leaf.
 func (e *MTCLogEntry) Marshal() ([]byte, error) {
-	if e.Type == MTCLogEntryTypeNull && len(e.EntryData) > 0 {
+	if e.entryType == MTCLogEntryTypeNull && len(e.entryData) > 0 {
 		return nil, errors.New("null entry must have empty EntryData")
 	}
 	// struct {} Empty;
@@ -90,9 +120,9 @@ func (e *MTCLogEntry) Marshal() ([]byte, error) {
 	// "The extensions list MUST appear in ascending order by extension_type and
 	// MUST NOT contain two extensions with the same extension_type."
 	b.AddUint16LengthPrefixed(func(child *cryptobyte.Builder) {
-		for i, ext := range e.Extensions {
+		for i, ext := range e.extensions {
 			if i > 0 {
-				prevType := e.Extensions[i-1].Type
+				prevType := e.extensions[i-1].Type
 				if ext.Type == prevType {
 					child.SetError(fmt.Errorf("duplicate extension type %d", ext.Type))
 					return
@@ -110,10 +140,10 @@ func (e *MTCLogEntry) Marshal() ([]byte, error) {
 		}
 	})
 
-	b.AddUint16(uint16(e.Type))
+	b.AddUint16(uint16(e.entryType))
 
 	// EntryData fills up the rest of the structure, no size prefix needed.
-	b.AddBytes(e.EntryData)
+	b.AddBytes(e.entryData)
 
 	res, err := b.Bytes()
 	if err != nil {
