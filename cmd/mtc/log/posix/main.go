@@ -25,7 +25,8 @@ import (
 
 	"github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
-	mtc "github.com/transparency-dev/tessera/cmd/mtc/log"
+	"github.com/transparency-dev/tessera/cmd/mtc/log"
+	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/handler"
 	"github.com/transparency-dev/tessera/storage/posix"
 )
 
@@ -56,29 +57,12 @@ func main() {
 	ctx := context.Background()
 
 	appender, shutdown := newAppenderFromFlags(ctx)
-	mtcLog := mtc.NewMTCLog(ctx, appender)
+	mtcLog := log.NewMTCLog(ctx, appender)
+	mux := handler.New(mtcLog)
 
 	var protocols http.Protocols
 	protocols.SetHTTP1(true)
 	protocols.SetUnencryptedHTTP2(true)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /add-tbs", func(w http.ResponseWriter, r *http.Request) {
-		// TODO: parse request
-		// TODO write response
-		if _, _, err := mtcLog.AddTBS(ctx, mtc.TBSCertificateLogEntry{}); err != nil {
-			slog.ErrorContext(ctx, "Failed to add entry to MTC log", slog.Any("error", err))
-		}
-		http.Error(w, "not implemented", http.StatusNotImplemented)
-	})
-	mux.HandleFunc("GET /proof-to-landmark", func(w http.ResponseWriter, r *http.Request) {
-		// TODO parse request
-		// TODO write response
-		if _, err := mtcLog.ProofToLandmark(ctx, 0); err != nil {
-			slog.ErrorContext(ctx, "Failed to fetch inclusion proof to landmark", slog.Any("error", err))
-		}
-		http.Error(w, "not implemented", http.StatusNotImplemented)
-	})
 
 	server := &http.Server{
 		Addr:              *listenAddr,
