@@ -15,11 +15,8 @@
 package entry
 
 import (
-	"bytes"
-	"cmp"
 	"errors"
 	"fmt"
-	"slices"
 
 	"golang.org/x/crypto/cryptobyte"
 )
@@ -92,22 +89,18 @@ func (e *MTCLogEntry) Marshal() ([]byte, error) {
 	// SPEC: draft-ietf-plants-merkle-tree-certs section 5.2.1.
 	// "The extensions list MUST appear in ascending order by extension_type and
 	// MUST NOT contain two extensions with the same extension_type."
-	exts := slices.Clone(e.Extensions)
-	// First, sort extensions.
-	slices.SortStableFunc(exts, func(a, b MTCLogEntryExtension) int {
-		return cmp.Compare(a.Type, b.Type)
-	})
-
-	// Then, deduplicate extensions, unless duplicate extension
-	// tags have different data.
 	b.AddUint16LengthPrefixed(func(child *cryptobyte.Builder) {
-		for i, ext := range exts {
-			if i > 0 && ext.Type == exts[i-1].Type {
-				if !bytes.Equal(ext.Data, exts[i-1].Data) {
-					child.SetError(fmt.Errorf("conflicting duplicate extension type %d with differing data", ext.Type))
+		for i, ext := range e.Extensions {
+			if i > 0 {
+				prevType := e.Extensions[i-1].Type
+				if ext.Type == prevType {
+					child.SetError(fmt.Errorf("duplicate extension type %d", ext.Type))
 					return
 				}
-				continue
+				if ext.Type < prevType {
+					child.SetError(fmt.Errorf("extensions out of order: type %d appears after %d", ext.Type, prevType))
+					return
+				}
 			}
 			child.AddUint16(uint16(ext.Type))
 			// Each extension data block has its own 16-bit length prefix.

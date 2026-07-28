@@ -16,15 +16,12 @@ package entry
 
 import (
 	"bytes"
-	"cmp"
 	"errors"
 	"fmt"
-	"slices"
 	"testing"
 
 	"golang.org/x/crypto/cryptobyte"
 )
-
 
 // unmarshal decodes a raw TLS presentation byte stream into an MTCLogEntry structure.
 // This is kept in the test suite for verifying round-trip serialization of MTCLogEntry.
@@ -97,30 +94,6 @@ func TestMTCLogEntry_RoundTrip(t *testing.T) {
 				},
 			},
 		},
-		{
-			name: "tbs cert entry with unsorted extensions",
-			entry: MTCLogEntry{
-				Type:      MTCLogEntryTypeTBSCert,
-				EntryData: []byte("fake-der-octets"),
-				Extensions: []MTCLogEntryExtension{
-					{Type: 10, Data: []byte("ext-10-data")},
-					{Type: 1, Data: []byte("ext-1-data")},
-					{Type: 5, Data: []byte("ext-5-data")},
-				},
-			},
-		},
-		{
-			name: "tbs cert entry with identical duplicate extensions",
-			entry: MTCLogEntry{
-				Type:      MTCLogEntryTypeTBSCert,
-				EntryData: []byte("fake-der-octets"),
-				Extensions: []MTCLogEntryExtension{
-					{Type: 5, Data: []byte("ext-5-data")},
-					{Type: 1, Data: []byte("ext-1-data")},
-					{Type: 5, Data: []byte("ext-5-data")},
-				},
-			},
-		},
 	}
 
 	for _, tc := range tests {
@@ -142,19 +115,12 @@ func TestMTCLogEntry_RoundTrip(t *testing.T) {
 				t.Errorf("EntryData = %x, want %x", got.EntryData, tc.entry.EntryData)
 			}
 
-			wantExts := slices.Clone(tc.entry.Extensions)
-			slices.SortStableFunc(wantExts, func(a, b MTCLogEntryExtension) int {
-				return cmp.Compare(a.Type, b.Type)
-			})
-			wantExts = slices.CompactFunc(wantExts, func(a, b MTCLogEntryExtension) bool {
-				return a.Type == b.Type && bytes.Equal(a.Data, b.Data)
-			})
-			if len(got.Extensions) != len(wantExts) {
-				t.Fatalf("len(Extensions) = %d, want %d", len(got.Extensions), len(wantExts))
+			if len(got.Extensions) != len(tc.entry.Extensions) {
+				t.Fatalf("len(Extensions) = %d, want %d", len(got.Extensions), len(tc.entry.Extensions))
 			}
 			for i := range got.Extensions {
-				if got.Extensions[i].Type != wantExts[i].Type || !bytes.Equal(got.Extensions[i].Data, wantExts[i].Data) {
-					t.Errorf("Extension[%d] = %+v, want %+v", i, got.Extensions[i], wantExts[i])
+				if got.Extensions[i].Type != tc.entry.Extensions[i].Type || !bytes.Equal(got.Extensions[i].Data, tc.entry.Extensions[i].Data) {
+					t.Errorf("Extension[%d] = %+v, want %+v", i, got.Extensions[i], tc.entry.Extensions[i])
 				}
 			}
 		})
@@ -176,12 +142,34 @@ func TestMTCLogEntry_MarshalErrors(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "conflicting duplicate extensions with different data",
+			name: "duplicate extensions with same data",
+			entry: MTCLogEntry{
+				Type: MTCLogEntryTypeTBSCert,
+				Extensions: []MTCLogEntryExtension{
+					{Type: 2, Data: []byte("data-a")},
+					{Type: 2, Data: []byte("data-a")},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "duplicate extensions with different data",
 			entry: MTCLogEntry{
 				Type: MTCLogEntryTypeTBSCert,
 				Extensions: []MTCLogEntryExtension{
 					{Type: 2, Data: []byte("data-a")},
 					{Type: 2, Data: []byte("data-b")},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "unsorted extensions",
+			entry: MTCLogEntry{
+				Type: MTCLogEntryTypeTBSCert,
+				Extensions: []MTCLogEntryExtension{
+					{Type: 5, Data: []byte("data-5")},
+					{Type: 1, Data: []byte("data-1")},
 				},
 			},
 			wantErr: true,
