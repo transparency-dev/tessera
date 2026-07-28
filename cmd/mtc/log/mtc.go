@@ -16,6 +16,7 @@ package log
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 
@@ -46,13 +47,6 @@ type TBSCertificateLogEntry struct {
 	Extensions                []byte `json:"extensions,omitempty"`      // Optional raw EXPLICIT SEQUENCE bytes, tag 3
 }
 
-var (
-	errInvalidHashSize  = errors.New("subjectPublicKeyInfoHash must be exactly 32 bytes")
-	errInvalidSequence  = errors.New("invalid ASN.1 SEQUENCE structure")
-	errMalformedVersion = errors.New("version field is malformed")
-	errMissingField     = errors.New("mandatory field is missing")
-)
-
 // Marshal returns the contents octets of the TBSCertificateLogEntry's
 // DER encoding, i.e. WITHOUT the outer SEQUENCE tag and length prefix.
 //
@@ -79,6 +73,15 @@ func (e *TBSCertificateLogEntry) Marshal() ([]byte, error) {
 
 	var b cryptobyte.Builder
 
+	// SPEC: RFC 5280 section 4.1.2.1.
+	// "If only basic fields are present, the version SHOULD be 1 (the value is
+	// omitted from the certificate as the default value)"
+	// "The encoding of a set value or sequence value shall not include an
+	// encoding for any component value which is equal to its default value."
+	//
+	// SPEC: ITU-T X.690 section 11.5
+	// "The encoding of a set value or sequence value shall not include an encoding
+	//  for any component value which is equal to its default value."
 	if e.Version != 0 {
 		b.AddASN1(asn1.Tag(0).ContextSpecific().Constructed(), func(b *cryptobyte.Builder) {
 			b.AddASN1Int64(e.Version)
@@ -111,7 +114,7 @@ func validateASN1Element(data []byte, expectedTag asn1.Tag, fieldName string) er
 	s := cryptobyte.String(data)
 	var elem cryptobyte.String
 	if !s.ReadASN1(&elem, expectedTag) || !s.Empty() {
-		return fmt.Errorf("%s: malformed ASN.1 or incorrect tag (expected %v): %w", fieldName, expectedTag, errInvalidSequence)
+		return fmt.Errorf("%s: malformed ASN.1 or incorrect tag (expected %v)", fieldName, expectedTag)
 	}
 	return nil
 }
@@ -121,18 +124,18 @@ func validateASN1Element(data []byte, expectedTag asn1.Tag, fieldName string) er
 // formatted.
 func (e *TBSCertificateLogEntry) Validate() error {
 	if e.Version < 0 || e.Version > 2 {
-		return fmt.Errorf("invalid version %d: %w", e.Version, errMalformedVersion)
+		return fmt.Errorf("invalid version %d", e.Version)
 	}
 
 	switch {
 	case len(e.Issuer) == 0:
-		return fmt.Errorf("issuer: %w", errMissingField)
+		return errors.New("issuer: mandatory field is missing")
 	case len(e.Validity) == 0:
-		return fmt.Errorf("validity: %w", errMissingField)
+		return errors.New("validity: mandatory field is missing")
 	case len(e.Subject) == 0:
-		return fmt.Errorf("subject: %w", errMissingField)
+		return errors.New("subject: mandatory field is missing")
 	case len(e.SubjectPublicKeyAlgorithm) == 0:
-		return fmt.Errorf("subjectPublicKeyAlgorithm: %w", errMissingField)
+		return errors.New("subjectPublicKeyAlgorithm: mandatory field is missing")
 	}
 
 	if err := validateASN1Element(e.Issuer, asn1.SEQUENCE, "issuer"); err != nil {
@@ -160,8 +163,8 @@ func (e *TBSCertificateLogEntry) Validate() error {
 	// SPEC: https://c2sp.org/mtc-log
 	// "MTC CAs following this profile MUST use SHA-256 as the hash algorithm".
 	// Hence, the hash size MUST be 32 bytes.
-	if len(e.SubjectPublicKeyInfoHash) != 32 {
-		return fmt.Errorf("subjectPublicKeyInfoHash must be 32 bytes, got %d: %w", len(e.SubjectPublicKeyInfoHash), errInvalidHashSize)
+	if len(e.SubjectPublicKeyInfoHash) != sha256.Size {
+		return fmt.Errorf("subjectPublicKeyInfoHash must be %d bytes, got %d", sha256.Size, len(e.SubjectPublicKeyInfoHash))
 	}
 	return nil
 }

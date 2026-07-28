@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package types
+package entry
 
 import (
 	"bytes"
@@ -33,41 +33,41 @@ func (e *MTCLogEntry) unmarshal(data []byte) error {
 
 	var extListStr cryptobyte.String
 	if !s.ReadUint16LengthPrefixed(&extListStr) {
-		return errMalformedExtensions
+		return errors.New("malformed extension list length")
 	}
 
 	e.Extensions = nil
 	for !extListStr.Empty() {
 		var ext MTCLogEntryExtension
-		if !extListStr.ReadUint16(&ext.Type) {
-			return fmt.Errorf("failed to read extension type: %w", errMalformedExtensions)
+		if !extListStr.ReadUint16((*uint16)(&ext.Type)) {
+			return fmt.Errorf("failed to read extension type")
 		}
 		var extDataStr cryptobyte.String
 		if !extListStr.ReadUint16LengthPrefixed(&extDataStr) {
-			return fmt.Errorf("failed to read extension length: %w", errMalformedExtensions)
+			return fmt.Errorf("failed to read extension length")
 		}
 		ext.Data = append([]byte(nil), extDataStr...)
 		if n := len(e.Extensions); n > 0 {
 			if ext.Type < e.Extensions[n-1].Type {
-				return fmt.Errorf("mtc: entry extensions out of order (type %d after %d): %w", ext.Type, e.Extensions[n-1].Type, errMalformedExtensions)
+				return fmt.Errorf("mtc: entry extensions out of order (type %d after %d)", ext.Type, e.Extensions[n-1].Type)
 			}
 			if ext.Type == e.Extensions[n-1].Type {
-				return fmt.Errorf("mtc: duplicate entry extension type %d: %w", ext.Type, errMalformedExtensions)
+				return fmt.Errorf("mtc: duplicate entry extension type %d", ext.Type)
 			}
 		}
 		e.Extensions = append(e.Extensions, ext)
 	}
 
-	if !s.ReadUint16(&e.Type) {
-		return errMissingType
+	if !s.ReadUint16((*uint16)(&e.Type)) {
+		return errors.New("missing entry type")
 	}
 
 	if e.Type != MTCLogEntryTypeNull && e.Type != MTCLogEntryTypeTBSCert {
-		return fmt.Errorf("%w: type %d", errInvalidEntryType, e.Type)
+		return fmt.Errorf("unknown or unsupported log entry type %d", e.Type)
 	}
 
 	if e.Type == MTCLogEntryTypeNull && !s.Empty() {
-		return fmt.Errorf("null entry must have empty data: %w", errTrailingData)
+		return fmt.Errorf("null entry must have empty data")
 	}
 
 	e.EntryData = append([]byte(nil), s...)
@@ -165,7 +165,7 @@ func TestMTCLogEntry_MarshalErrors(t *testing.T) {
 	tests := []struct {
 		name    string
 		entry   MTCLogEntry
-		wantErr error
+		wantErr bool
 	}{
 		{
 			name: "trailing data on null entry",
@@ -173,7 +173,7 @@ func TestMTCLogEntry_MarshalErrors(t *testing.T) {
 				Type:      MTCLogEntryTypeNull,
 				EntryData: []byte("unexpected-data"),
 			},
-			wantErr: errTrailingData,
+			wantErr: true,
 		},
 		{
 			name: "conflicting duplicate extensions with different data",
@@ -184,7 +184,7 @@ func TestMTCLogEntry_MarshalErrors(t *testing.T) {
 					{Type: 2, Data: []byte("data-b")},
 				},
 			},
-			wantErr: errMalformedExtensions,
+			wantErr: true,
 		},
 		{
 			name: "entry size exceeds tile limit",
@@ -192,14 +192,14 @@ func TestMTCLogEntry_MarshalErrors(t *testing.T) {
 				Type:      MTCLogEntryTypeTBSCert,
 				EntryData: make([]byte, MaxMTCLogEntrySize),
 			},
-			wantErr: errEntryTooLarge,
+			wantErr: true,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := tc.entry.Marshal()
-			if !errors.Is(err, tc.wantErr) {
+			if (err != nil) != tc.wantErr {
 				t.Errorf("Marshal() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
@@ -210,14 +210,14 @@ func TestMTCLogEntry_UnmarshalErrors(t *testing.T) {
 	tests := []struct {
 		name    string
 		mutate  func([]byte) []byte
-		wantErr error
+		wantErr bool
 	}{
 		{
 			name: "truncated extension list length prefix",
 			mutate: func(b []byte) []byte {
 				return []byte{0x00, 0x05, 0x01}
 			},
-			wantErr: errMalformedExtensions,
+			wantErr: true,
 		},
 		{
 			name: "trailing data on null entry",
@@ -226,7 +226,7 @@ func TestMTCLogEntry_UnmarshalErrors(t *testing.T) {
 				data, _ := e.Marshal()
 				return append(data, 0x00)
 			},
-			wantErr: errTrailingData,
+			wantErr: true,
 		},
 		{
 			name: "unknown entry type",
@@ -236,7 +236,7 @@ func TestMTCLogEntry_UnmarshalErrors(t *testing.T) {
 				builder.AddUint16(99) // invalid type 99
 				return builder.BytesOrPanic()
 			},
-			wantErr: errInvalidEntryType,
+			wantErr: true,
 		},
 		{
 			name: "unsorted extensions over the wire",
@@ -248,10 +248,10 @@ func TestMTCLogEntry_UnmarshalErrors(t *testing.T) {
 				extList.AddUint16(1)
 				extList.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) { b.AddBytes([]byte("b")) })
 				builder.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) { b.AddBytes(extList.BytesOrPanic()) })
-				builder.AddUint16(MTCLogEntryTypeTBSCert)
+				builder.AddUint16(uint16(MTCLogEntryTypeTBSCert))
 				return builder.BytesOrPanic()
 			},
-			wantErr: errMalformedExtensions,
+			wantErr: true,
 		},
 		{
 			name: "duplicate extensions over the wire",
@@ -263,10 +263,10 @@ func TestMTCLogEntry_UnmarshalErrors(t *testing.T) {
 				extList.AddUint16(2)
 				extList.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) { b.AddBytes([]byte("b")) })
 				builder.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) { b.AddBytes(extList.BytesOrPanic()) })
-				builder.AddUint16(MTCLogEntryTypeTBSCert)
+				builder.AddUint16(uint16(MTCLogEntryTypeTBSCert))
 				return builder.BytesOrPanic()
 			},
-			wantErr: errMalformedExtensions,
+			wantErr: true,
 		},
 	}
 
@@ -274,7 +274,7 @@ func TestMTCLogEntry_UnmarshalErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var entry MTCLogEntry
 			err := entry.unmarshal(tc.mutate(nil))
-			if !errors.Is(err, tc.wantErr) {
+			if (err != nil) != tc.wantErr {
 				t.Errorf("unmarshal() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})

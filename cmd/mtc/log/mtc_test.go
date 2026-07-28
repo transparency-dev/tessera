@@ -16,7 +16,6 @@ package log
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"testing"
 
@@ -36,17 +35,17 @@ func (e *TBSCertificateLogEntry) unmarshal(contents []byte) error {
 	if seq.PeekASN1Tag(versionTag) {
 		var verWrapped cryptobyte.String
 		if !seq.ReadASN1(&verWrapped, versionTag) {
-			return fmt.Errorf("failed to read version wrapper: %w", errInvalidSequence)
+			return fmt.Errorf("failed to read version wrapper")
 		}
 		if !verWrapped.ReadASN1Integer(&e.Version) || !verWrapped.Empty() {
-			return errMalformedVersion
+			return fmt.Errorf("version field is malformed")
 		}
 	}
 
 	readElement := func(target *[]byte, tag asn1.Tag, fieldName string) error {
 		var rawElem cryptobyte.String
 		if !seq.ReadASN1Element(&rawElem, tag) {
-			return fmt.Errorf("failed to read %s: %w", fieldName, errInvalidSequence)
+			return fmt.Errorf("failed to read %s", fieldName)
 		}
 		*target = append([]byte(nil), rawElem...)
 		return nil
@@ -66,7 +65,7 @@ func (e *TBSCertificateLogEntry) unmarshal(contents []byte) error {
 	}
 	var spkiHash cryptobyte.String
 	if !seq.ReadASN1(&spkiHash, asn1.OCTET_STRING) {
-		return fmt.Errorf("failed to read subjectPublicKeyInfoHash: %w", errInvalidSequence)
+		return fmt.Errorf("failed to read subjectPublicKeyInfoHash")
 	}
 	e.SubjectPublicKeyInfoHash = append([]byte(nil), spkiHash...)
 
@@ -92,7 +91,7 @@ func (e *TBSCertificateLogEntry) unmarshal(contents []byte) error {
 	}
 
 	if !seq.Empty() {
-		return fmt.Errorf("sequence has trailing bytes: %w", errInvalidSequence)
+		return fmt.Errorf("sequence has trailing bytes")
 	}
 	return nil
 }
@@ -202,72 +201,72 @@ func TestTBSCertificateLogEntry_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
 		mutate  func(*TBSCertificateLogEntry)
-		wantErr error
+		wantErr bool
 	}{
 		{
 			name:    "valid",
 			mutate:  func(e *TBSCertificateLogEntry) {},
-			wantErr: nil,
+			wantErr: false,
 		},
 		{
 			name:    "negative version",
 			mutate:  func(e *TBSCertificateLogEntry) { e.Version = -1 },
-			wantErr: errMalformedVersion,
+			wantErr: true,
 		},
 		{
 			name:    "version out of bounds",
 			mutate:  func(e *TBSCertificateLogEntry) { e.Version = 3 },
-			wantErr: errMalformedVersion,
+			wantErr: true,
 		},
 		{
 			name:    "malformed issuer asn1",
 			mutate:  func(e *TBSCertificateLogEntry) { e.Issuer = []byte("not-asn1-sequence") },
-			wantErr: errInvalidSequence,
+			wantErr: true,
 		},
 		{
 			name:    "trailing data on issuer",
 			mutate:  func(e *TBSCertificateLogEntry) { e.Issuer = append(dummySeq("issuer"), 0x00) },
-			wantErr: errInvalidSequence,
+			wantErr: true,
 		},
 		{
 			name:    "wrong tag on issuerUniqueID",
 			mutate:  func(e *TBSCertificateLogEntry) { e.IssuerUniqueID = dummyTag(asn1.Tag(5).ContextSpecific(), "uid") },
-			wantErr: errInvalidSequence,
+			wantErr: true,
 		},
 		{
 			name:    "wrong tag on extensions (primitive instead of constructed)",
 			mutate:  func(e *TBSCertificateLogEntry) { e.Extensions = dummyTag(asn1.Tag(3).ContextSpecific(), "exts") },
-			wantErr: errInvalidSequence,
+			wantErr: true,
 		},
 		{
 			name:    "missing issuer",
 			mutate:  func(e *TBSCertificateLogEntry) { e.Issuer = nil },
-			wantErr: errMissingField,
+			wantErr: true,
 		},
 		{
 			name:    "missing validity",
 			mutate:  func(e *TBSCertificateLogEntry) { e.Validity = nil },
-			wantErr: errMissingField,
+			wantErr: true,
 		},
 		{
 			name:    "missing subject",
 			mutate:  func(e *TBSCertificateLogEntry) { e.Subject = nil },
-			wantErr: errMissingField,
+			wantErr: true,
 		},
 		{
 			name:    "missing spki algo",
 			mutate:  func(e *TBSCertificateLogEntry) { e.SubjectPublicKeyAlgorithm = nil },
-			wantErr: errMissingField,
+			wantErr: true,
 		},
 		{
 			name:    "invalid hash size (short)",
 			mutate:  func(e *TBSCertificateLogEntry) { e.SubjectPublicKeyInfoHash = make([]byte, 10) },
-			wantErr: errInvalidHashSize,
+			wantErr: true,
 		},
 		{
 			name:    "invalid hash size (long)",
 			mutate:  func(e *TBSCertificateLogEntry) { e.SubjectPublicKeyInfoHash = make([]byte, 33) },
-			wantErr: errInvalidHashSize,
+			wantErr: true,
 		},
 	}
 
@@ -276,7 +275,7 @@ func TestTBSCertificateLogEntry_Validate(t *testing.T) {
 			e := valid()
 			tc.mutate(&e)
 			err := e.Validate()
-			if !errors.Is(err, tc.wantErr) {
+			if (err != nil) != tc.wantErr {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})

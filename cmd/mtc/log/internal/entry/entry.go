@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package types
+package entry
 
 import (
 	"bytes"
@@ -26,37 +26,35 @@ import (
 
 // Standard log entry type constants from Section 5.2.1.
 const (
-	MTCLogEntryTypeNull    uint16 = 0
-	MTCLogEntryTypeTBSCert uint16 = 1
+	MTCLogEntryTypeNull    EntryType = 0
+	MTCLogEntryTypeTBSCert EntryType = 1
 
 	// SPEC: draft-ietf-plants-merkle-tree-certs section 5.2.1.
 	// "An MTCLogEntry's size SHOULD NOT exceed 65535 (2^16-1) bytes.
 	// Doing so may exceed size limits in common log-serving protocols,
 	// such as [TLOG-TILES]."
-	MaxMTCLogEntrySize = 65535 // 2^16 - 1
-)
-
-var (
-	errEntryTooLarge       = errors.New("log entry size exceeds tile limit")
-	errInvalidEntryType    = errors.New("unknown or unsupported log entry type")
-	errMalformedExtensions = errors.New("log entry extensions list is malformed")
-	errMissingType         = errors.New("log entry type field is missing")
-	errTrailingData        = errors.New("unexpected trailing data in log entry")
+	MaxMTCLogEntrySize = 1<<16 - 1
 )
 
 // MTCLogEntryExtension represents a single key-value metadata extension
 // appended to an MTCLogEntry.
 type MTCLogEntryExtension struct {
-	Type uint16 // 2-byte extension identifier
-	Data []byte // Opaque data payload
+	Type ExtensionType // 2-byte extension identifier
+	Data []byte        // Opaque data payload
 }
+
+// ExtensionType represents the Type field of an MTCLogentryExtension.
+type ExtensionType uint16
+
+// EntryType represents the Type field of an MTCLogentry.
+type EntryType uint16
 
 // MTCLogEntry represents leaf node as defined in
 // draft-ietf-plants-merkle-tree-certs section 5.2.1.
 type MTCLogEntry struct {
 	Extensions []MTCLogEntryExtension
-	Type       uint16 // MTCLogEntryTypeNull, MTCLogEntryTypeTBSCert
-	EntryData  []byte // Raw DER bytes of TBSCertificateLogEntry if Type is TBSCert
+	Type       EntryType // MTCLogEntryTypeNull, MTCLogEntryTypeTBSCert
+	EntryData  []byte    // Raw DER bytes of TBSCertificateLogEntry if Type is TBSCert
 }
 
 // Marshal encodes the MTCLogEntry into TLS Presentation bytes.
@@ -65,7 +63,7 @@ type MTCLogEntry struct {
 // resulting bytes do not fit in a t-log leaf.
 func (e *MTCLogEntry) Marshal() ([]byte, error) {
 	if e.Type == MTCLogEntryTypeNull && len(e.EntryData) > 0 {
-		return nil, fmt.Errorf("null entry must have empty EntryData: %w", errTrailingData)
+		return nil, errors.New("null entry must have empty EntryData")
 	}
 	// struct {} Empty;
 	//
@@ -95,21 +93,23 @@ func (e *MTCLogEntry) Marshal() ([]byte, error) {
 	// "The extensions list MUST appear in ascending order by extension_type and
 	// MUST NOT contain two extensions with the same extension_type."
 	exts := slices.Clone(e.Extensions)
+	// First, sort extensions.
 	slices.SortStableFunc(exts, func(a, b MTCLogEntryExtension) int {
 		return cmp.Compare(a.Type, b.Type)
 	})
 
-	// Creates a 16-bit (2-byte) length-prefixed block for the list of extensions.
+	// Then, deduplicate extensions, unless duplicate extension
+	// tags have different data.
 	b.AddUint16LengthPrefixed(func(child *cryptobyte.Builder) {
 		for i, ext := range exts {
 			if i > 0 && ext.Type == exts[i-1].Type {
 				if !bytes.Equal(ext.Data, exts[i-1].Data) {
-					child.SetError(fmt.Errorf("conflicting duplicate extension type %d with differing data: %w", ext.Type, errMalformedExtensions))
+					child.SetError(fmt.Errorf("conflicting duplicate extension type %d with differing data", ext.Type))
 					return
 				}
 				continue
 			}
-			child.AddUint16(ext.Type)
+			child.AddUint16(uint16(ext.Type))
 			// Each extension data block has its own 16-bit length prefix.
 			child.AddUint16LengthPrefixed(func(dataBlock *cryptobyte.Builder) {
 				dataBlock.AddBytes(ext.Data)
@@ -117,7 +117,7 @@ func (e *MTCLogEntry) Marshal() ([]byte, error) {
 		}
 	})
 
-	b.AddUint16(e.Type)
+	b.AddUint16(uint16(e.Type))
 
 	// EntryData fills up the rest of the structure, no size prefix needed.
 	b.AddBytes(e.EntryData)
@@ -130,8 +130,8 @@ func (e *MTCLogEntry) Marshal() ([]byte, error) {
 	// "An MTCLogEntry's size SHOULD NOT exceed 65535 (2^16-1) bytes.
 	// Doing so may exceed size limits in common log-serving protocols,
 	// such as [TLOG-TILES]."
-	if len(res) > MaxMTCLogEntrySize {
-		return nil, fmt.Errorf("log entry size %d exceeds tile limit %d: %w", len(res), MaxMTCLogEntrySize, errEntryTooLarge)
+	if l := len(res); l > MaxMTCLogEntrySize {
+		return nil, fmt.Errorf("log entry size %d exceeds tile limit %d", l, MaxMTCLogEntrySize)
 	}
 	return res, nil
 }
