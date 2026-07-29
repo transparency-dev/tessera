@@ -16,6 +16,8 @@ package log
 
 import (
 	"bytes"
+	"context"
+	stdasn1 "encoding/asn1"
 	"fmt"
 	"testing"
 	"time"
@@ -113,6 +115,20 @@ func dummyTag(tag asn1.Tag, data string) []byte {
 		b.AddBytes([]byte(data))
 	})
 	return b.BytesOrPanic()
+}
+
+func dummyValidity(notBefore, notAfter time.Time) []byte {
+	// ASN.1 time structures (UTCTime/GeneralizedTime) only support second-level precision.
+	// We truncate nanoseconds here so test assertions match marshaled/unmarshaled values.
+	val := validity{
+		NotBefore: notBefore.Truncate(time.Second),
+		NotAfter:  notAfter.Truncate(time.Second),
+	}
+	der, err := stdasn1.Marshal(val)
+	if err != nil {
+		panic(fmt.Sprintf("dummyValidity failed to marshal: %v", err))
+	}
+	return der
 }
 
 func TestTBSCertificateLogEntry_RoundTrip(t *testing.T) {
@@ -285,8 +301,73 @@ func TestTBSCertificateLogEntry_Validate(t *testing.T) {
 	}
 }
 
-type dummyLogReader struct {
-	tessera.LogReader
+func TestMTCLog_Accept(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	l := &MTCLog{maxCertLifetime: 24 * time.Hour}
+
+	valid := func() TBSCertificateLogEntry {
+		return TBSCertificateLogEntry{
+			Issuer:                    dummySeq("issuer"),
+			Validity:                  dummyValidity(now, now.Add(12*time.Hour)),
+			Subject:                   dummySeq("subject"),
+			SubjectPublicKeyAlgorithm: dummySeq("algo"),
+			SubjectPublicKeyInfoHash:  make([]byte, 32),
+		}
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*TBSCertificateLogEntry)
+		wantErr bool
+	}{
+		{
+			name:    "valid",
+			mutate:  func(e *TBSCertificateLogEntry) {},
+			wantErr: false,
+		},
+		{
+			name:    "validity lifetime equals max",
+			mutate:  func(e *TBSCertificateLogEntry) { e.Validity = dummyValidity(now, now.Add(24*time.Hour)) },
+			wantErr: false,
+		},
+		{
+			name:    "invalid structural entry",
+			mutate:  func(e *TBSCertificateLogEntry) { e.Issuer = nil },
+			wantErr: true,
+		},
+		{
+			name:    "unparseable validity",
+			mutate:  func(e *TBSCertificateLogEntry) { e.Validity = dummySeq("unparseable-time") },
+			wantErr: true,
+		},
+		{
+			name:    "validity lifetime exceeds max",
+			mutate:  func(e *TBSCertificateLogEntry) { e.Validity = dummyValidity(now, now.Add(48*time.Hour)) },
+			wantErr: true,
+		},
+		{
+			name:    "validity notAfter before notBefore",
+			mutate:  func(e *TBSCertificateLogEntry) { e.Validity = dummyValidity(now.Add(24*time.Hour), now) },
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := valid()
+			tc.mutate(&e)
+			err := l.accept(e)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("accept() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+type dummyLogReader struct{ tessera.LogReader }
+
+func (dummyLogReader) ReadCheckpoint(context.Context) ([]byte, error) {
+	return nil, nil
 }
 
 func TestMTCOptionsValid(t *testing.T) {
@@ -310,6 +391,22 @@ func TestMTCOptionsValid(t *testing.T) {
 		}, {
 			name:    "Error: No TesseraReader",
 			opts:    NewOptions(),
+			wantErr: true,
+		}, {
+			name:    "Error: Zero MaxCertLifetime",
+			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithMaxCertLifetime(0),
+			wantErr: true,
+		}, {
+			name:    "Error: Negative MaxCertLifetime",
+			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithMaxCertLifetime(-1 * time.Hour),
+			wantErr: true,
+		}, {
+			name:    "Error: MaxCertLifetime exceeds default max",
+			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithMaxCertLifetime(DefaultMaxCertLifetime + 24*time.Hour),
+			wantErr: true,
+		}, {
+			name:    "Error: MaxCertLifetime has sub-second precision",
+			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithMaxCertLifetime(1*time.Hour + 500*time.Millisecond),
 			wantErr: true,
 		},
 	} {
@@ -465,3 +562,29 @@ func TestCreateSignerAndOrigin(t *testing.T) {
 	}
 }
 
+func TestNewMTCLog(t *testing.T) {
+	ctx := context.Background()
+	opts := NewOptions().WithTesseraReader(&dummyLogReader{})
+
+	t.Run("nil appender", func(t *testing.T) {
+		if _, err := NewMTCLog(ctx, nil, opts); err == nil {
+			t.Error("NewMTCLog with nil appender expected error, got nil")
+		}
+	})
+
+	t.Run("nil options", func(t *testing.T) {
+		if _, err := NewMTCLog(ctx, &tessera.Appender{}, nil); err == nil {
+			t.Error("NewMTCLog with nil options expected error, got nil")
+		}
+	})
+
+	t.Run("valid", func(t *testing.T) {
+		logInst, err := NewMTCLog(ctx, &tessera.Appender{}, opts)
+		if err != nil {
+			t.Fatalf("NewMTCLog unexpected error: %v", err)
+		}
+		if logInst == nil {
+			t.Fatal("NewMTCLog returned nil instance")
+		}
+	})
+}

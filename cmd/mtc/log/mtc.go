@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/x509"
+	stdasn1 "encoding/asn1"
 	"errors"
 	"fmt"
 	"time"
@@ -33,6 +34,11 @@ const (
 	// DefaultAwaiterPollInterval is the fallback polling period for the publication awaiter.
 	DefaultAwaiterPollInterval = 200 * time.Millisecond
 
+	// SPEC: CQRP Policy v0.2.0
+	// "MTC CA Operators MUST NOT issue Subscriber certificates with a
+	// validity period exceeding 47 days."
+	DefaultMaxCertLifetime = 47 * 24 * time.Hour
+
 	// SPEC: draft-ietf-plants-merkle-tree-certs section 5.3.1.
 	// "cosigner_name and log_origin are computed from the cosigner ID and the
 	// issuance log's ID (Section 5.1), respectively. They contain the concatenation of:
@@ -42,14 +48,16 @@ const (
 
 // Options holds settings for configuring MTCLog instances.
 type Options struct {
-	reader     tessera.LogReader
-	pollPeriod time.Duration
+	reader          tessera.LogReader
+	pollPeriod      time.Duration
+	maxCertLifetime time.Duration
 }
 
 // NewOptions creates a new options struct for configuring MTCLog instances.
 func NewOptions() *Options {
 	return &Options{
-		pollPeriod: DefaultAwaiterPollInterval,
+		pollPeriod:      DefaultAwaiterPollInterval,
+		maxCertLifetime: DefaultMaxCertLifetime,
 	}
 }
 
@@ -60,6 +68,12 @@ func (o *Options) valid() error {
 	}
 	if o.pollPeriod < 0 {
 		return errors.New("invalid Options: pollPeriod must be >= 0")
+	}
+	if o.maxCertLifetime <= 0 || o.maxCertLifetime > DefaultMaxCertLifetime {
+		return fmt.Errorf("invalid Options: WithMaxCertLifetime must be > 0 and <= %v", DefaultMaxCertLifetime)
+	}
+	if o.maxCertLifetime%time.Second != 0 {
+		return errors.New("invalid Options: WithMaxCertLifetime must have second precision (no fractional seconds)")
 	}
 	return nil
 }
@@ -78,9 +92,21 @@ func (o *Options) WithAwaiterPollInterval(duration time.Duration) *Options {
 	return o
 }
 
+// WithMaxCertLifetime configures a maximum validity duration for incoming certificates.
+// duration MUST be strictly positive and smaller than or equal to 47 days.
+//
+// SPEC: CQRP Policy v0.2.0
+// "MTC CA Operators MUST NOT issue Subscriber certificates with a
+// validity period exceeding 47 days."
+func (o *Options) WithMaxCertLifetime(duration time.Duration) *Options {
+	o.maxCertLifetime = duration
+	return o
+}
+
 type MTCLog struct {
-	a       *tessera.Appender
-	awaiter *tessera.PublicationAwaiter
+	a               *tessera.Appender
+	awaiter         *tessera.PublicationAwaiter
+	maxCertLifetime time.Duration
 }
 
 // MTCProof represents an MTC inclusion proof as per
@@ -106,6 +132,23 @@ type TBSCertificateLogEntry struct {
 	IssuerUniqueID            []byte `json:"issuerUniqueId,omitempty"`  // Optional raw IMPLICIT BIT STRING bytes, tag 1
 	SubjectUniqueID           []byte `json:"subjectUniqueId,omitempty"` // Optional raw IMPLICIT BIT STRING bytes, tag 2
 	Extensions                []byte `json:"extensions,omitempty"`      // Optional raw EXPLICIT SEQUENCE bytes, tag 3
+}
+
+type validity struct {
+	NotBefore time.Time
+	NotAfter  time.Time
+}
+
+func parseValidity(data []byte) (validity, error) {
+	var v validity
+	rest, err := stdasn1.Unmarshal(data, &v)
+	if err != nil {
+		return validity{}, fmt.Errorf("unmarshal validity: %w", err)
+	}
+	if len(rest) > 0 {
+		return validity{}, errors.New("trailing bytes in validity SEQUENCE")
+	}
+	return v, nil
 }
 
 // Marshal returns the contents octets of the TBSCertificateLogEntry's
@@ -230,7 +273,20 @@ func (e *TBSCertificateLogEntry) Validate() error {
 }
 
 func (l *MTCLog) accept(tbs TBSCertificateLogEntry) error {
-	return tbs.Validate()
+	if err := tbs.Validate(); err != nil {
+		return err
+	}
+	v, err := parseValidity(tbs.Validity)
+	if err != nil {
+		return fmt.Errorf("cannot parse validity: %v", err)
+	}
+	if v.NotAfter.Before(v.NotBefore) {
+		return fmt.Errorf("validity: notAfter %q cannot be before notBefore %q", v.NotAfter.Format(time.RFC3339), v.NotBefore.Format(time.RFC3339))
+	}
+	if lifetime := v.NotAfter.Sub(v.NotBefore); lifetime > l.maxCertLifetime {
+		return fmt.Errorf("validity lifetime %q exceeds maximum allowed lifetime %q", lifetime, l.maxCertLifetime)
+	}
+	return nil
 }
 
 // NewMTCLog creates a new MTCLog compliant with
@@ -248,8 +304,9 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 	}
 
 	l := &MTCLog{
-		a:       a,
-		awaiter: tessera.NewPublicationAwaiter(ctx, opts.reader.ReadCheckpoint, opts.pollPeriod),
+		a:               a,
+		awaiter:         tessera.NewPublicationAwaiter(ctx, opts.reader.ReadCheckpoint, opts.pollPeriod),
+		maxCertLifetime: opts.maxCertLifetime,
 	}
 	return l, nil
 }

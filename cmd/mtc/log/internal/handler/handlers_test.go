@@ -59,7 +59,8 @@ func setupTestLog(t *testing.T) *log.MTCLog {
 
 	mtcLog, err := log.NewMTCLog(ctx, appender, log.NewOptions().
 		WithTesseraReader(reader).
-		WithAwaiterPollInterval(20*time.Millisecond))
+		WithAwaiterPollInterval(20*time.Millisecond).
+		WithMaxCertLifetime(7*24*time.Hour))
 	if err != nil {
 		t.Fatalf("Failed to initialize MTC log: %v", err)
 	}
@@ -82,11 +83,21 @@ func dummyTag(tag asn1.Tag, data []byte) []byte {
 	return b.BytesOrPanic()
 }
 
+func dummyValidity(notBefore, notAfter time.Time) []byte {
+	var b cryptobyte.Builder
+	b.AddASN1(asn1.SEQUENCE, func(b *cryptobyte.Builder) {
+		b.AddASN1UTCTime(notBefore)
+		b.AddASN1UTCTime(notAfter)
+	})
+	return b.BytesOrPanic()
+}
+
 func validEntry() log.TBSCertificateLogEntry {
+	now := time.Now().Truncate(time.Second)
 	return log.TBSCertificateLogEntry{
 		Version:                   0,
 		Issuer:                    dummySeq("issuer"),
-		Validity:                  dummySeq("validity"),
+		Validity:                  dummyValidity(now, now.Add(24*time.Hour)),
 		Subject:                   dummySeq("subject"),
 		SubjectPublicKeyAlgorithm: dummySeq("algo"),
 		SubjectPublicKeyInfoHash:  make([]byte, sha256.Size),
