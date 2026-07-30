@@ -38,7 +38,7 @@ type MTCProof struct{}
 // to build a standalone certificate.
 type AddTBSRsp struct {
 	Index    uint64   `json:"index"`
-	MTCProof MTCProof `json:"mtcproof"`
+	MTCProof MTCProof `json:"mtcProof"`
 }
 
 // TBSCertificateLogEntry represents a log entry as per
