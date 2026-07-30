@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"golang.org/x/crypto/cryptobyte"
@@ -33,7 +34,7 @@ func (e *MTCLogEntry) unmarshal(data []byte) error {
 		return errors.New("malformed extension list length")
 	}
 
-	e.Extensions = nil
+	var extensions []MTCLogEntryExtension
 	for !extListStr.Empty() {
 		var ext MTCLogEntryExtension
 		if !extListStr.ReadUint16((*uint16)(&ext.Type)) {
@@ -44,55 +45,55 @@ func (e *MTCLogEntry) unmarshal(data []byte) error {
 			return fmt.Errorf("failed to read extension length")
 		}
 		ext.Data = append([]byte(nil), extDataStr...)
-		if n := len(e.Extensions); n > 0 {
-			if ext.Type < e.Extensions[n-1].Type {
-				return fmt.Errorf("mtc: entry extensions out of order (type %d after %d)", ext.Type, e.Extensions[n-1].Type)
+		if n := len(extensions); n > 0 {
+			if ext.Type < extensions[n-1].Type {
+				return fmt.Errorf("mtc: entry extensions out of order (type %d after %d)", ext.Type, extensions[n-1].Type)
 			}
-			if ext.Type == e.Extensions[n-1].Type {
+			if ext.Type == extensions[n-1].Type {
 				return fmt.Errorf("mtc: duplicate entry extension type %d", ext.Type)
 			}
 		}
-		e.Extensions = append(e.Extensions, ext)
+		extensions = append(extensions, ext)
 	}
 
-	if !s.ReadUint16((*uint16)(&e.Type)) {
+	var entryType EntryType
+	if !s.ReadUint16((*uint16)(&entryType)) {
 		return errors.New("missing entry type")
 	}
 
-	if e.Type != MTCLogEntryTypeNull && e.Type != MTCLogEntryTypeTBSCert {
-		return fmt.Errorf("unknown or unsupported log entry type %d", e.Type)
+	if entryType != MTCLogEntryTypeNull && entryType != MTCLogEntryTypeTBSCert {
+		return fmt.Errorf("unknown or unsupported log entry type %d", entryType)
 	}
 
-	if e.Type == MTCLogEntryTypeNull && !s.Empty() {
+	if entryType == MTCLogEntryTypeNull && !s.Empty() {
 		return fmt.Errorf("null entry must have empty data")
 	}
 
-	e.EntryData = append([]byte(nil), s...)
+	*e = MTCLogEntry{
+		extensions: extensions,
+		entryType:  entryType,
+		entryData:  slices.Clone(s),
+	}
 	return nil
 }
 
 func TestMTCLogEntry_RoundTrip(t *testing.T) {
 	tests := []struct {
 		name  string
-		entry MTCLogEntry
+		entry *MTCLogEntry
 	}{
 		{
-			name: "null entry no extensions",
-			entry: MTCLogEntry{
-				Type: MTCLogEntryTypeNull,
-			},
+			name:  "null entry no extensions",
+			entry: New(nil),
 		},
 		{
 			name: "tbs cert entry with sorted extensions",
-			entry: MTCLogEntry{
-				Type:      MTCLogEntryTypeTBSCert,
-				EntryData: []byte("fake-der-octets"),
-				Extensions: []MTCLogEntryExtension{
-					{Type: 1, Data: []byte("ext-1-data")},
-					{Type: 5, Data: []byte("ext-5-data")},
-					{Type: 10, Data: []byte("")},
-				},
-			},
+			entry: New(
+				[]byte("fake-der-octets"),
+				MTCLogEntryExtension{Type: 1, Data: []byte("ext-1-data")},
+				MTCLogEntryExtension{Type: 5, Data: []byte("ext-5-data")},
+				MTCLogEntryExtension{Type: 10, Data: []byte("")},
+			),
 		},
 	}
 
@@ -108,19 +109,21 @@ func TestMTCLogEntry_RoundTrip(t *testing.T) {
 				t.Fatalf("unmarshal() unexpected error: %v", err)
 			}
 
-			if got.Type != tc.entry.Type {
-				t.Errorf("Type = %d, want %d", got.Type, tc.entry.Type)
+			if got.Type() != tc.entry.Type() {
+				t.Errorf("Type() = %d, want %d", got.Type(), tc.entry.Type())
 			}
-			if !bytes.Equal(got.EntryData, tc.entry.EntryData) {
-				t.Errorf("EntryData = %x, want %x", got.EntryData, tc.entry.EntryData)
+			if !bytes.Equal(got.EntryData(), tc.entry.EntryData()) {
+				t.Errorf("EntryData() = %x, want %x", got.EntryData(), tc.entry.EntryData())
 			}
 
-			if len(got.Extensions) != len(tc.entry.Extensions) {
-				t.Fatalf("len(Extensions) = %d, want %d", len(got.Extensions), len(tc.entry.Extensions))
+			gotExts := got.Extensions()
+			wantExts := tc.entry.Extensions()
+			if len(gotExts) != len(wantExts) {
+				t.Fatalf("len(Extensions) = %d, want %d", len(gotExts), len(wantExts))
 			}
-			for i := range got.Extensions {
-				if got.Extensions[i].Type != tc.entry.Extensions[i].Type || !bytes.Equal(got.Extensions[i].Data, tc.entry.Extensions[i].Data) {
-					t.Errorf("Extension[%d] = %+v, want %+v", i, got.Extensions[i], tc.entry.Extensions[i])
+			for i := range gotExts {
+				if gotExts[i].Type != wantExts[i].Type || !bytes.Equal(gotExts[i].Data, wantExts[i].Data) {
+					t.Errorf("Extension[%d] = %+v, want %+v", i, gotExts[i], wantExts[i])
 				}
 			}
 		})
@@ -128,58 +131,49 @@ func TestMTCLogEntry_RoundTrip(t *testing.T) {
 }
 
 func TestMTCLogEntry_MarshalErrors(t *testing.T) {
+	nullWithData := New([]byte("unexpected-data"))
+	nullWithData.entryType = MTCLogEntryTypeNull
+
 	tests := []struct {
 		name    string
-		entry   MTCLogEntry
+		entry   *MTCLogEntry
 		wantErr bool
 	}{
 		{
-			name: "trailing data on null entry",
-			entry: MTCLogEntry{
-				Type:      MTCLogEntryTypeNull,
-				EntryData: []byte("unexpected-data"),
-			},
+			name:    "trailing data on null entry",
+			entry:   nullWithData,
 			wantErr: true,
 		},
 		{
 			name: "duplicate extensions with same data",
-			entry: MTCLogEntry{
-				Type: MTCLogEntryTypeTBSCert,
-				Extensions: []MTCLogEntryExtension{
-					{Type: 2, Data: []byte("data-a")},
-					{Type: 2, Data: []byte("data-a")},
-				},
-			},
+			entry: New(
+				[]byte("fake-der"),
+				MTCLogEntryExtension{Type: 2, Data: []byte("data-a")},
+				MTCLogEntryExtension{Type: 2, Data: []byte("data-a")},
+			),
 			wantErr: true,
 		},
 		{
 			name: "duplicate extensions with different data",
-			entry: MTCLogEntry{
-				Type: MTCLogEntryTypeTBSCert,
-				Extensions: []MTCLogEntryExtension{
-					{Type: 2, Data: []byte("data-a")},
-					{Type: 2, Data: []byte("data-b")},
-				},
-			},
+			entry: New(
+				[]byte("fake-der"),
+				MTCLogEntryExtension{Type: 2, Data: []byte("data-a")},
+				MTCLogEntryExtension{Type: 2, Data: []byte("data-b")},
+			),
 			wantErr: true,
 		},
 		{
 			name: "unsorted extensions",
-			entry: MTCLogEntry{
-				Type: MTCLogEntryTypeTBSCert,
-				Extensions: []MTCLogEntryExtension{
-					{Type: 5, Data: []byte("data-5")},
-					{Type: 1, Data: []byte("data-1")},
-				},
-			},
+			entry: New(
+				[]byte("fake-der"),
+				MTCLogEntryExtension{Type: 5, Data: []byte("data-5")},
+				MTCLogEntryExtension{Type: 1, Data: []byte("data-1")},
+			),
 			wantErr: true,
 		},
 		{
-			name: "entry size exceeds tile limit",
-			entry: MTCLogEntry{
-				Type:      MTCLogEntryTypeTBSCert,
-				EntryData: make([]byte, MaxMTCLogEntrySize),
-			},
+			name:    "entry size exceeds tile limit",
+			entry:   New(make([]byte, MaxMTCLogEntrySize)),
 			wantErr: true,
 		},
 	}
@@ -210,7 +204,7 @@ func TestMTCLogEntry_UnmarshalErrors(t *testing.T) {
 		{
 			name: "trailing data on null entry",
 			mutate: func(b []byte) []byte {
-				e := MTCLogEntry{Type: MTCLogEntryTypeNull}
+				e := New(nil)
 				data, _ := e.Marshal()
 				return append(data, 0x00)
 			},
