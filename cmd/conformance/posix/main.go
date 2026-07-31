@@ -45,6 +45,7 @@ var (
 	additionalPrivateKeyFiles = []string{}
 	slogLevel                 = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is 0 (INFO). See https://pkg.go.dev/log/slog#Level for other levels.")
 	logFormat                 = flag.String("log_format", "text", "The format of the logs: text or json.")
+	mirrorPolicyFile          = flag.String("mirror_policy", "", "File containing the mirror policy in tlog-policy format. If unset, no mirroring will be performed.")
 )
 
 func init() {
@@ -93,12 +94,29 @@ func main() {
 		}
 	}
 
-	appender, shutdown, _, err := tessera.NewAppender(ctx, driver, tessera.NewAppendOptions().
+	opts := tessera.NewAppendOptions().
 		WithCheckpointSigner(s, a...).
 		WithCheckpointInterval(time.Second).
 		WithCheckpointRepublishInterval(time.Minute).
 		WithBatching(256, time.Second).
-		WithAntispam(tessera.DefaultAntispamInMemorySize, antispam))
+		WithAntispam(tessera.DefaultAntispamInMemorySize, antispam)
+	if *mirrorPolicyFile != "" {
+		b, err := os.ReadFile(*mirrorPolicyFile)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to read mirror policy", slog.Any("error", err))
+			os.Exit(1)
+		}
+		policy, err := tessera.NewWitnessGroupFromPolicy(b)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to parse mirror policy", slog.Any("error", err))
+			os.Exit(1)
+		}
+		opts = opts.WithMirrors(policy, nil)
+		slog.InfoContext(ctx, "Mirroring enabled", slog.Any("policy", policy))
+	}
+
+	appender, shutdown, _, err := tessera.NewAppender(ctx, driver, opts)
+
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create new appender", slog.Any("error", err))
 		os.Exit(1)
@@ -190,8 +208,8 @@ func getSignerOrDie() note.Signer {
 			os.Exit(1)
 		}
 	}
-	s, err := note.NewSigner(privKey)
-	if err != nil {
+	var s note.Signer
+	if s, err = note.NewSigner(privKey); err != nil {
 		slog.ErrorContext(context.Background(), "Failed to instantiate signer", slog.Any("error", err))
 		os.Exit(1)
 	}

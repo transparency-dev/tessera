@@ -52,3 +52,15 @@ go run github.com/mhutchinson/woodpecker@main \
   --custom_log_origin=example.com/log/testdata \
   --custom_log_vkey=${LOG_PUBLIC_KEY}
 ```
+
+## Mirroring
+
+> [!WARNING]
+> Experimental feature, not subject to the SemVer policy!
+
+This binary supports mirroring the contents of the log to a [tlog-mirror](https://c2sp.org/tlog-mirror) compliant mirror,
+such as the one(s) under [cmd/mtc/mirror](/cmd/mtc/mirror).
+
+Pass the path to a configuration file in the [tlog-policy](https://c2sp.org/tlog-policy) format to the `--mirror_policy` flag
+to enable this feature.
+

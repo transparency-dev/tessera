@@ -34,10 +34,12 @@ import (
 
 	"log/slog"
 
+	f_note "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/client"
+
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/sync/errgroup"
 )
@@ -74,7 +76,7 @@ func TestMain(m *testing.M) {
 	}
 
 	var err error
-	noteVerifier, err = note.NewVerifier(*logPublicKey)
+	noteVerifier, err = f_note.NewVerifier(*logPublicKey)
 	if err != nil {
 		slog.ErrorContext(context.Background(), "Failed to create new verifier", slog.Any("error", err))
 		os.Exit(1)
