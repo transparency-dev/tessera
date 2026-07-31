@@ -464,7 +464,7 @@ func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSiz
 	// 2. If this is the first time we're pushing the checkpoint (i.e. c.oldCPSize == 0), we're ensuring that we'll send a zero-sized checkpoint.
 	//
 	// This section _only_ deals with the checkpoint and does not upload any entries. It's important to bear in mind that this means
-	// that getting a conflict here doesn't necessarily mean that the mirror actually _has_ tne entries implied by the returned checkpoint
+	// that getting a conflict here doesn't necessarily mean that the mirror actually _has_ the entries implied by the returned checkpoint
 	// size - they may not have yet been uploaded by a client, so we cannot use this value to infer anything about what the mirror's
 	// nextEntry value might be - we'll figure that out below.
 	for {
@@ -474,7 +474,7 @@ func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSiz
 			if !errors.As(err, &stale) {
 				return nil, fmt.Errorf("failed to push checkpoint: %v", err)
 			}
-			c.oldCPSize = max(c.oldCPSize, stale.OldSize)
+			c.oldCPSize = stale.OldSize
 			if c.oldCPSize > targetSize {
 				break
 			}
