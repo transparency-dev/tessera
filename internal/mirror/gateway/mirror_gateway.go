@@ -12,28 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package gateway contains a mirror gateway implementation which knows how to keep a pool of mirrors
+// up to date with a given log.
 package gateway
 
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"log/slog"
 
+	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/client/mirror"
-	"golang.org/x/mod/sumdb/note"
 )
-
-// WitnessGroup defines the subset of tessera.WitnessGroup methods needed by the gateway.
-type WitnessGroup interface {
-	WitnessEndpoints() map[string][]note.Verifier
-}
 
 // LogReader defines the subset of tessera.LogReader methods needed by the gateway.
 type LogReader interface {
@@ -65,72 +60,61 @@ type Gateway struct {
 	targets    []*mirrorTarget
 }
 
+// Options represents the configuration for a Gateway.
+type Options struct {
+	// HTTPClient is the HTTP client to use for all HTTP operations, if nil uses the DefaultHTTPClient.
+	HTTPClient *http.Client
+	// Mirrors defines the pool of mirrors to update.
+	Mirrors []*url.URL
+	// LogReader provides access to the main log.
+	LogReader LogReader
+	// LogOrigin is the origin ID of the log.
+	LogOrigin string
+}
+
 // NewGateway creates a new Gateway that will keep mirrors up-to-date.
-func NewGateway(ctx context.Context, httpClient *http.Client, mirrors WitnessGroup, lr LogReader, logOrigin string) *Gateway {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
+//
+// The provided context should be cancelled once the gateway is no-longer needed such that resources
+// associated with it are released, in particular this will cause all worker goroutines to terminate.
+func NewGateway(ctx context.Context, opts Options) (*Gateway, error) {
+	if opts.HTTPClient == nil {
+		slog.WarnContext(ctx, "MirrorGateway: No HTTP client configured, using DefaultHTTPClient")
+		opts.HTTPClient = http.DefaultClient
+	}
+	if opts.LogOrigin == "" {
+		return nil, fmt.Errorf("log origin is required")
+	}
+	if opts.LogReader == nil {
+		return nil, fmt.Errorf("log reader is required")
 	}
 
 	g := &Gateway{
-		httpClient: httpClient,
-		lr:         lr,
+		httpClient: opts.HTTPClient,
+		lr:         opts.LogReader,
 	}
 
-	endpoints := mirrors.WitnessEndpoints()
-	for u := range endpoints {
-		parsedURL, err := url.Parse(u)
+	endpoints := opts.Mirrors
+	for _, u := range endpoints {
+		mirrorFetcher, err := client.NewHTTPFetcher(u, opts.HTTPClient)
 		if err != nil {
-			slog.ErrorContext(ctx, "Invalid mirror URL", slog.String("url", u), slog.Any("error", err))
-			continue
-		}
-
-		tileFetcher := func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
-			return lr.ReadTile(ctx, level, index, p)
-		}
-		bundleFetcher := func(ctx context.Context, index uint64, p uint8) ([]byte, error) {
-			return lr.ReadEntryBundle(ctx, index, p)
-		}
-		mirrorCheckpointFetcher := func(ctx context.Context) ([]byte, error) {
-			checkpointURL, err := parsedURL.Parse("checkpoint")
-			if err != nil {
-				return nil, err
-			}
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, checkpointURL.String(), nil)
-			if err != nil {
-				return nil, err
-			}
-			resp, err := httpClient.Do(req)
-			if err != nil {
-				return nil, err
-			}
-			defer func() {
-				_ = resp.Body.Close()
-			}()
-			if resp.StatusCode == http.StatusNotFound {
-				return nil, os.ErrNotExist
-			}
-			if resp.StatusCode != http.StatusOK {
-				return nil, fmt.Errorf("failed to fetch checkpoint from mirror: status %d", resp.StatusCode)
-			}
-			return io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("invalid mirror URL %v: %v", u, err)
 		}
 
 		mOpts := mirror.NewOptions().
-			WithMirrorURL(parsedURL).
-			WithHTTPClient(httpClient).
-			WithLogOrigin(logOrigin).
-			WithTileFetcher(tileFetcher).
-			WithBundleFetcher(bundleFetcher).
-			WithMirrorCheckpointFetcher(mirrorCheckpointFetcher)
+			WithMirrorURL(u).
+			WithHTTPClient(opts.HTTPClient).
+			WithLogOrigin(opts.LogOrigin).
+			WithTileFetcher(opts.LogReader.ReadTile).
+			WithBundleFetcher(opts.LogReader.ReadEntryBundle).
+			WithMirrorCheckpointFetcher(mirrorFetcher.ReadCheckpoint)
 
 		c, err := mirror.NewClient(ctx, mOpts)
 		if err != nil {
-			slog.ErrorContext(ctx, "Failed to create mirror client", slog.String("url", u), slog.Any("error", err))
-			continue
+			return nil, fmt.Errorf("failed to create mirror client for URL %q: %v", u, err)
 		}
 
 		target := &mirrorTarget{
-			url:    parsedURL,
+			url:    u,
 			client: c,
 			goals:  make(chan goal, 1),
 		}
@@ -140,66 +124,71 @@ func NewGateway(ctx context.Context, httpClient *http.Client, mirrors WitnessGro
 		go g.runWorker(ctx, target)
 	}
 
-	return g
+	return g, nil
 }
 
-// CosignCheckpoint updates the goals for all mirrors and returns a channel on which it will send
-// cosignatures as they are successfully fetched from the mirrors.
+// CosignCheckpoint updates the goals for all mirrors and returns a channel over which
+// cosignatures will be sent as they are successfully fetched from the mirrors.
 // The channel is closed once all mirrors' signatures have been sent or the context is canceled.
+//
+// It is strongly recommended that the context passed in here has a deadline or timeout set.
 func (g *Gateway) CosignCheckpoint(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
+	out := make(chan []byte, len(g.targets))
+
+	// If there are no mirrors, return immediately.
 	if len(g.targets) == 0 {
-		return nil
+		// Return a _closed_ channel, not `nil`, as callers will iterate over the
+		// returned channel and we don't want to block them forever.
+		close(out)
+		return out
 	}
 
-	out := make(chan []byte, len(g.targets))
-	wg := sync.WaitGroup{}
+	N := &atomic.Uint32{}
 
-	// Send goals to each of the target workers, but don't block if they're
-	// already busy.
+	// Send updated goals to each of the target workers.
 	for _, target := range g.targets {
 		newGoal := goal{
 			cp:     cp,
 			cpSize: cpSize,
 			done: func(sig []byte, err error) {
-				defer wg.Done()
+				// Last one out please turn off the lights.
+				defer func() {
+					if N.Add(1) == uint32(len(g.targets)) {
+						close(out)
+					}
+				}()
+
 				if err != nil {
-					slog.ErrorContext(ctx, "Mirror sync failed", slog.String("url", target.url.String()), slog.Any("error", err))
+					slog.ErrorContext(ctx, "MirrorGateway: Sync failed", slog.String("url", target.url.String()), slog.Any("error", err))
 					return
 				}
-				slog.InfoContext(ctx, "Mirror sync succeeded", slog.String("url", target.url.String()), slog.Uint64("size", cpSize))
+				slog.InfoContext(ctx, "MirrorGateway: Sync succeeded", slog.String("url", target.url.String()), slog.Uint64("size", cpSize))
 				out <- sig
 			},
 		}
 
 		for done := false; !done; {
-			// Add the goal to the target worker. If there's already a goal in the channel, then we'll try to replace it since the current cosign request
-			// supercedes it. This is racy, but that's fine since we're only trying to replace a pending request - it's fine if the worker has already picked up
-			// the old goal.
+			// Send the goal to the target worker.
 			select {
 			case <-ctx.Done():
 				done = true
 			case target.goals <- newGoal:
-				// The goal was sent, we're done
-				wg.Add(1)
 				done = true
 			default:
-				// No space in the goals channel, try to supercede the goal currently in there.
+				// No space in the goals channel, try to supercede the goal currently in there with the new one.
+				// This replacement is "racy", but the worst that can happen is that the worker has already
+				// picked up the old goal and we end up simply queuing the new goal instead of replacing the old one.
 				select {
 				case oldGoal := <-target.goals:
-					// Ok, we've removed the superceded one, let's signal that it's done:
+					// Ok, we've removed the superceded goal, so we need to signal that it's done:
 					oldGoal.done(nil, fmt.Errorf("superseded by newer goal for size %d", cpSize))
-					// Then let the loop retry the send.
+					// Then let the loop retry the send in the select at the top.
 				default:
 					// Channel became empty in the meantime, let the loop retry the send.
 				}
 			}
 		}
 	}
-
-	go func() {
-		wg.Wait()
-		close(out)
-	}()
 
 	return out
 }
@@ -210,8 +199,8 @@ func (g *Gateway) CosignCheckpoint(ctx context.Context, cp []byte, cpSize uint64
 // It will block on the goals channel until a goal is received, or the context is
 // cancelled.
 func (g *Gateway) runWorker(ctx context.Context, target *mirrorTarget) {
-	slog.InfoContext(ctx, "Starting mirror worker", slog.String("url", target.url.String()))
-	defer slog.InfoContext(ctx, "Stopping mirror worker", slog.String("url", target.url.String()))
+	slog.InfoContext(ctx, "MirrorGateway: Starting worker", slog.String("url", target.url.String()))
+	defer slog.InfoContext(ctx, "MirrorGateway: Stopping worker", slog.String("url", target.url.String()))
 
 	for {
 		select {
@@ -219,36 +208,49 @@ func (g *Gateway) runWorker(ctx context.Context, target *mirrorTarget) {
 			return
 		case job, ok := <-target.goals:
 			if !ok {
-				// Channel closed, stop.
+				// Channel closed: down tools and exit.
 				return
 			}
 
-			// Loop until the goal is met, or we timeout.
-			done := false
-			interval := time.Millisecond
-			for !done {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(interval):
-					interval = time.Second
-				}
-				// In a func for context defer.
-				func() {
-					// TODO(al): Make this configurable? Should be plenty of time for normal operation, and we'll retry anyway if we do timeout.
-					cctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
-					defer cancel()
-
-					slog.DebugContext(cctx, "Syncing mirror", slog.String("url", target.url.String()), slog.Uint64("goal", job.cpSize))
-					sigs, err := target.client.Sync(cctx, job.cp, job.cpSize)
-					if err != nil {
-						slog.WarnContext(ctx, "Mirror sync attempt failed, retrying", slog.String("url", target.url.String()), slog.Any("error", err))
-						return
-					}
-					done = true
-					job.done(sigs, nil)
-				}()
-			}
+			// TODO(al): Consider making this timeout configurable. This should be fine for the moment though.
+			goalJob := g.chaseGoal(target, job, 1*time.Minute)
+			sigs, err := goalJob(ctx)
+			job.done(sigs, err)
 		}
+	}
+}
+
+func (g *Gateway) chaseGoal(target *mirrorTarget, job goal, timeout time.Duration) func(context.Context) ([]byte, error) {
+	return func(ctx context.Context) ([]byte, error) {
+		var rSigs []byte
+		var rErr error
+
+		interval := time.Millisecond
+		// Loop until the goal is met, or we timeout.
+		for i, done := 0, false; !done; i++ {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(interval):
+				interval = time.Second
+			}
+
+			// In a func for context defer.
+			func() {
+				cctx, cancel := context.WithTimeout(ctx, timeout)
+				defer cancel()
+
+				slog.DebugContext(cctx, "MirrorGateway: Syncing mirror", slog.String("url", target.url.String()), slog.Uint64("goal", job.cpSize))
+				rSigs, rErr = target.client.Sync(cctx, job.cp, job.cpSize)
+				if rErr != nil {
+					// TODO(al): Update the client so we can tell whether an error is permanent or transient, and abandon jobs which will never succeed.
+					// Currently, a worker for a mirror which is unavailable will keep retrying ~forever until the mirror comes back.
+					slog.WarnContext(cctx, "MirrorGateway: Sync failed, retrying", slog.String("url", target.url.String()), slog.Any("error", rErr))
+					return
+				}
+				done = true
+			}()
+		}
+		return rSigs, rErr
 	}
 }

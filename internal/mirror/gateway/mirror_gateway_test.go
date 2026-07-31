@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -35,14 +36,6 @@ import (
 	"golang.org/x/mod/sumdb/note"
 )
 
-type fakeWitnessGroup struct {
-	endpoints map[string][]note.Verifier
-}
-
-func (f fakeWitnessGroup) WitnessEndpoints() map[string][]note.Verifier {
-	return f.endpoints
-}
-
 func TestGateway(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -50,10 +43,12 @@ func TestGateway(t *testing.T) {
 		failCount  int
 	}{
 		{
+			name:       "no mirrors",
+			numMirrors: 0,
+		}, {
 			name:       "multiple mirrors",
 			numMirrors: 3,
-		},
-		{
+		}, {
 			name:       "retry on transient error",
 			numMirrors: 1,
 			failCount:  2,
@@ -86,22 +81,31 @@ func TestGateway(t *testing.T) {
 			}
 
 			var verifiers []note.Verifier
-			endpoints := make(map[string][]note.Verifier)
+			var mirrorURLs []*url.URL
 
 			for i := range tc.numMirrors {
 				signer, verifier := mustNewKeypair(t, fmt.Sprintf("Mirror-%d", i))
 				server := startMockMirror(t, signer, testLog.SigVerifier, tc.failCount)
 				defer server.Close()
 
-				endpoints[server.URL] = []note.Verifier{verifier}
+				sURL, err := url.Parse(server.URL)
+				if err != nil {
+					t.Fatalf("failed to parse mirror URL: %v", err)
+				}
+				mirrorURLs = append(mirrorURLs, sURL)
+
 				verifiers = append(verifiers, verifier)
 			}
 
-			policy := fakeWitnessGroup{
-				endpoints: endpoints,
+			g, err := gateway.NewGateway(t.Context(), gateway.Options{
+				HTTPClient: http.DefaultClient,
+				Mirrors:    mirrorURLs,
+				LogReader:  testLog.LogReader,
+				LogOrigin:  "test",
+			})
+			if err != nil {
+				t.Fatalf("failed to create gateway: %v", err)
 			}
-
-			g := gateway.NewGateway(t.Context(), http.DefaultClient, policy, testLog.LogReader, "test")
 
 			// Call CosignCheckpoint and gather signatures.
 			sigCh := g.CosignCheckpoint(t.Context(), goalCP, size)

@@ -19,7 +19,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"sync"
@@ -746,8 +748,21 @@ func (o *AppendOptions) WithAntispam(inMemEntries uint, as Antispam) *AppendOpti
 	return o
 }
 
+// parseURLs converts a list of URL strings to a list of *url.URL, failing if any cannot be parsed.
+func parseURLs(us []string) ([]*url.URL, error) {
+	ret := make([]*url.URL, 0, len(us))
+	for _, s := range us {
+		u, err := url.Parse(s)
+		if err != nil {
+			return nil, err
+		}
+		ret = append(ret, u)
+	}
+	return ret, nil
+}
+
 // CheckpointPublisher returns a function which should be used to create, sign, and potentially witness a new checkpoint.
-// Deprecated: Use CheckpointPublisherContex.
+// Deprecated: Use CheckpointPublisherContext.
 func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client) func(context.Context, uint64, []byte) ([]byte, error) {
 	return func(ctx context.Context, size uint64, root []byte) ([]byte, error) {
 		return o.CheckpointPublisherContext(ctx, lr, httpClient)(ctx, size, root)
@@ -756,13 +771,36 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 
 // CheckpointPublisherContext returns a function which should be used to create, sign, and potentially witness a new checkpoint.
 func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogReader, httpClient *http.Client) func(context.Context, uint64, []byte) ([]byte, error) {
-	gw := sync.OnceValue(func() *m_gateway.Gateway {
-		if len(o.mirrors.Components) > 0 {
-			return m_gateway.NewGateway(ctx, httpClient, o.mirrors, lr, o.primarySigner.Name())
-		}
-		return nil
-	})
+	// TODO(al): Need a better way of surfacing errors. Maybe add a validate() func to AppendOptions?
+	var (
+		mirrorURLs []*url.URL
+		gw         *m_gateway.Gateway
+		err        error
+	)
 
+	sync.OnceFunc(func() {
+		mirrorURLs, err = parseURLs(slices.Collect(maps.Keys(o.mirrors.WitnessEndpoints())))
+		if err != nil {
+			err = fmt.Errorf("failed to parse mirror URLs: %w", err)
+			return
+		}
+		gw, err = m_gateway.NewGateway(ctx, m_gateway.Options{
+			Mirrors:   mirrorURLs,
+			LogReader: lr,
+			LogOrigin: o.primarySigner.Name(),
+		})
+		if err != nil {
+			err = fmt.Errorf("failed to create gateway: %w", err)
+			return
+		}
+	})
+	if err != nil {
+		return func(_ context.Context, _ uint64, _ []byte) ([]byte, error) {
+			return nil, fmt.Errorf("failed to parse mirror URLs: %w", err)
+		}
+	}
+
+	// Now return the actual publisher func.
 	return func(ctx context.Context, size uint64, root []byte) ([]byte, error) {
 		return otel.Trace(ctx, "tessera.CheckpointPublisher", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
 			cp, err := o.newCP(ctx, size, root)
