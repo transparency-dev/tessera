@@ -315,6 +315,10 @@ func (c *Client) streamEntries(ctx context.Context, uploadStart, uploadEnd uint6
 		startIdx := curr % 256
 		endIdx := startIdx + numEntries
 
+		if uint64(len(bundle.Entries)) < endIdx {
+			_ = pw.CloseWithError(fmt.Errorf("bundle %d has only %d entries, expected at least %d", bundleIndex, len(bundle.Entries), endIdx))
+			return
+		}
 		for i := startIdx; i < endIdx; i++ {
 			entry := bundle.Entries[i]
 			if err := binary.Write(gw, binary.BigEndian, uint16(len(entry))); err != nil {
@@ -443,10 +447,14 @@ func (c *Client) buildCheckpointRequestBody(oldSize uint64, proof [][]byte, chec
 // up to the specified targetSize. It returns the mirror's cosignatures on success.
 func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSize uint64) ([]byte, error) {
 	var conflict ErrConflict
-	nextEntry := c.oldSize
+	var nextEntry uint64
 
 	// Push the checkpoint with the old size (0 if not provided).
-	for c.oldSize < targetSize {
+	// Keep trying for as long we we get conflict errors or the context is not cancelled.
+	// Ensure we send the checkpoint at least once, this serves two purposes:
+	// 1. We refresh the witness' timestamped view of the log, committing to the fact that the log hasn't grown.
+	// 2. If this is the first time we're pushing the checkpoint (i.e. c.oldSize == 0), we're ensuring that we'll send a zero-sized checkpoint.
+	for {
 		err := c.pushCheckpoint(ctx, c.oldSize, targetSize, targetCheckpointRaw)
 		if err != nil {
 			if !errors.As(err, &conflict) {
@@ -458,6 +466,7 @@ func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSiz
 
 		nextEntry = c.oldSize
 		c.oldSize = targetSize
+		break
 	}
 
 	// Push entries up to target size in packages of 256, handling concurrent conflicts and retries.
