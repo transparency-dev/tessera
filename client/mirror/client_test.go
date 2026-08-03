@@ -631,6 +631,12 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		if oldSize > uint64(fm.numEntries) {
+			w.Header().Set("Content-Type", "text/x.tlog.size")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = fmt.Fprintf(w, "%d\n", fm.initialPendingSize)
+			return
+		}
 		if oldSize != fm.initialPendingSize {
 			w.Header().Set("Content-Type", "text/x.tlog.size")
 			w.WriteHeader(http.StatusConflict)
@@ -817,7 +823,7 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 		{
 			desc:               "consistency proof succeeds and checkpoint push succeeds",
 			initialPendingSize: 1,
-			initialNextEntry:   1,
+			initialNextEntry:   0,
 			tileFetcher: func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
 				if p == 5 {
 					return make([]byte, 5*32), nil
@@ -826,7 +832,7 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 			},
 			addEntriesExpectations: []addEntriesExpectation{
 				{
-					start:  1,
+					start:  0,
 					end:    5,
 					ticket: nil,
 					status: http.StatusOK,
@@ -906,6 +912,35 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 				},
 			},
 			wantErr: "mirror size reverted to 2, which is smaller than target 5",
+		},
+		{
+			desc:               "mirror pending size greater than target size",
+			initialPendingSize: 10,
+			initialNextEntry:   8,
+			addEntriesExpectations: []addEntriesExpectation{
+				{
+					start:  0,
+					end:    5,
+					ticket: nil,
+					status: http.StatusConflict,
+					body:   "10\n8\ndGlja2V0LW5ldw==\n",
+				},
+				{
+					start:  8,
+					end:    10,
+					ticket: []byte("ticket-new"),
+					status: http.StatusOK,
+				},
+			},
+			bundleFetcher: func(ctx context.Context, bundleIndex uint64, p uint8) ([]byte, error) {
+				var buf bytes.Buffer
+				for i := range 10 {
+					entry := fmt.Appendf(nil, "entry-%d", i)
+					_ = binary.Write(&buf, binary.BigEndian, uint16(len(entry)))
+					buf.Write(entry)
+				}
+				return buf.Bytes(), nil
+			},
 		},
 		{
 			desc:               "bundle has fewer entries than expected",

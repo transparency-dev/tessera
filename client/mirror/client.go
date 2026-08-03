@@ -133,8 +133,9 @@ type Client struct {
 
 	// TODO(roger2hk): Add a mutex just in case client is used across multiple goroutines.
 	// State of the mirror.
-	oldSize uint64
-	ticket  []byte
+	oldCPSize uint64
+	nextEntry uint64
+	ticket    []byte
 }
 
 // NewClient creates a new Client with the provided options.
@@ -155,6 +156,16 @@ func NewClient(_ context.Context, opts *Options) (*Client, error) {
 	}
 
 	return &Client{opts: opts}, nil
+}
+
+// ErrCheckpointStale is returned by the tlog-mirror client when the old-size sent to `add-checkpoint` does not match
+// the witness's current checkpoint size.
+type ErrCheckpointStale struct {
+	OldSize uint64
+}
+
+func (e ErrCheckpointStale) Error() string {
+	return fmt.Sprintf("checkpoint stale: old size %d", e.OldSize)
 }
 
 // ErrConflict is returned by tlog-mirror client operations when the mirror returns a 409 Conflict.
@@ -407,8 +418,8 @@ func (c *Client) pushCheckpoint(ctx context.Context, oldSize, targetSize uint64,
 			}
 			slog.InfoContext(ctx, "Witness replied with x.tlog.size different than our hint", slog.String("url", u.String()), slog.Uint64("reply", newWitSize), slog.Uint64("hinted", oldSize))
 
-			return ErrConflict{
-				PendingSize: newWitSize,
+			return ErrCheckpointStale{
+				OldSize: newWitSize,
 			}
 		}
 	}
@@ -446,52 +457,61 @@ func (c *Client) buildCheckpointRequestBody(oldSize uint64, proof [][]byte, chec
 // Sync synchronizes all entries and the checkpoint from the source log to the mirror
 // up to the specified targetSize. It returns the mirror's cosignatures on success.
 func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSize uint64) ([]byte, error) {
-	var conflict ErrConflict
-	var nextEntry uint64
-
 	// Push the checkpoint with the old size (0 if not provided).
-	// Keep trying for as long we we get conflict errors or the context is not cancelled.
+	// Keep trying for as long as we get conflict errors (until the context expires).
 	// Ensure we send the checkpoint at least once, this serves two purposes:
-	// 1. We refresh the witness' timestamped view of the log, committing to the fact that the log hasn't grown.
-	// 2. If this is the first time we're pushing the checkpoint (i.e. c.oldSize == 0), we're ensuring that we'll send a zero-sized checkpoint.
+	// 1. We refresh the mirror's timestamped view of the log, committing to the fact that the log hasn't grown.
+	// 2. If this is the first time we're pushing the checkpoint (i.e. c.oldCPSize == 0), we're ensuring that we'll send a zero-sized checkpoint.
+	//
+	// This section _only_ deals with the checkpoint and does not upload any entries. It's important to bear in mind that this means
+	// that getting a conflict here doesn't necessarily mean that the mirror actually _has_ tne entries implied by the returned checkpoint
+	// size - they may not have yet been uploaded by a client, so we cannot use this value to infer anything about what the mirror's
+	// nextEntry value might be - we'll figure that out below.
 	for {
-		err := c.pushCheckpoint(ctx, c.oldSize, targetSize, targetCheckpointRaw)
+		err := c.pushCheckpoint(ctx, c.oldCPSize, targetSize, targetCheckpointRaw)
 		if err != nil {
-			if !errors.As(err, &conflict) {
+			var stale ErrCheckpointStale
+			if !errors.As(err, &stale) {
 				return nil, fmt.Errorf("failed to push checkpoint: %v", err)
 			}
-			c.oldSize = max(c.oldSize, conflict.PendingSize)
+			c.oldCPSize = max(c.oldCPSize, stale.OldSize)
+			if c.oldCPSize > targetSize {
+				break
+			}
 			continue
 		}
 
-		nextEntry = c.oldSize
-		c.oldSize = targetSize
+		c.oldCPSize = targetSize
 		break
 	}
 
 	// Push entries up to target size in packages of 256, handling concurrent conflicts and retries.
-	uploadEnd := max(targetSize, c.oldSize)
+	// targetSize must equal the size of the tree that targetCheckpointRaw represents; since we're attempting
+	// to fetch a cosig for this checkpoint from the mirror, it's meaningless to upload any further.
+	uploadEnd := targetSize
 
 	var cosigs []byte
 	for {
 		var err error
-		cosigs, err = c.pushEntries(ctx, nextEntry, uploadEnd, c.ticket)
-		if err == nil {
-			break
-		}
+		cosigs, err = c.pushEntries(ctx, c.nextEntry, uploadEnd, c.ticket)
+		if err != nil {
+			var conflict ErrConflict
+			if !errors.As(err, &conflict) {
+				return nil, fmt.Errorf("sync failed during entry upload: %v", err)
+			}
 
-		if !errors.As(err, &conflict) {
-			return nil, fmt.Errorf("sync failed during entry upload: %v", err)
-		}
+			uploadEnd = conflict.PendingSize
+			c.nextEntry = conflict.NextEntry
+			c.ticket = conflict.Ticket
 
-		uploadEnd = conflict.PendingSize
-		nextEntry = conflict.NextEntry
-		c.ticket = conflict.Ticket
-		c.oldSize = conflict.PendingSize
-
-		if uploadEnd < targetSize {
-			return nil, fmt.Errorf("mirror size reverted to %d, which is smaller than target %d", uploadEnd, targetSize)
+			if uploadEnd < targetSize {
+				return nil, fmt.Errorf("mirror size reverted to %d, which is smaller than target %d", uploadEnd, targetSize)
+			}
+			continue
 		}
+		c.nextEntry = uploadEnd
+
+		break
 	}
 
 	return cosigs, nil
