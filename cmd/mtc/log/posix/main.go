@@ -63,7 +63,7 @@ func main() {
 		WithAwaiterPollInterval(*awaiterPollInterval)
 	mtcLog, err := log.NewMTCLog(ctx, appender, opts)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to initialize MTC log", slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to initialize MTC log", slog.Any("error", err))
 		os.Exit(1)
 	}
 	mux := handler.New(mtcLog)
