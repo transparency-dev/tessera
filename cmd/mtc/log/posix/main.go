@@ -39,6 +39,7 @@ var (
 	writeTimeout      = flag.Duration("write_timeout", 0, "The maximum duration before timing out writes of the response.")
 
 	storageDir                = flag.String("storage_dir", "", "Path to root of log storage.")
+	origin                    = flag.String("origin", "", "The log origin name.")
 	privKeyFile               = flag.String("private_key", "", "Location of private key file. If unset, uses the contents of the LOG_PRIVATE_KEY environment variable.")
 	checkpointInterval        = flag.Duration("checkpoint_interval", 1500*time.Millisecond, "Interval between publishing checkpoints when the log has grown")
 	batchMaxSize              = flag.Uint("batch_max_size", tessera.DefaultBatchMaxSize, "Maximum number of entries to process in a single sequencing batch.")
@@ -57,6 +58,8 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 	ctx := context.Background()
 
+	// TODO: Add a function inside the mtc package to verify that the signer name and log origin are valid OIDs
+	// as per specs, and call it before creating the appender.
 	appender, shutdown, reader := newAppenderFromFlags(ctx)
 	opts := log.NewOptions().
 		WithTesseraReader(reader).
@@ -130,11 +133,15 @@ func newAppenderFromFlags(ctx context.Context) (*tessera.Appender, func(ctx cont
 		slog.ErrorContext(ctx, "flag --storage_dir is required")
 		os.Exit(1)
 	}
+	if *origin == "" {
+		slog.ErrorContext(ctx, "flag --origin is required")
+		os.Exit(1)
+	}
 
 	signer := mustCreateSigner()
 
-	// TODO: Add WithOrigin option.
 	opts := tessera.NewAppendOptions().
+		WithOrigin(*origin).
 		WithCheckpointSigner(signer).
 		WithCheckpointInterval(*checkpointInterval).
 		WithBatching(*batchMaxSize, *batchMaxAge).
