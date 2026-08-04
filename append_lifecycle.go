@@ -764,40 +764,36 @@ func parseURLs(us []string) ([]*url.URL, error) {
 // CheckpointPublisher returns a function which should be used to create, sign, and potentially witness a new checkpoint.
 // Deprecated: Use CheckpointPublisherContext.
 func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client) func(context.Context, uint64, []byte) ([]byte, error) {
+	var (
+		once sync.Once
+		f    func(context.Context, uint64, []byte) ([]byte, error)
+		err  error
+	)
 	return func(ctx context.Context, size uint64, root []byte) ([]byte, error) {
-		return o.CheckpointPublisherContext(ctx, lr, httpClient)(ctx, size, root)
+		// Only delegate once.
+		once.Do(func() {
+			f, err = o.CheckpointPublisherContext(ctx, lr, httpClient)
+		})
+		if err != nil {
+			return nil, err
+		}
+		return f(ctx, size, root)
 	}
 }
 
 // CheckpointPublisherContext returns a function which should be used to create, sign, and potentially witness a new checkpoint.
-func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogReader, httpClient *http.Client) func(context.Context, uint64, []byte) ([]byte, error) {
-	// TODO(al): Need a better way of surfacing errors. Maybe add a validate() func to AppendOptions?
-	var (
-		mirrorURLs []*url.URL
-		gw         *m_gateway.Gateway
-		err        error
-	)
-
-	sync.OnceFunc(func() {
-		mirrorURLs, err = parseURLs(slices.Collect(maps.Keys(o.mirrors.WitnessEndpoints())))
-		if err != nil {
-			err = fmt.Errorf("failed to parse mirror URLs: %w", err)
-			return
-		}
-		gw, err = m_gateway.NewGateway(ctx, m_gateway.Options{
-			Mirrors:   mirrorURLs,
-			LogReader: lr,
-			LogOrigin: o.primarySigner.Name(),
-		})
-		if err != nil {
-			err = fmt.Errorf("failed to create gateway: %w", err)
-			return
-		}
+func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogReader, httpClient *http.Client) (func(context.Context, uint64, []byte) ([]byte, error), error) {
+	mirrorURLs, err := parseURLs(slices.Collect(maps.Keys(o.mirrors.WitnessEndpoints())))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse mirror URLs: %w", err)
+	}
+	gw, err := m_gateway.NewGateway(ctx, m_gateway.Options{
+		Mirrors:   mirrorURLs,
+		LogReader: lr,
+		LogOrigin: o.primarySigner.Name(),
 	})
 	if err != nil {
-		return func(_ context.Context, _ uint64, _ []byte) ([]byte, error) {
-			return nil, fmt.Errorf("failed to parse mirror URLs: %w", err)
-		}
+		return nil, fmt.Errorf("failed to create gateway: %w", err)
 	}
 
 	// Now return the actual publisher func.
@@ -835,7 +831,7 @@ func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogRea
 			cp = append(append(slices.Clone(cp), ws...), ms...)
 			return cp, nil
 		})
-	}
+	}, nil
 }
 
 // witnessCheckpoint takes care of witnessing the given checkpoint with the provided witness policy.

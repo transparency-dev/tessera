@@ -431,7 +431,10 @@ func TestCheckpointPublisher(t *testing.T) {
 
 			lr := newFakeLogReaderForTest(t)
 
-			publisher := test.opts.CheckpointPublisher(t.Context(), lr, client)
+			publisher, err := test.opts.CheckpointPublisherContext(t.Context(), lr, client)
+			if err != nil {
+				t.Fatalf("expected error %v but got: %v", test.expectErr, err)
+			}
 			cp, err := publisher(t.Context(), 5, []byte("12345678901234567890123456789012"))
 			if (err != nil) != test.expectErr {
 				t.Fatalf("expected error %v but got: %v", test.expectErr, err)
