@@ -289,7 +289,7 @@ func mustCreateWriters(ctx context.Context, us []string) loadtest.LeafWriter {
 
 func httpWriter(ctx context.Context, u *url.URL, hc *http.Client, bearerToken string) loadtest.LeafWriter {
 	cTrace := &httptrace.ClientTrace{
-		GotConn: func(info httptrace.GotConnInfo) { slog.InfoContext(ctx, "connection established %#v") },
+		GotConn: func(info httptrace.GotConnInfo) { slog.InfoContext(ctx, "connection established", slog.Any("info", info)) },
 	}
 	return func(ctx context.Context, newLeaf []byte) (uint64, error) {
 		req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(newLeaf))
