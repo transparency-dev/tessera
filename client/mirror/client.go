@@ -133,8 +133,9 @@ type Client struct {
 
 	// TODO(roger2hk): Add a mutex just in case client is used across multiple goroutines.
 	// State of the mirror.
-	oldSize uint64
-	ticket  []byte
+	oldCPSize uint64
+	nextEntry uint64
+	ticket    []byte
 }
 
 // NewClient creates a new Client with the provided options.
@@ -155,6 +156,16 @@ func NewClient(_ context.Context, opts *Options) (*Client, error) {
 	}
 
 	return &Client{opts: opts}, nil
+}
+
+// ErrCheckpointStale is returned by the tlog-mirror client when the old-size sent to `add-checkpoint` does not match
+// the witness's current checkpoint size.
+type ErrCheckpointStale struct {
+	OldSize uint64
+}
+
+func (e ErrCheckpointStale) Error() string {
+	return fmt.Sprintf("checkpoint stale: old size %d", e.OldSize)
 }
 
 // ErrConflict is returned by tlog-mirror client operations when the mirror returns a 409 Conflict.
@@ -315,6 +326,10 @@ func (c *Client) streamEntries(ctx context.Context, uploadStart, uploadEnd uint6
 		startIdx := curr % 256
 		endIdx := startIdx + numEntries
 
+		if uint64(len(bundle.Entries)) < endIdx {
+			_ = pw.CloseWithError(fmt.Errorf("bundle %d has only %d entries, expected at least %d", bundleIndex, len(bundle.Entries), endIdx))
+			return
+		}
 		for i := startIdx; i < endIdx; i++ {
 			entry := bundle.Entries[i]
 			if err := binary.Write(gw, binary.BigEndian, uint16(len(entry))); err != nil {
@@ -403,8 +418,8 @@ func (c *Client) pushCheckpoint(ctx context.Context, oldSize, targetSize uint64,
 			}
 			slog.InfoContext(ctx, "Witness replied with x.tlog.size different than our hint", slog.String("url", u.String()), slog.Uint64("reply", newWitSize), slog.Uint64("hinted", oldSize))
 
-			return ErrConflict{
-				PendingSize: newWitSize,
+			return ErrCheckpointStale{
+				OldSize: newWitSize,
 			}
 		}
 	}
@@ -442,47 +457,79 @@ func (c *Client) buildCheckpointRequestBody(oldSize uint64, proof [][]byte, chec
 // Sync synchronizes all entries and the checkpoint from the source log to the mirror
 // up to the specified targetSize. It returns the mirror's cosignatures on success.
 func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSize uint64) ([]byte, error) {
-	var conflict ErrConflict
-	nextEntry := c.oldSize
-
 	// Push the checkpoint with the old size (0 if not provided).
-	for c.oldSize < targetSize {
-		err := c.pushCheckpoint(ctx, c.oldSize, targetSize, targetCheckpointRaw)
+	// Keep trying for as long as we get conflict errors (until the context expires).
+	// Ensure we send the checkpoint at least once, this serves two purposes:
+	// 1. We refresh the mirror's timestamped view of the log, committing to the fact that the log hasn't grown.
+	// 2. If this is the first time we're pushing the checkpoint (i.e. c.oldCPSize == 0), we're ensuring that we'll send a zero-sized checkpoint.
+	//
+	// This section _only_ deals with the checkpoint and does not upload any entries. It's important to bear in mind that this means
+	// that getting a conflict here doesn't necessarily mean that the mirror actually _has_ the entries implied by the returned checkpoint
+	// size - they may not have yet been uploaded by a client, so we cannot use this value to infer anything about what the mirror's
+	// nextEntry value might be - we'll figure that out below.
+	for {
+		err := c.pushCheckpoint(ctx, c.oldCPSize, targetSize, targetCheckpointRaw)
 		if err != nil {
-			if !errors.As(err, &conflict) {
+			var stale ErrCheckpointStale
+			if !errors.As(err, &stale) {
 				return nil, fmt.Errorf("failed to push checkpoint: %v", err)
 			}
-			c.oldSize = max(c.oldSize, conflict.PendingSize)
+			c.oldCPSize = stale.OldSize
+			if c.oldCPSize > targetSize {
+				break
+			}
 			continue
 		}
 
-		nextEntry = c.oldSize
-		c.oldSize = targetSize
+		c.oldCPSize = targetSize
+		break
 	}
 
 	// Push entries up to target size in packages of 256, handling concurrent conflicts and retries.
-	uploadEnd := max(targetSize, c.oldSize)
+	// targetSize must equal the size of the tree that targetCheckpointRaw represents; since we're attempting
+	// to fetch a cosig for this checkpoint from the mirror, it's meaningless to upload any further.
+	uploadEnd := targetSize
+	uploadStart := c.nextEntry
 
 	var cosigs []byte
 	for {
 		var err error
-		cosigs, err = c.pushEntries(ctx, nextEntry, uploadEnd, c.ticket)
-		if err == nil {
-			break
-		}
+		cosigs, err = c.pushEntries(ctx, uploadStart, uploadEnd, c.ticket)
+		if err != nil {
+			var conflict ErrConflict
+			if !errors.As(err, &conflict) {
+				return nil, fmt.Errorf("sync failed during entry upload: %v", err)
+			}
 
-		if !errors.As(err, &conflict) {
-			return nil, fmt.Errorf("sync failed during entry upload: %v", err)
-		}
+			// Update our view of the mirror state in light of the conflict, and figure out what to do next.
+			c.ticket = conflict.Ticket
+			c.nextEntry = conflict.NextEntry
+			if c.nextEntry >= uploadEnd {
+				// The mirror has moved on from at least our nextEntry (and may have caught up with uploadEnd).
+				// We'll try a zero-sized request to get a cosig on our checkpoint.
 
-		uploadEnd = conflict.PendingSize
-		nextEntry = conflict.NextEntry
-		c.ticket = conflict.Ticket
-		c.oldSize = conflict.PendingSize
+				// Check if a previous zero-sized request returned a conflict.
+				if uploadStart == uploadEnd {
+					// If so this means that the mirror has already moved on from the checkpoint we're trying to upload, so we're done.
+					return nil, fmt.Errorf("mirror rejected checkpoint size %d: %w", uploadEnd, conflict)
+				}
 
-		if uploadEnd < targetSize {
-			return nil, fmt.Errorf("mirror size reverted to %d, which is smaller than target %d", uploadEnd, targetSize)
+				// Since the mirror already has all the entries covered by the checkpoint we're currently trying to upload, set
+				// uploadStart to uploadEnd to perform a zero-sized update on the next iteration.
+				uploadStart = uploadEnd
+				continue
+			}
+			uploadStart = c.nextEntry
+
+			if conflict.PendingSize < targetSize {
+				return nil, fmt.Errorf("mirror size reverted to %d, which is smaller than target %d", conflict.PendingSize, targetSize)
+			}
+			continue
 		}
+		// We've successfully uploaded our entries, so keep track of which entries we now know the mirror has.
+		c.nextEntry = max(c.nextEntry, uploadEnd)
+
+		break
 	}
 
 	return cosigs, nil

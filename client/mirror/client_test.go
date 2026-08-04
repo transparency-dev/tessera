@@ -403,6 +403,7 @@ type fakeMirror struct {
 	initialStatus          int
 	addEntriesExpectations []addEntriesExpectation
 	addEntriesCallCount    int
+	expectClientError      bool
 }
 
 type addEntriesExpectation struct {
@@ -428,6 +429,13 @@ func newFakeMirror(t *testing.T, origin string) *fakeMirror {
 	}
 }
 
+func (fm *fakeMirror) handleReadError(err error, msg string, w http.ResponseWriter) {
+	if !fm.expectClientError {
+		fm.t.Errorf("%s: %v", msg, err)
+	}
+	w.WriteHeader(http.StatusBadRequest)
+}
+
 // ServeHTTP handles incoming HTTP requests to mock mirror endpoints (/add-entries, /add-checkpoint).
 func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
@@ -439,8 +447,7 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		gr, err := gzip.NewReader(r.Body)
 		if err != nil {
-			fm.t.Errorf("gzip.NewReader failed: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
+			fm.handleReadError(err, "gzip.NewReader failed", w)
 			return
 		}
 		defer func() {
@@ -449,14 +456,12 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		var originLen uint16
 		if err := binary.Read(gr, binary.BigEndian, &originLen); err != nil {
-			fm.t.Errorf("failed to read origin length: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
+			fm.handleReadError(err, "failed to read origin length", w)
 			return
 		}
 		gotOrigin := make([]byte, originLen)
 		if _, err := io.ReadFull(gr, gotOrigin); err != nil {
-			fm.t.Errorf("failed to read origin: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
+			fm.handleReadError(err, "failed to read origin", w)
 			return
 		}
 		if string(gotOrigin) != fm.origin {
@@ -465,26 +470,22 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		var start uint64
 		if err := binary.Read(gr, binary.BigEndian, &start); err != nil {
-			fm.t.Errorf("failed to read start: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
+			fm.handleReadError(err, "failed to read start", w)
 			return
 		}
 		var end uint64
 		if err := binary.Read(gr, binary.BigEndian, &end); err != nil {
-			fm.t.Errorf("failed to read end: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
+			fm.handleReadError(err, "failed to read end", w)
 			return
 		}
 		var gotTicketLen uint16
 		if err := binary.Read(gr, binary.BigEndian, &gotTicketLen); err != nil {
-			fm.t.Errorf("failed to read ticket length: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
+			fm.handleReadError(err, "failed to read ticket length", w)
 			return
 		}
 		gotTicket := make([]byte, gotTicketLen)
 		if _, err := io.ReadFull(gr, gotTicket); err != nil {
-			fm.t.Errorf("failed to read ticket: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
+			fm.handleReadError(err, "failed to read ticket", w)
 			return
 		}
 
@@ -539,14 +540,12 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for i := range numExpectedEntries {
 			var entryLen uint16
 			if err := binary.Read(gr, binary.BigEndian, &entryLen); err != nil {
-				fm.t.Errorf("failed to read entry %d length: %v", i, err)
-				w.WriteHeader(http.StatusBadRequest)
+				fm.handleReadError(err, fmt.Sprintf("failed to read entry %d length", i), w)
 				return
 			}
 			entry := make([]byte, entryLen)
 			if _, err := io.ReadFull(gr, entry); err != nil {
-				fm.t.Errorf("failed to read entry %d: %v", i, err)
-				w.WriteHeader(http.StatusBadRequest)
+				fm.handleReadError(err, fmt.Sprintf("failed to read entry %d", i), w)
 				return
 			}
 			expectedEntry := fmt.Appendf(nil, "entry-%d", i+int(start))
@@ -557,28 +556,28 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		var numHashes uint8
-		if err := binary.Read(gr, binary.BigEndian, &numHashes); err != nil {
-			fm.t.Errorf("failed to read numHashes: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		if int(numHashes) != len(fm.proofHashes) {
-			fm.t.Errorf("numHashes = %d, want %d", numHashes, len(fm.proofHashes))
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		for i, expectedHash := range fm.proofHashes {
-			gotHash := make([]byte, 32)
-			if _, err := io.ReadFull(gr, gotHash); err != nil {
-				fm.t.Errorf("failed to read hash %d: %v", i, err)
+		if start < end {
+			var numHashes uint8
+			if err := binary.Read(gr, binary.BigEndian, &numHashes); err != nil {
+				fm.handleReadError(err, "failed to read numHashes", w)
+				return
+			}
+			if int(numHashes) != len(fm.proofHashes) {
+				fm.t.Errorf("numHashes = %d, want %d", numHashes, len(fm.proofHashes))
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			if !bytes.Equal(gotHash, expectedHash) {
-				fm.t.Errorf("hash %d = %x, want %x", i, gotHash, expectedHash)
-				w.WriteHeader(http.StatusBadRequest)
-				return
+			for i, expectedHash := range fm.proofHashes {
+				gotHash := make([]byte, 32)
+				if _, err := io.ReadFull(gr, gotHash); err != nil {
+					fm.handleReadError(err, fmt.Sprintf("failed to read hash %d", i), w)
+					return
+				}
+				if !bytes.Equal(gotHash, expectedHash) {
+					fm.t.Errorf("hash %d = %x, want %x", i, gotHash, expectedHash)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
 			}
 		}
 
@@ -632,13 +631,19 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		if oldSize > uint64(fm.numEntries) {
+			w.Header().Set("Content-Type", "text/x.tlog.size")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = fmt.Fprintf(w, "%d\n", fm.initialPendingSize)
+			return
+		}
 		if oldSize != fm.initialPendingSize {
 			w.Header().Set("Content-Type", "text/x.tlog.size")
 			w.WriteHeader(http.StatusConflict)
 			_, _ = fmt.Fprintf(w, "%d\n", fm.initialPendingSize)
 			return
 		}
-		if oldSize > 0 && len(headerLines) <= 1 {
+		if oldSize > 0 && oldSize < uint64(fm.numEntries) && len(headerLines) <= 1 {
 			fm.t.Errorf("expected consistency proof lines in header")
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -665,65 +670,130 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // checkpoint updating, and entry streaming.
 func TestSync(t *testing.T) {
 	origin := "test-origin"
-	fm := newFakeMirror(t, origin)
-	fm.addEntriesExpectations = []addEntriesExpectation{
+
+	type syncStep struct {
+		checkpoint   []byte
+		targetSize   uint64
+		beforeSync   func(fm *fakeMirror)
+		expectCosigs []byte
+	}
+
+	for _, tc := range []struct {
+		desc                   string
+		addEntriesExpectations []addEntriesExpectation
+		steps                  []syncStep
+	}{
 		{
-			start:  0,
-			end:    uint64(fm.numEntries),
-			ticket: nil,
-			status: http.StatusOK,
+			desc: "single sync",
+			addEntriesExpectations: []addEntriesExpectation{
+				{
+					start:  0,
+					end:    5,
+					ticket: nil,
+					status: http.StatusOK,
+				},
+			},
+			steps: []syncStep{
+				{
+					checkpoint:   []byte("checkpoint-raw-bytes"),
+					targetSize:   5,
+					expectCosigs: []byte("mock-cosignatures"),
+				},
+			},
 		},
-	}
-	server := httptest.NewServer(fm)
-	defer server.Close()
+		{
+			desc: "sync twice",
+			addEntriesExpectations: []addEntriesExpectation{
+				{
+					start:  0,
+					end:    5,
+					ticket: nil,
+					status: http.StatusOK,
+				},
+				{
+					start:  5,
+					end:    5,
+					ticket: nil,
+					status: http.StatusOK,
+				},
+			},
+			steps: []syncStep{
+				{
+					checkpoint:   []byte("checkpoint-raw-bytes"),
+					targetSize:   5,
+					expectCosigs: []byte("mock-cosignatures"),
+				},
+				{
+					checkpoint:   []byte("checkpoint-raw-bytes"),
+					targetSize:   5,
+					expectCosigs: []byte("mock-cosignatures"),
+					beforeSync: func(fm *fakeMirror) {
+						fm.initialPendingSize = 5
+					},
+				},
+			},
+		},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			fm := newFakeMirror(t, origin)
+			fm.addEntriesExpectations = tc.addEntriesExpectations
 
-	u, err := url.Parse(server.URL + "/")
-	if err != nil {
-		t.Fatalf("failed to parse server URL: %v", err)
-	}
+			server := httptest.NewServer(fm)
+			defer server.Close()
 
-	tileFetcher := func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
-		return nil, errors.New("tile fetcher should not be called")
-	}
+			u, err := url.Parse(server.URL + "/")
+			if err != nil {
+				t.Fatalf("failed to parse server URL: %v", err)
+			}
 
-	bundleFetcher := func(ctx context.Context, bundleIndex uint64, p uint8) ([]byte, error) {
-		var buf bytes.Buffer
-		for i := range fm.numEntries {
-			entry := fmt.Appendf(nil, "entry-%d", i)
-			_ = binary.Write(&buf, binary.BigEndian, uint16(len(entry)))
-			buf.Write(entry)
-		}
-		return buf.Bytes(), nil
-	}
+			tileFetcher := func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
+				return nil, errors.New("tile fetcher should not be called")
+			}
 
-	mirrorCheckpointFetcher := func(ctx context.Context) ([]byte, error) {
-		return nil, errors.New("mirror checkpoint fetcher should not be called")
-	}
+			bundleFetcher := func(ctx context.Context, bundleIndex uint64, p uint8) ([]byte, error) {
+				var buf bytes.Buffer
+				for i := range fm.numEntries {
+					entry := fmt.Appendf(nil, "entry-%d", i)
+					_ = binary.Write(&buf, binary.BigEndian, uint16(len(entry)))
+					buf.Write(entry)
+				}
+				return buf.Bytes(), nil
+			}
 
-	packageProver := func(ctx context.Context, start, end, size uint64) ([][]byte, error) {
-		return fm.proofHashes, nil
-	}
+			mirrorCheckpointFetcher := func(ctx context.Context) ([]byte, error) {
+				return nil, errors.New("mirror checkpoint fetcher should not be called")
+			}
 
-	opts := NewOptions().
-		WithMirrorURL(u).
-		WithLogOrigin(origin).
-		WithTileFetcher(tileFetcher).
-		WithBundleFetcher(bundleFetcher).
-		WithMirrorCheckpointFetcher(mirrorCheckpointFetcher).
-		WithPackageProver(packageProver)
+			packageProver := func(ctx context.Context, start, end, size uint64) ([][]byte, error) {
+				return fm.proofHashes, nil
+			}
 
-	c, err := NewClient(context.Background(), opts)
-	if err != nil {
-		t.Fatalf("NewClient() = _, %v, want _, nil", err)
-	}
+			opts := NewOptions().
+				WithMirrorURL(u).
+				WithLogOrigin(origin).
+				WithTileFetcher(tileFetcher).
+				WithBundleFetcher(bundleFetcher).
+				WithMirrorCheckpointFetcher(mirrorCheckpointFetcher).
+				WithPackageProver(packageProver)
 
-	cosigs, err := c.Sync(context.Background(), fm.targetCheckpoint, uint64(fm.numEntries))
-	if err != nil {
-		t.Fatalf("Sync() = _, %v, want _, nil", err)
-	}
+			c, err := NewClient(context.Background(), opts)
+			if err != nil {
+				t.Fatalf("NewClient() = _, %v, want _, nil", err)
+			}
 
-	if !bytes.Equal(cosigs, fm.expectedCosigs) {
-		t.Errorf("Sync() = %q, want %q", string(cosigs), string(fm.expectedCosigs))
+			for i, step := range tc.steps {
+				if step.beforeSync != nil {
+					step.beforeSync(fm)
+				}
+				cosigs, err := c.Sync(context.Background(), step.checkpoint, step.targetSize)
+				if err != nil {
+					t.Fatalf("Sync() step %d = _, %v, want _, nil", i+1, err)
+				}
+				if !bytes.Equal(cosigs, step.expectCosigs) {
+					t.Errorf("Sync() step %d = %q, want %q", i+1, string(cosigs), string(step.expectCosigs))
+				}
+			}
+		})
 	}
 }
 
@@ -738,6 +808,7 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 		addEntriesExpectations []addEntriesExpectation
 		addCheckpointStatus    int
 		tileFetcher            client.TileFetcherFunc
+		bundleFetcher          client.EntryBundleFetcherFunc
 		wantErr                string
 	}{
 		{
@@ -752,7 +823,7 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 		{
 			desc:               "consistency proof succeeds and checkpoint push succeeds",
 			initialPendingSize: 1,
-			initialNextEntry:   1,
+			initialNextEntry:   0,
 			tileFetcher: func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
 				if p == 5 {
 					return make([]byte, 5*32), nil
@@ -761,7 +832,7 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 			},
 			addEntriesExpectations: []addEntriesExpectation{
 				{
-					start:  1,
+					start:  0,
 					end:    5,
 					ticket: nil,
 					status: http.StatusOK,
@@ -842,6 +913,85 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 			},
 			wantErr: "mirror size reverted to 2, which is smaller than target 5",
 		},
+		{
+			desc:               "mirror pending size greater than target size",
+			initialPendingSize: 10,
+			initialNextEntry:   8,
+			addEntriesExpectations: []addEntriesExpectation{
+				{
+					start:  0,
+					end:    5,
+					ticket: nil,
+					status: http.StatusConflict,
+					body:   "10\n8\ndGlja2V0LW5ldw==\n",
+				},
+				// The client should attempt to get a cosig for the checkpoint it's currently trying to upload.
+				// Since all entries are already on the mirror, this will look like an zero-length upload starting and ending
+				// at the checkpoint size.
+				{
+					start:  5,
+					end:    5,
+					ticket: []byte("ticket-new"),
+					status: http.StatusOK,
+				},
+			},
+			bundleFetcher: func(ctx context.Context, bundleIndex uint64, p uint8) ([]byte, error) {
+				var buf bytes.Buffer
+				for i := range 10 {
+					entry := fmt.Appendf(nil, "entry-%d", i)
+					_ = binary.Write(&buf, binary.BigEndian, uint16(len(entry)))
+					buf.Write(entry)
+				}
+				return buf.Bytes(), nil
+			},
+		},
+		{
+			desc:               "mirror pending size greater than target size and rejects zero-length upload",
+			initialPendingSize: 10,
+			initialNextEntry:   8,
+			addEntriesExpectations: []addEntriesExpectation{
+				{
+					start:  0,
+					end:    5,
+					ticket: nil,
+					status: http.StatusConflict,
+					body:   "10\n8\ndGlja2V0LW5ldw==\n",
+				},
+				{
+					start:  5,
+					end:    5,
+					ticket: []byte("ticket-new"),
+					status: http.StatusConflict,
+					body:   "10\n8\ndGlja2V0LW5ldw==\n",
+				},
+			},
+			bundleFetcher: func(ctx context.Context, bundleIndex uint64, p uint8) ([]byte, error) {
+				var buf bytes.Buffer
+				for i := range 10 {
+					entry := fmt.Appendf(nil, "entry-%d", i)
+					_ = binary.Write(&buf, binary.BigEndian, uint16(len(entry)))
+					buf.Write(entry)
+				}
+				return buf.Bytes(), nil
+			},
+			wantErr: "mirror rejected checkpoint size 5",
+		},
+		{
+			desc:               "bundle has fewer entries than expected",
+			initialPendingSize: 0,
+			initialNextEntry:   0,
+			bundleFetcher: func(ctx context.Context, bundleIndex uint64, p uint8) ([]byte, error) {
+				var buf bytes.Buffer
+				// Return only 2 entries even though fm.numEntries is 5
+				for i := range 2 {
+					entry := fmt.Appendf(nil, "entry-%d", i)
+					_ = binary.Write(&buf, binary.BigEndian, uint16(len(entry)))
+					buf.Write(entry)
+				}
+				return buf.Bytes(), nil
+			},
+			wantErr: "bundle 0 has only 2 entries, expected at least 5",
+		},
 	}
 
 	for _, tc := range tests {
@@ -854,6 +1004,7 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 			if tc.addCheckpointStatus != 0 {
 				fm.addCheckpointStatus = tc.addCheckpointStatus
 			}
+			fm.expectClientError = tc.wantErr != ""
 
 			server := httptest.NewServer(fm)
 			defer server.Close()
@@ -870,14 +1021,17 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 				}
 			}
 
-			bundleFetcher := func(ctx context.Context, bundleIndex uint64, p uint8) ([]byte, error) {
-				var buf bytes.Buffer
-				for i := range fm.numEntries {
-					entry := fmt.Appendf(nil, "entry-%d", i)
-					_ = binary.Write(&buf, binary.BigEndian, uint16(len(entry)))
-					buf.Write(entry)
+			bundleFetcher := tc.bundleFetcher
+			if bundleFetcher == nil {
+				bundleFetcher = func(ctx context.Context, bundleIndex uint64, p uint8) ([]byte, error) {
+					var buf bytes.Buffer
+					for i := range fm.numEntries {
+						entry := fmt.Appendf(nil, "entry-%d", i)
+						_ = binary.Write(&buf, binary.BigEndian, uint16(len(entry)))
+						buf.Write(entry)
+					}
+					return buf.Bytes(), nil
 				}
-				return buf.Bytes(), nil
 			}
 
 			mirrorCheckpointFetcher := func(ctx context.Context) ([]byte, error) {
