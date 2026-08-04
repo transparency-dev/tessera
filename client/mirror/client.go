@@ -489,27 +489,45 @@ func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSiz
 	// targetSize must equal the size of the tree that targetCheckpointRaw represents; since we're attempting
 	// to fetch a cosig for this checkpoint from the mirror, it's meaningless to upload any further.
 	uploadEnd := targetSize
+	uploadStart := c.nextEntry
 
 	var cosigs []byte
 	for {
 		var err error
-		cosigs, err = c.pushEntries(ctx, c.nextEntry, uploadEnd, c.ticket)
+		cosigs, err = c.pushEntries(ctx, uploadStart, uploadEnd, c.ticket)
 		if err != nil {
 			var conflict ErrConflict
 			if !errors.As(err, &conflict) {
 				return nil, fmt.Errorf("sync failed during entry upload: %v", err)
 			}
 
-			uploadEnd = conflict.PendingSize
-			c.nextEntry = conflict.NextEntry
+			// Update our view of the mirror state in light of the conflict, and figure out what to do next.
 			c.ticket = conflict.Ticket
+			c.nextEntry = conflict.NextEntry
+			if c.nextEntry >= uploadEnd {
+				// The mirror has moved on from at least our nextEntry (and may have caught up with uploadEnd).
+				// We'll try a zero-sized request to get a cosig on our checkpoint.
 
-			if uploadEnd < targetSize {
-				return nil, fmt.Errorf("mirror size reverted to %d, which is smaller than target %d", uploadEnd, targetSize)
+				// Check if a previous zero-sized request returned a conflict.
+				if uploadStart == uploadEnd {
+					// If so this means that the mirror has already moved on from the checkpoint we're trying to upload, so we're done.
+					return nil, fmt.Errorf("mirror rejected checkpoint size %d: %w", uploadEnd, conflict)
+				}
+
+				// Since the mirror already has all the entries covered by the checkpoint we're currently trying to upload, set
+				// uploadStart to uploadEnd to perform a zero-sized update on the next iteration.
+				uploadStart = uploadEnd
+				continue
+			}
+			uploadStart = c.nextEntry
+
+			if conflict.PendingSize < targetSize {
+				return nil, fmt.Errorf("mirror size reverted to %d, which is smaller than target %d", conflict.PendingSize, targetSize)
 			}
 			continue
 		}
-		c.nextEntry = uploadEnd
+		// We've successfully uploaded our entries, so keep track of which entries we now know the mirror has.
+		c.nextEntry = max(c.nextEntry, uploadEnd)
 
 		break
 	}

@@ -925,9 +925,12 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 					status: http.StatusConflict,
 					body:   "10\n8\ndGlja2V0LW5ldw==\n",
 				},
+				// The client should attempt to get a cosig for the checkpoint it's currently trying to upload.
+				// Since all entries are already on the mirror, this will look like an zero-length upload starting and ending
+				// at the checkpoint size.
 				{
-					start:  8,
-					end:    10,
+					start:  5,
+					end:    5,
 					ticket: []byte("ticket-new"),
 					status: http.StatusOK,
 				},
@@ -941,6 +944,37 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 				}
 				return buf.Bytes(), nil
 			},
+		},
+		{
+			desc:               "mirror pending size greater than target size and rejects zero-length upload",
+			initialPendingSize: 10,
+			initialNextEntry:   8,
+			addEntriesExpectations: []addEntriesExpectation{
+				{
+					start:  0,
+					end:    5,
+					ticket: nil,
+					status: http.StatusConflict,
+					body:   "10\n8\ndGlja2V0LW5ldw==\n",
+				},
+				{
+					start:  5,
+					end:    5,
+					ticket: []byte("ticket-new"),
+					status: http.StatusConflict,
+					body:   "10\n8\ndGlja2V0LW5ldw==\n",
+				},
+			},
+			bundleFetcher: func(ctx context.Context, bundleIndex uint64, p uint8) ([]byte, error) {
+				var buf bytes.Buffer
+				for i := range 10 {
+					entry := fmt.Appendf(nil, "entry-%d", i)
+					_ = binary.Write(&buf, binary.BigEndian, uint16(len(entry)))
+					buf.Write(entry)
+				}
+				return buf.Bytes(), nil
+			},
+			wantErr: "mirror rejected checkpoint size 5",
 		},
 		{
 			desc:               "bundle has fewer entries than expected",
