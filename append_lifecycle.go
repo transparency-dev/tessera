@@ -714,7 +714,10 @@ func (o AppendOptions) valid() error {
 
 // WithOrigin configures the log's origin.
 //
-// If unset, WithCheckpointSigner() configures the origin with the checkpoint signer's name.
+// Most logs SHOULD NOT set this option, but instead rely on the default
+// Tessera behaviour of using the signer key's name as the log origin in
+// WithCheckpointSinger().
+//
 // SPEC: https://c2sp.org/tlog-checkpoint
 // "The log’s key name in its signature line SHOULD match the origin line."
 func (o *AppendOptions) WithOrigin(origin string) *AppendOptions {
