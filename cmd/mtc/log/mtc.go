@@ -17,10 +17,12 @@ package log
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/entry"
 	"golang.org/x/crypto/cryptobyte"
@@ -30,6 +32,12 @@ import (
 const (
 	// DefaultAwaiterPollInterval is the fallback polling period for the publication awaiter.
 	DefaultAwaiterPollInterval = 200 * time.Millisecond
+
+	// SPEC: draft-ietf-plants-merkle-tree-certs section 5.3.1.
+	// "cosigner_name and log_origin are computed from the cosigner ID and the
+	// issuance log's ID (Section 5.1), respectively. They contain the concatenation of:
+	//   - The 16-byte ASCII string oid/1.3.6.1.4.1.
+	oidPrefix = "oid/1.3.6.1.4.1."
 )
 
 // Options holds settings for configuring MTCLog instances.
@@ -287,4 +295,52 @@ func (l *MTCLog) ProofToLandmark(ctx context.Context, idx uint64) (MTCProof, err
 	//   If available, build and return an MTCProof
 	//   If not, return a clever error
 	return MTCProof{}, nil
+}
+
+// formatOriginAndSigner generates valid MTC origin and signerName.
+//
+// SPEC: draft-ietf-plants-merkle-tree-certs section 5.3.1.
+// "cosigner_name and log_origin are computed from the cosigner ID and the
+// issuance log's ID (Section 5.1), respectively. They contain the concatenation of:
+//   - The 16-byte ASCII string oid/1.3.6.1.4.1.
+//   - The trust anchor ID's ASCII representation (Section 3 of
+//     [I-D.ietf-tls-trust-anchor-ids])"
+//
+// SPEC: draft-ietf-plants-merkle-tree-certs section 5.1.
+// "For each positive integer N, the OID {caID logs(0) N} represents the
+// issuance log N (Section 5.2)."
+func formatOriginAndSigner(caID string, logNumber uint64) (origin, signerName string, err error) {
+	if caID == "" {
+		return "", "", errors.New("ca_id cannot be empty")
+	}
+	if logNumber == 0 {
+		return "", "", errors.New("log_number must be strictly positive (> 0)")
+	}
+	signerName = oidPrefix + caID
+	origin = fmt.Sprintf("%s.0.%d", signerName, logNumber)
+
+	if _, err := x509.ParseOID(signerName[len("oid/"):]); err != nil {
+		return "", "", fmt.Errorf("invalid ca_id %q: signer name is not a valid OID: %w", caID, err)
+	}
+	if _, err := x509.ParseOID(origin[len("oid/"):]); err != nil {
+		return "", "", fmt.Errorf("invalid log origin %q is not a valid OID: %w", origin, err)
+	}
+	return origin, signerName, nil
+}
+
+// CreateSignerAndOrigin generates valid MTC origin and signer.
+// Returns an error if the CA ID doesn't match with the private key's signer name.
+func CreateSignerAndOrigin(caID string, logNumber uint64, privKey string) (origin string, signer note.SubtreeSigner, err error) {
+	origin, expectedSignerName, err := formatOriginAndSigner(caID, logNumber)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid --ca_id or --log_number: %w", err)
+	}
+	s, err := note.NewMLDSASigner(privKey)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to instantiate ML-DSA signer: %w", err)
+	}
+	if s.Name() != expectedSignerName {
+		return "", nil, fmt.Errorf("signer key name %q does not match expected CA ID name %q", s.Name(), expectedSignerName)
+	}
+	return origin, s, nil
 }

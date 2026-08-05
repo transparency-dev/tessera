@@ -39,6 +39,8 @@ var (
 	writeTimeout      = flag.Duration("write_timeout", 0, "The maximum duration before timing out writes of the response.")
 
 	storageDir                = flag.String("storage_dir", "", "Path to root of log storage.")
+	caID                      = flag.String("ca_id", "44363.47", "The CA ID as per draft-ietf-plants-merkle-tree-certs section 5.1 (e.g. 44363.47)")
+	logNumber                 = flag.Uint64("log_number", 1, "The issuance log number (strictly positive)")
 	privKeyFile               = flag.String("private_key", "", "Location of private key file. If unset, uses the contents of the LOG_PRIVATE_KEY environment variable.")
 	checkpointInterval        = flag.Duration("checkpoint_interval", 1500*time.Millisecond, "Interval between publishing checkpoints when the log has grown")
 	batchMaxSize              = flag.Uint("batch_max_size", tessera.DefaultBatchMaxSize, "Maximum number of entries to process in a single sequencing batch.")
@@ -57,7 +59,13 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 	ctx := context.Background()
 
-	appender, shutdown, reader := newAppenderFromFlags(ctx)
+	origin, signer, err := log.CreateSignerAndOrigin(*caID, *logNumber, mustGetPrivateKey())
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to create signer and origin", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	appender, shutdown, reader := newAppenderFromFlags(ctx, origin, signer)
 	opts := log.NewOptions().
 		WithTesseraReader(reader).
 		WithAwaiterPollInterval(*awaiterPollInterval)
@@ -93,7 +101,7 @@ func main() {
 }
 
 // Read log private key from file or environment variable
-func mustCreateSigner() note.SubtreeSigner {
+func mustGetPrivateKey() string {
 	var privKey string
 	var err error
 	if len(*privKeyFile) > 0 {
@@ -109,12 +117,7 @@ func mustCreateSigner() note.SubtreeSigner {
 			os.Exit(1)
 		}
 	}
-	s, err := note.NewMLDSASigner(privKey)
-	if err != nil {
-		slog.ErrorContext(context.Background(), "Failed to instantiate signer", slog.Any("error", err))
-		os.Exit(1)
-	}
-	return s
+	return privKey
 }
 
 func getKeyFile(path string) (string, error) {
@@ -125,16 +128,14 @@ func getKeyFile(path string) (string, error) {
 	return string(k), nil
 }
 
-func newAppenderFromFlags(ctx context.Context) (*tessera.Appender, func(ctx context.Context) error, tessera.LogReader) {
+func newAppenderFromFlags(ctx context.Context, origin string, signer note.SubtreeSigner) (*tessera.Appender, func(ctx context.Context) error, tessera.LogReader) {
 	if *storageDir == "" {
 		slog.ErrorContext(ctx, "flag --storage_dir is required")
 		os.Exit(1)
 	}
 
-	signer := mustCreateSigner()
-
-	// TODO: Add WithOrigin option.
 	opts := tessera.NewAppendOptions().
+		WithOrigin(origin).
 		WithCheckpointSigner(signer).
 		WithCheckpointInterval(*checkpointInterval).
 		WithBatching(*batchMaxSize, *batchMaxAge).

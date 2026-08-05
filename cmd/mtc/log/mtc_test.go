@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
@@ -316,6 +317,149 @@ func TestMTCOptionsValid(t *testing.T) {
 			err := tc.opts.valid()
 			if (err != nil) != tc.wantErr {
 				t.Errorf("valid() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestFormatOriginAndSigner(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		caID           string
+		logNumber      uint64
+		wantOrigin     string
+		wantSignerName string
+		wantErr        bool
+	}{
+		{
+			name:           "valid single integer caID",
+			caID:           "44363",
+			logNumber:      1,
+			wantOrigin:     "oid/1.3.6.1.4.1.44363.0.1",
+			wantSignerName: "oid/1.3.6.1.4.1.44363",
+			wantErr:        false,
+		},
+		{
+			name:           "valid multi dot caID",
+			caID:           "44363.47",
+			logNumber:      42,
+			wantOrigin:     "oid/1.3.6.1.4.1.44363.47.0.42",
+			wantSignerName: "oid/1.3.6.1.4.1.44363.47",
+			wantErr:        false,
+		},
+		{
+			name:      "empty caID",
+			caID:      "",
+			logNumber: 1,
+			wantErr:   true,
+		},
+		{
+			name:      "caID leading dot",
+			caID:      ".44363",
+			logNumber: 1,
+			wantErr:   true,
+		},
+		{
+			name:      "caID trailing dot",
+			caID:      "44363.",
+			logNumber: 1,
+			wantErr:   true,
+		},
+		{
+			name:      "caID invalid char",
+			caID:      "44363a",
+			logNumber: 1,
+			wantErr:   true,
+		},
+		{
+			name:      "logNumber zero",
+			caID:      "44363",
+			logNumber: 0,
+			wantErr:   true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			origin, signerName, err := formatOriginAndSigner(tc.caID, tc.logNumber)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("formatOriginAndSigner(%q, %d) error = %v, wantErr %v", tc.caID, tc.logNumber, err, tc.wantErr)
+			}
+			if !tc.wantErr {
+				if origin != tc.wantOrigin {
+					t.Errorf("origin = %q, want %q", origin, tc.wantOrigin)
+				}
+				if signerName != tc.wantSignerName {
+					t.Errorf("signerName = %q, want %q", signerName, tc.wantSignerName)
+				}
+			}
+		})
+	}
+}
+
+func TestCreateSignerAndOrigin(t *testing.T) {
+	validKey, _, err := note.GenerateMLDSAKey("oid/1.3.6.1.4.1.44363.47")
+	if err != nil {
+		t.Fatalf("GenerateMLDSAKey failed: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name           string
+		caID           string
+		logNumber      uint64
+		privKey        string
+		wantOrigin     string
+		wantSignerName string
+		wantErr        bool
+	}{
+		{
+			name:           "valid matching key and caID",
+			caID:           "44363.47",
+			logNumber:      1,
+			privKey:        validKey,
+			wantOrigin:     "oid/1.3.6.1.4.1.44363.47.0.1",
+			wantSignerName: "oid/1.3.6.1.4.1.44363.47",
+			wantErr:        false,
+		},
+		{
+			name:      "empty caID",
+			caID:      "",
+			logNumber: 1,
+			privKey:   validKey,
+			wantErr:   true,
+		},
+		{
+			name:      "zero log number",
+			caID:      "44363.47",
+			logNumber: 0,
+			privKey:   validKey,
+			wantErr:   true,
+		},
+		{
+			name:      "invalid private key string",
+			caID:      "44363.47",
+			logNumber: 1,
+			privKey:   "not-a-valid-key",
+			wantErr:   true,
+		},
+		{
+			name:      "caID mismatch with signer key name",
+			caID:      "99999",
+			logNumber: 1,
+			privKey:   validKey,
+			wantErr:   true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			origin, signer, err := CreateSignerAndOrigin(tc.caID, tc.logNumber, tc.privKey)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("CreateSignerAndOrigin(%q, %d, ...) error = %v, wantErr %v", tc.caID, tc.logNumber, err, tc.wantErr)
+			}
+			if !tc.wantErr {
+				if origin != tc.wantOrigin {
+					t.Errorf("origin = %q, want %q", origin, tc.wantOrigin)
+				}
+				if signer.Name() != tc.wantSignerName {
+					t.Errorf("signer.Name() = %q, want %q", signer.Name(), tc.wantSignerName)
+				}
 			}
 		})
 	}

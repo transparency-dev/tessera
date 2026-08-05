@@ -689,6 +689,8 @@ type AppendOptions struct {
 
 	// additionalSigners are additional signers which are used to sign new checkpoints.
 	additionalSigners []note.Signer
+
+	origin string
 }
 
 // valid returns an error if an invalid combination of options has been set, or nil otherwise.
@@ -708,6 +710,19 @@ func (o AppendOptions) valid() error {
 		return fmt.Errorf("invalid AppendOptions: WithCheckpointRepublishInterval (%d) is smaller than WithCheckpointInterval (%d)", o.checkpointRepublishInterval, o.checkpointInterval)
 	}
 	return nil
+}
+
+// WithOrigin configures the log's origin.
+//
+// Most logs SHOULD NOT set this option, but instead rely on the default
+// Tessera behaviour of using the signer key's name as the log origin in
+// WithCheckpointSinger().
+//
+// SPEC: https://c2sp.org/tlog-checkpoint
+// "The log’s key name in its signature line SHOULD match the origin line."
+func (o *AppendOptions) WithOrigin(origin string) *AppendOptions {
+	o.origin = origin
+	return o
 }
 
 // WithAntispam configures the appender to use the antispam mechanism to reduce the number of duplicates which
@@ -873,8 +888,14 @@ func (o AppendOptions) ShutdownTimeout() time.Duration {
 // as the checkpoint Origin line. This requirement is enforced during Appender initialization.
 //
 // Checkpoints signed by these signer(s) will be standard checkpoints as defined by https://c2sp.org/tlog-checkpoint.
+//
+// If no origin was specified using WithOrigin(), configures the origin with the signer's name.
+// SPEC: https://c2sp.org/tlog-checkpoint
+// "The log’s key name in its signature line SHOULD match the origin line."
 func (o *AppendOptions) WithCheckpointSigner(s note.Signer, additionalSigners ...note.Signer) *AppendOptions {
-	origin := s.Name()
+	if o.origin == "" {
+		o.origin = s.Name()
+	}
 	o.primarySigner = s
 	o.additionalSigners = additionalSigners
 	o.newCP = func(ctx context.Context, size uint64, hash []byte) ([]byte, error) {
@@ -886,7 +907,7 @@ func (o *AppendOptions) WithCheckpointSigner(s note.Signer, additionalSigners ..
 				hash = emptyRoot[:]
 			}
 			cpRaw := f_log.Checkpoint{
-				Origin: origin,
+				Origin: o.origin,
 				Size:   size,
 				Hash:   hash,
 			}.Marshal()
