@@ -893,7 +893,6 @@ func (o *AppendOptions) WithCheckpointSigner(s note.Signer, additionalSigners ..
 	if o.origin == "" {
 		o.origin = s.Name()
 	}
-	origin := o.origin
 	o.primarySigner = s
 	o.additionalSigners = additionalSigners
 	o.newCP = func(ctx context.Context, size uint64, hash []byte) ([]byte, error) {
@@ -905,7 +904,7 @@ func (o *AppendOptions) WithCheckpointSigner(s note.Signer, additionalSigners ..
 				hash = emptyRoot[:]
 			}
 			cpRaw := f_log.Checkpoint{
-				Origin: origin,
+				Origin: o.origin,
 				Size:   size,
 				Hash:   hash,
 			}.Marshal()
