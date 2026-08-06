@@ -88,7 +88,7 @@ func NewGateway(ctx context.Context, opts Options) (*Gateway, error) {
 		return nil, fmt.Errorf("log reader is required")
 	}
 
-	g := &Gateway{
+	gw := &Gateway{
 		httpClient: opts.HTTPClient,
 		lr:         opts.LogReader,
 	}
@@ -118,13 +118,14 @@ func NewGateway(ctx context.Context, opts Options) (*Gateway, error) {
 			client: c,
 			goals:  make(chan goal, 1),
 		}
-		g.targets = append(g.targets, target)
-
-		// Start the worker goroutine.
-		go g.runWorker(ctx, target)
+		gw.targets = append(gw.targets, target)
+	}
+	// Start the workers
+	for _, target := range gw.targets {
+		go gw.runWorker(ctx, target)
 	}
 
-	return g, nil
+	return gw, nil
 }
 
 // CosignCheckpoint updates the goals for all mirrors and returns a channel over which
@@ -132,11 +133,11 @@ func NewGateway(ctx context.Context, opts Options) (*Gateway, error) {
 // The channel is closed once all mirrors' signatures have been sent or the context is canceled.
 //
 // It is strongly recommended that the context passed in here has a deadline or timeout set.
-func (g *Gateway) CosignCheckpoint(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
-	out := make(chan []byte, len(g.targets))
+func (gw *Gateway) CosignCheckpoint(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
+	out := make(chan []byte, len(gw.targets))
 
 	// If there are no mirrors, return immediately.
-	if len(g.targets) == 0 {
+	if len(gw.targets) == 0 {
 		// Return a _closed_ channel, not `nil`, as callers will iterate over the
 		// returned channel and we don't want to block them forever.
 		close(out)
@@ -146,14 +147,14 @@ func (g *Gateway) CosignCheckpoint(ctx context.Context, cp []byte, cpSize uint64
 	N := &atomic.Uint32{}
 
 	// Send updated goals to each of the target workers.
-	for _, target := range g.targets {
+	for _, target := range gw.targets {
 		newGoal := goal{
 			cp:     cp,
 			cpSize: cpSize,
 			done: func(sig []byte, err error) {
 				// Last one out please turn off the lights.
 				defer func() {
-					if N.Add(1) == uint32(len(g.targets)) {
+					if N.Add(1) == uint32(len(gw.targets)) {
 						close(out)
 					}
 				}()
@@ -198,7 +199,7 @@ func (g *Gateway) CosignCheckpoint(ctx context.Context, cp []byte, cpSize uint64
 //
 // It will block on the goals channel until a goal is received, or the context is
 // cancelled.
-func (g *Gateway) runWorker(ctx context.Context, target *mirrorTarget) {
+func (gw *Gateway) runWorker(ctx context.Context, target *mirrorTarget) {
 	slog.InfoContext(ctx, "MirrorGateway: Starting worker", slog.String("url", target.url.String()))
 	defer slog.InfoContext(ctx, "MirrorGateway: Stopping worker", slog.String("url", target.url.String()))
 
@@ -206,21 +207,21 @@ func (g *Gateway) runWorker(ctx context.Context, target *mirrorTarget) {
 		select {
 		case <-ctx.Done():
 			return
-		case job, ok := <-target.goals:
+		case goal, ok := <-target.goals:
 			if !ok {
 				// Channel closed: down tools and exit.
 				return
 			}
 
 			// TODO(al): Consider making this timeout configurable. This should be fine for the moment though.
-			goalJob := g.chaseGoal(target, job, 1*time.Minute)
+			goalJob := gw.chaseGoalJob(target, goal, 1*time.Minute)
 			sigs, err := goalJob(ctx)
-			job.done(sigs, err)
+			goal.done(sigs, err)
 		}
 	}
 }
 
-func (g *Gateway) chaseGoal(target *mirrorTarget, job goal, timeout time.Duration) func(context.Context) ([]byte, error) {
+func (gw *Gateway) chaseGoalJob(target *mirrorTarget, job goal, timeout time.Duration) func(context.Context) ([]byte, error) {
 	return func(ctx context.Context) ([]byte, error) {
 		var rSigs []byte
 		var rErr error

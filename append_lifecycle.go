@@ -761,39 +761,17 @@ func parseURLs(us []string) ([]*url.URL, error) {
 	return ret, nil
 }
 
-// CheckpointPublisher returns a function which should be used to create, sign, and potentially witness a new checkpoint.
+// CheckpointPublisher should not be used.
 // Deprecated: Use CheckpointPublisherContext.
 func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client) func(context.Context, uint64, []byte) ([]byte, error) {
-	var (
-		once sync.Once
-		f    func(context.Context, uint64, []byte) ([]byte, error)
-		err  error
-	)
-	return func(ctx context.Context, size uint64, root []byte) ([]byte, error) {
-		// Only delegate once.
-		once.Do(func() {
-			f, err = o.CheckpointPublisherContext(ctx, lr, httpClient)
-		})
-		if err != nil {
-			return nil, err
-		}
-		return f(ctx, size, root)
-	}
+	panic("CheckpointPublisher is deprecated, Tessera should be using CheckpointPublisherContext instead.\nPlease file an issue if this has affected you.")
 }
 
-// CheckpointPublisherContext returns a function which should be used to create, sign, and potentially witness a new checkpoint.
+// CheckpointPublisherContext returns a function which should be used to create, sign, and potentially witness and/or mirror a new checkpoint.
 func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogReader, httpClient *http.Client) (func(context.Context, uint64, []byte) ([]byte, error), error) {
-	mirrorURLs, err := parseURLs(slices.Collect(maps.Keys(o.mirrors.WitnessEndpoints())))
+	mirrorGW, err := o.mirrorGateway(ctx, lr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse mirror URLs: %w", err)
-	}
-	gw, err := m_gateway.NewGateway(ctx, m_gateway.Options{
-		Mirrors:   mirrorURLs,
-		LogReader: lr,
-		LogOrigin: o.primarySigner.Name(),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gateway: %w", err)
+		return nil, err
 	}
 
 	// Now return the actual publisher func.
@@ -813,16 +791,15 @@ func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogRea
 				ws, err = witnessCheckpoint(ctx, cp, size, o.witnesses, lr, httpClient, o.witnessOpts)
 				return err
 			})
-			eg.Go(func() error {
-				if gw == nil {
-					return nil
-				}
-				mirrorCtx, cancel := context.WithTimeout(ctx, o.mirrorOpts.Timeout)
-				defer cancel()
-				var err error
-				ms, err = mirrorCheckpoint(mirrorCtx, gw, &o.mirrors, cp, size, o.mirrorOpts.FailOpen)
-				return err
-			})
+			if mirrorGW != nil {
+				eg.Go(func() error {
+					mirrorCtx, cancel := context.WithTimeout(ctx, o.mirrorOpts.Timeout)
+					defer cancel()
+					var err error
+					ms, err = mirrorCheckpoint(mirrorCtx, cp, size, mirrorGW, &o.mirrors, o.mirrorOpts.FailOpen)
+					return err
+				})
+			}
 
 			if err := eg.Wait(); err != nil {
 				return nil, fmt.Errorf("failed to fetch cosignatures: %v", err)
@@ -832,6 +809,27 @@ func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogRea
 			return cp, nil
 		})
 	}, nil
+}
+
+// mirrorGateway creates and returns a mirrorGateway instance, or nil if no mirrors are configured.
+func (o AppendOptions) mirrorGateway(ctx context.Context, lr LogReader) (*m_gateway.Gateway, error) {
+	mirrorURLs, err := parseURLs(slices.Collect(maps.Keys(o.mirrors.WitnessEndpoints())))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse mirror URLs: %w", err)
+	}
+	if len(mirrorURLs) == 0 {
+		return nil, nil
+	}
+
+	mirrorGateway, err := m_gateway.NewGateway(ctx, m_gateway.Options{
+		Mirrors:   mirrorURLs,
+		LogReader: lr,
+		LogOrigin: o.primarySigner.Name(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gateway: %w", err)
+	}
+	return mirrorGateway, nil
 }
 
 // witnessCheckpoint takes care of witnessing the given checkpoint with the provided witness policy.
@@ -883,35 +881,35 @@ func witnessCheckpoint(ctx context.Context, cp []byte, cpSize uint64, witnesses 
 	})
 }
 
-func mirrorCheckpoint(ctx context.Context, gw *m_gateway.Gateway, policy *WitnessGroup, cp []byte, size uint64, failOpen bool) ([]byte, error) {
+func mirrorCheckpoint(ctx context.Context, cp []byte, cpSize uint64, gw *m_gateway.Gateway, policy *WitnessGroup, failOpen bool) ([]byte, error) {
 	// TODO(al): Add metrics
-	checkPolicy := func(sigs []byte) ([]byte, error) {
+	checkPolicy := func(sigs []byte, failOpen bool) ([]byte, error) {
 		newCP := append(slices.Clone(cp), sigs...)
-		if policy.Satisfied(newCP) {
-			return sigs, nil
+		if !policy.Satisfied(newCP) {
+			if failOpen {
+				slog.WarnContext(ctx, "MirrorGateway: policy not met, failing-open")
+				return sigs, nil
+			}
+			return sigs, fmt.Errorf("MirrorGateway: policy not met")
 		}
-		if failOpen {
-			slog.WarnContext(ctx, "MirrorGateway: policy not met, failing-open")
-			return sigs, nil
-		}
-		return sigs, fmt.Errorf("MirrorGateway: policy not met")
+		return sigs, nil
 	}
 
 	return otel.Trace(ctx, "tessera.mirrorCheckpoint", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
-		sigCh := gw.CosignCheckpoint(ctx, cp, size)
+		sigCh := gw.CosignCheckpoint(ctx, cp, cpSize)
 		var sigBlock bytes.Buffer
 		for {
 			select {
 			case <-ctx.Done():
-				return checkPolicy(sigBlock.Bytes())
+				return checkPolicy(sigBlock.Bytes(), failOpen)
 			case sig, ok := <-sigCh:
 				if !ok {
-					return checkPolicy(sigBlock.Bytes())
+					return checkPolicy(sigBlock.Bytes(), failOpen)
 				}
 				sigBlock.Write(sig)
-				newCP := append(slices.Clone(cp), sigBlock.Bytes()...)
-				if policy.Satisfied(newCP) {
-					return sigBlock.Bytes(), nil
+				// Don't allow failOpen here, or we'll break out of the collection loop prematurely.
+				if sigs, err := checkPolicy(sigBlock.Bytes(), false); err == nil {
+					return sigs, nil
 				}
 			}
 		}
