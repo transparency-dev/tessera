@@ -387,28 +387,28 @@ func TestCheckpointPublisher(t *testing.T) {
 		},
 		{
 			desc:               "witnesses only",
-			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, nil),
+			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, &WitnessOptions{Timeout: time.Second}),
 			expectCosignatures: []note.Verifier{witVerifier},
 		},
 		{
 			desc:               "mirrors only",
-			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithMirrors(mirrors, nil),
+			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithMirrors(mirrors, &MirroringOptions{Timeout: time.Second}),
 			expectCosignatures: []note.Verifier{mirrorVerifier},
 		},
 		{
 			desc:               "witnesses and mirrors",
-			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, nil).WithMirrors(mirrors, nil),
+			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, &WitnessOptions{Timeout: time.Second}).WithMirrors(mirrors, &MirroringOptions{Timeout: time.Second}),
 			expectCosignatures: []note.Verifier{witVerifier, mirrorVerifier},
 		},
 		{
 			desc:         "witness fails, failOpen=false",
-			opts:         NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, &WitnessOptions{FailOpen: false}),
+			opts:         NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, &WitnessOptions{FailOpen: false, Timeout: time.Second}),
 			witnessFails: true,
 			expectErr:    true,
 		},
 		{
 			desc:         "witness fails, failOpen=true",
-			opts:         NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, &WitnessOptions{FailOpen: true}),
+			opts:         NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, &WitnessOptions{FailOpen: true, Timeout: time.Second}),
 			witnessFails: true,
 		},
 	} {
@@ -425,8 +425,7 @@ func TestCheckpointPublisher(t *testing.T) {
 				failingWitnesses := NewWitnessGroup(1, failingWit)
 
 				// Re-configure option to use failing witnesses
-				wOpts := &WitnessOptions{FailOpen: test.opts.witnessOpts.FailOpen}
-				test.opts.WithWitnesses(failingWitnesses, wOpts)
+				test.opts.WithWitnesses(failingWitnesses, &test.opts.witnessOpts)
 			}
 
 			lr := newFakeLogReaderForTest(t)

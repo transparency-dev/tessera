@@ -769,34 +769,42 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 
 // CheckpointPublisherContext returns a function which should be used to create, sign, and potentially witness and/or mirror a new checkpoint.
 func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogReader, httpClient *http.Client) (func(context.Context, uint64, []byte) ([]byte, error), error) {
-	mirrorGW, err := o.mirrorGateway(ctx, lr)
+	mirrorGateway, err := o.mirrorGateway(ctx, lr, httpClient)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create mirror gateway: %w", err)
+	}
+
+	witnessGateway, err := o.witnessGateway(ctx, lr, httpClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create witness gateway: %w", err)
 	}
 
 	// Now return the actual publisher func.
-	return func(ctx context.Context, size uint64, root []byte) ([]byte, error) {
+	return func(ctx context.Context, cpSize uint64, root []byte) ([]byte, error) {
 		return otel.Trace(ctx, "tessera.CheckpointPublisher", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
-			cp, err := o.newCP(ctx, size, root)
+			cp, err := o.newCP(ctx, cpSize, root)
 			if err != nil {
 				return nil, fmt.Errorf("newCP: %v", err)
 			}
 			span.AddEvent("Created CP")
-			appenderSignedSize.Record(ctx, otel.Clamp64(size))
+			appenderSignedSize.Record(ctx, otel.Clamp64(cpSize))
 
 			var ws, ms []byte
 			eg := errgroup.Group{}
-			eg.Go(func() error {
-				var err error
-				ws, err = witnessCheckpoint(ctx, cp, size, o.witnesses, lr, httpClient, o.witnessOpts)
-				return err
-			})
-			if mirrorGW != nil {
+			if witnessGateway != nil {
+				eg.Go(func() error {
+					var err error
+					ws, err = witnessCheckpoint(ctx, witnessGateway.CosignCheckpoint, &o.witnesses, cp, cpSize, o.witnessOpts)
+					return err
+				})
+			}
+
+			if mirrorGateway != nil {
 				eg.Go(func() error {
 					mirrorCtx, cancel := context.WithTimeout(ctx, o.mirrorOpts.Timeout)
 					defer cancel()
 					var err error
-					ms, err = mirrorCheckpoint(mirrorCtx, cp, size, mirrorGW, &o.mirrors, o.mirrorOpts.FailOpen)
+					ms, err = mirrorCheckpoint(mirrorCtx, mirrorGateway.CosignCheckpoint, &o.mirrors, cp, cpSize, o.mirrorOpts)
 					return err
 				})
 			}
@@ -811,8 +819,32 @@ func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogRea
 	}, nil
 }
 
+// witnessGateway creates and returns a witnessGateway instance, or nil if no witnesses are configured.
+func (o AppendOptions) witnessGateway(ctx context.Context, lr LogReader, httpClient *http.Client) (*witness.WitnessGateway, error) {
+	witnesses := []witness.Witness{}
+	for uStr, vs := range o.witnesses.WitnessEndpoints() {
+		u, err := url.Parse(uStr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse witness URL: %w", err)
+		}
+		witnesses = append(witnesses, witness.Witness{
+			URL:       u,
+			Verifiers: vs,
+		})
+	}
+	if len(witnesses) == 0 {
+		return nil, nil
+	}
+	witnessGateway, err := witness.NewGateway(ctx, witness.Options{
+		Witnesses:  witnesses,
+		HTTPClient: httpClient,
+		FetchTiles: lr.ReadTile,
+	})
+	return witnessGateway, err
+}
+
 // mirrorGateway creates and returns a mirrorGateway instance, or nil if no mirrors are configured.
-func (o AppendOptions) mirrorGateway(ctx context.Context, lr LogReader) (*m_gateway.Gateway, error) {
+func (o AppendOptions) mirrorGateway(ctx context.Context, lr LogReader, httpClient *http.Client) (*m_gateway.Gateway, error) {
 	mirrorURLs, err := parseURLs(slices.Collect(maps.Keys(o.mirrors.WitnessEndpoints())))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse mirror URLs: %w", err)
@@ -822,9 +854,10 @@ func (o AppendOptions) mirrorGateway(ctx context.Context, lr LogReader) (*m_gate
 	}
 
 	mirrorGateway, err := m_gateway.NewGateway(ctx, m_gateway.Options{
-		Mirrors:   mirrorURLs,
-		LogReader: lr,
-		LogOrigin: o.primarySigner.Name(),
+		Mirrors:    mirrorURLs,
+		LogReader:  lr,
+		LogOrigin:  o.primarySigner.Name(),
+		HTTPClient: httpClient,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gateway: %w", err)
@@ -834,77 +867,86 @@ func (o AppendOptions) mirrorGateway(ctx context.Context, lr LogReader) (*m_gate
 
 // witnessCheckpoint takes care of witnessing the given checkpoint with the provided witness policy.
 // Returns signatures from witnesses, ready to append to the checkpoint, or an error.
-func witnessCheckpoint(ctx context.Context, cp []byte, cpSize uint64, witnesses WitnessGroup, lr LogReader, httpClient *http.Client, opts WitnessOptions) ([]byte, error) {
-	return otel.Trace(ctx, "tessera.witnessCheckpoint", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
-		if len(witnesses.Components) == 0 {
-			return nil, nil
-		}
-		span.AddEvent("Starting witnessing")
-		// Figure out the likely size the witnesses are aware of, but don't fail hard if we're unable
-		// to do so:
-		// a) it could be that this is the first checkpoint we're publishing
-		// b) the witnessing protocol has a fallback path in case we get it wrong, anyway.
-		var oldSize uint64
-		oldCP, err := lr.ReadCheckpoint(ctx)
-		if err != nil {
-			slog.InfoContext(ctx, "Failed to fetch old checkpoint", slog.Any("error", err))
-		} else {
-			_, oldSize, _, err = parse.CheckpointUnsafe(oldCP)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse old checkpoint: %v", err)
-			}
-		}
-		wg := witness.NewWitnessGateway(witnesses, httpClient, oldSize, lr.ReadTile)
-
+func witnessCheckpoint(ctx context.Context, witness cosigSource, policy *WitnessGroup, cp []byte, cpSize uint64, opts WitnessOptions) ([]byte, error) {
+	return otel.Trace(ctx, "tessera.CheckpointPublisher.Witness", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
 		start := time.Now()
-
-		ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
-		defer cancel()
-
-		span.AddEvent("Sending witness requests")
 		witAttr := []attribute.KeyValue{}
-		cpSigs, err := wg.Witness(ctx, cp)
+
+		sigs, err := gatherCosignatures(ctx, "witness", witness, policy, cp, cpSize, opts.FailOpen)
 		if err != nil {
-			if !opts.FailOpen {
+			if !errors.Is(err, errFailedOpen) {
 				appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(attribute.String("error.type", "failed")))
+				slog.WarnContext(ctx, "Failed to collect witness signatures", slog.Any("error", err))
 				return nil, err
 			}
-			slog.WarnContext(ctx, "WitnessGateway: failing-open despite error", slog.Any("error", err))
-			witAttr = append(witAttr, attribute.String("error.type", "failed_open"))
+			witAttr = append(witAttr, attribute.String("error.type", "failed-open"))
 		}
-
 		appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(witAttr...))
 		appenderWitnessedSize.Record(ctx, otel.Clamp64(cpSize))
 		d := time.Since(start)
 		appenderWitnessHistogram.Record(ctx, d.Milliseconds(), metric.WithAttributes(witAttr...))
-		return cpSigs, nil
+		return sigs, nil
 	})
 }
 
-func mirrorCheckpoint(ctx context.Context, cp []byte, cpSize uint64, gw *m_gateway.Gateway, policy *WitnessGroup, failOpen bool) ([]byte, error) {
-	// TODO(al): Add metrics
-	checkPolicy := func(sigs []byte, failOpen bool) ([]byte, error) {
-		newCP := append(slices.Clone(cp), sigs...)
-		if !policy.Satisfied(newCP) {
-			if failOpen {
-				slog.WarnContext(ctx, "MirrorGateway: policy not met, failing-open")
-				return sigs, nil
+// mirrorCheckpoint takes care of mirroring the given checkpoint with the provided mirror policy.
+// Returns signatures from mirrors, ready to append to the checkpoint, or an error.
+func mirrorCheckpoint(ctx context.Context, mirror cosigSource, policy *WitnessGroup, cp []byte, cpSize uint64, opts MirroringOptions) ([]byte, error) {
+	return otel.Trace(ctx, "tessera.CheckpointPublisher.Mirror", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		sigs, err := gatherCosignatures(ctx, "mirror", mirror, policy, cp, cpSize, opts.FailOpen)
+		if err != nil {
+			if !errors.Is(err, errFailedOpen) {
+				slog.WarnContext(ctx, "Failed to collect mirror signatures", slog.Any("error", err))
+				return nil, err
 			}
-			return sigs, fmt.Errorf("MirrorGateway: policy not met")
 		}
 		return sigs, nil
+	})
+}
+
+// cosigSource defines a function that can be called to fetch cosignatures.
+type cosigSource func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte
+
+// errFailedOpen is returned by gatherCosignatures if it did not get sufficient cosignatures to satisfy
+// the provided policy, but failOpen was true.
+var errFailedOpen = errors.New("failed-open")
+
+// gatherCosignatures gathers signatures from a source, applying a policy to determine if the signatures are sufficient.
+// It returns the first set of signatures which satisfy the policy, or an error if the policy is not met and failOpen is false.
+func gatherCosignatures(ctx context.Context, name string, fetcher cosigSource, policy *WitnessGroup, cp []byte, cpSize uint64, failOpen bool) ([]byte, error) {
+	// checkPolicy checks if the provided signatures satisfy the given policy.
+	checkPolicy := func(sigs []byte, failOpen bool) ([]byte, error) {
+		newCP := append(slices.Clone(cp), sigs...)
+		if policy.Satisfied(newCP) {
+			return sigs, nil
+		}
+		if failOpen {
+			slog.WarnContext(ctx, "policy not met, failing-open", slog.String("name", name))
+			return sigs, errFailedOpen
+		}
+		slog.WarnContext(ctx, "policy not met", slog.String("name", name))
+		return sigs, fmt.Errorf("policy not met")
 	}
 
-	return otel.Trace(ctx, "tessera.mirrorCheckpoint", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
-		sigCh := gw.CosignCheckpoint(ctx, cp, cpSize)
+	// collectSigs attempts to collect cosignatures from the provided channel until the policy is met
+	// or the context is done.
+	collectSigs := func(ctx context.Context, sigCh <-chan []byte) ([]byte, error) {
 		var sigBlock bytes.Buffer
 		for {
 			select {
 			case <-ctx.Done():
-				return checkPolicy(sigBlock.Bytes(), failOpen)
+				sigs, pErr := checkPolicy(sigBlock.Bytes(), failOpen)
+				if pErr != nil {
+					pErr = fmt.Errorf("%w: timed-out waiting for signatures", pErr)
+				}
+				return sigs, pErr
 			case sig, ok := <-sigCh:
 				if !ok {
-					return checkPolicy(sigBlock.Bytes(), failOpen)
+					sigs, pErr := checkPolicy(sigBlock.Bytes(), failOpen)
+					if pErr != nil {
+						pErr = fmt.Errorf("%w: no more signatures available", pErr)
+					}
+					return sigs, pErr
 				}
 				sigBlock.Write(sig)
 				// Don't allow failOpen here, or we'll break out of the collection loop prematurely.
@@ -913,6 +955,17 @@ func mirrorCheckpoint(ctx context.Context, cp []byte, cpSize uint64, gw *m_gatew
 				}
 			}
 		}
+	}
+
+	return otel.Trace(ctx, "tessera.gatherCosignatures", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		if len(policy.Components) == 0 {
+			return nil, nil
+		}
+
+		span.AddEvent("Starting gathering")
+		sigCh := fetcher(ctx, cp, cpSize)
+
+		return collectSigs(ctx, sigCh)
 	})
 }
 

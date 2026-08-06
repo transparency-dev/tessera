@@ -25,17 +25,15 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
-	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/transparency-dev/formats/log"
 	f_note "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/internal/witness"
-	"github.com/transparency-dev/tessera/storage/posix"
 	"golang.org/x/mod/sumdb/note"
 )
 
@@ -55,8 +53,18 @@ var (
 	logVerifier = mustCreateVerifier(logVkey)
 )
 
-func TestWitnessGateway_Update(t *testing.T) {
-	logSignedCheckpoint, cp := loadCheckpoint(t, 9)
+func collectSigs(t *testing.T, cs <-chan []byte) (sigs []byte, fromWitnesses int) {
+	t.Helper()
+	for sig := range cs {
+		sigs = append(sigs, sig...)
+		fromWitnesses++
+	}
+	return
+}
+
+func TestWitnessGateway(t *testing.T) {
+	const logSignedCheckpointSize = 9
+	logSignedCheckpoint, cp := loadCheckpoint(t, logSignedCheckpointSize)
 
 	// Set up a fake server hosting the witnesses.
 	// The witnesses just sign the checkpoint with whatever key is requested, they don't check the body at all.
@@ -100,19 +108,22 @@ func TestWitnessGateway_Update(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wit1, err = tessera.NewWitness(wit1Vkey, baseURL.JoinPath("wit1"))
+	wit1URL := baseURL.JoinPath("wit1")
+	wit1, err = tessera.NewWitness(wit1Vkey, wit1URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wit2, err = tessera.NewWitness(wit2Vkey, baseURL.JoinPath("wit2"))
+	wit2URL := baseURL.JoinPath("wit2")
+	wit2, err = tessera.NewWitness(wit2Vkey, wit2URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	witMulti1, err = tessera.NewWitness(wit1Vkey, baseURL.JoinPath("wit_multi"))
+	witMulti1URL := baseURL.JoinPath("wit_multi")
+	witMulti1, err = tessera.NewWitness(wit1Vkey, witMulti1URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	witMulti2, err = tessera.NewWitness(wit2Vkey, baseURL.JoinPath("wit_multi"))
+	witMulti2, err = tessera.NewWitness(wit2Vkey, witMulti1URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,61 +134,77 @@ func TestWitnessGateway_Update(t *testing.T) {
 
 	testCases := []struct {
 		desc             string
-		group            tessera.WitnessGroup
+		witnesses        []witness.Witness
 		wantSigs         int
 		wantErr          bool
 		wantWitnessCalls func(actual int32) error
 	}{
 		{
 			desc:             "no witnesses",
-			group:            tessera.WitnessGroup{},
+			witnesses:        []witness.Witness{},
 			wantSigs:         0,
 			wantWitnessCalls: exactly(0),
 		},
 		{
-			desc:     "one optional witness",
-			group:    tessera.NewWitnessGroup(0, wit1),
-			wantSigs: 0,
-		},
-		{
-			desc:     "two optional witnesses",
-			group:    tessera.NewWitnessGroup(0, wit1, wit2),
-			wantSigs: 0,
-		},
-		{
-			desc:             "one required witness",
-			group:            tessera.NewWitnessGroup(1, wit1),
+			desc:             "one witness",
+			witnesses:        []witness.Witness{{URL: wit1URL, Verifiers: []note.Verifier{wit1.Key}}},
 			wantSigs:         1,
 			wantWitnessCalls: exactly(1),
 		},
 		{
-			desc:             "one required witness out of 2",
-			group:            tessera.NewWitnessGroup(1, wit1, wit2),
-			wantSigs:         1,
-			wantWitnessCalls: atLeast(1),
-		},
-		{
-			desc:             "two required witnesses",
-			group:            tessera.NewWitnessGroup(2, wit1, wit2),
+			desc: "two witnesses",
+			witnesses: []witness.Witness{
+				{URL: wit1URL, Verifiers: []note.Verifier{wit1.Key}},
+				{URL: wit2URL, Verifiers: []note.Verifier{wit2.Key}},
+			},
 			wantSigs:         2,
 			wantWitnessCalls: exactly(2),
 		},
 		{
-			desc:             "one required witness twice",
-			group:            tessera.NewWitnessGroup(2, wit1, wit1),
+			desc: "one required witness twice",
+			witnesses: []witness.Witness{
+				{URL: wit1URL, Verifiers: []note.Verifier{wit1.Key}},
+				{URL: wit1URL, Verifiers: []note.Verifier{wit1.Key}},
+			},
 			wantSigs:         1,
 			wantWitnessCalls: exactly(1),
 		},
 		{
-			desc:             "two witnesses with same URL but different keys",
-			group:            tessera.NewWitnessGroup(2, witMulti1, witMulti2),
+			desc:             "one witness with two keys",
+			witnesses:        []witness.Witness{{URL: witMulti1URL, Verifiers: []note.Verifier{witMulti1.Key, witMulti2.Key}}},
 			wantSigs:         2,
 			wantWitnessCalls: exactly(1),
 		},
 		{
-			desc:    "bad witness",
-			group:   tessera.NewWitnessGroup(1, witBad),
-			wantErr: true,
+			desc: "two witnesses with same URL but different keys",
+			witnesses: []witness.Witness{
+				{URL: witMulti1URL, Verifiers: []note.Verifier{witMulti1.Key}},
+				{URL: witMulti1URL, Verifiers: []note.Verifier{witMulti2.Key}},
+			},
+			wantSigs:         2,
+			wantWitnessCalls: exactly(1),
+		},
+		{
+			desc:             "bad witness",
+			witnesses:        []witness.Witness{{URL: wit1URL, Verifiers: []note.Verifier{witBad.Key}}},
+			wantSigs:         0,
+			wantWitnessCalls: exactly(1),
+		}, {
+			desc: "two bad witnesses",
+			witnesses: []witness.Witness{
+				{URL: wit1URL, Verifiers: []note.Verifier{witBad.Key}},
+				{URL: wit2URL, Verifiers: []note.Verifier{witBad.Key}},
+			},
+			wantSigs:         0,
+			wantWitnessCalls: exactly(2),
+		}, {
+			desc: "one good, one bad witness",
+			witnesses: []witness.Witness{
+				{URL: wit1URL, Verifiers: []note.Verifier{wit1.Key}},
+				{URL: wit2URL, Verifiers: []note.Verifier{witBad.Key}},
+			},
+			wantSigs:         1,
+			wantWitnessCalls: exactly(2),
 		},
 	}
 	for _, tC := range testCases {
@@ -185,15 +212,16 @@ func TestWitnessGateway_Update(t *testing.T) {
 			ctx := t.Context()
 			witCalls.Store(0)
 
-			g := witness.NewWitnessGateway(tC.group, ts.Client(), 0, testLogTileFetcher)
+			g, err := witness.NewGateway(ctx, witness.Options{
+				HTTPClient: ts.Client(),
+				Witnesses:  tC.witnesses,
+				FetchTiles: testLogTileFetcher,
+			})
+			if err != nil {
+				t.Fatalf("NewGateway() error: %v", err)
+			}
 
-			cpSigs, err := g.Witness(ctx, logSignedCheckpoint)
-			if got, want := err != nil, tC.wantErr; got != want {
-				t.Fatalf("got != want (%t != %t): %v", got, want, err)
-			}
-			if tC.wantErr {
-				return
-			}
+			cpSigs, _ := collectSigs(t, g.CosignCheckpoint(ctx, logSignedCheckpoint, logSignedCheckpointSize))
 			witnessedCP := append(slices.Clone(logSignedCheckpoint), cpSigs...)
 			n, err := note.Open(witnessedCP, note.VerifierList(logVerifier, wit1.Key, wit2.Key))
 			if err != nil {
@@ -218,316 +246,6 @@ func exactly(x int32) func(actual int32) error {
 		}
 		return nil
 	}
-}
-
-func atLeast(x int32) func(actual int32) error {
-	return func(actual int32) error {
-		if actual < x {
-			return fmt.Errorf("got %d calls, want at least %d", actual, x)
-		}
-		return nil
-	}
-}
-
-func TestWitness_UpdateRequest(t *testing.T) {
-	logSignedCheckpoint, _ := loadCheckpoint(t, 9)
-	d, err := posix.New(t.Context(), posix.Config{Path: "../../testdata/log/"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _, reader, err := tessera.NewAppender(t.Context(), d, tessera.NewAppendOptions().WithCheckpointSigner(mustCreateCoSigSigner(t, wit1Skey)))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	testCases := []struct {
-		desc     string
-		proof    [][]byte
-		witSize  uint64
-		wantErr  bool
-		wantBody string
-	}{
-		{
-			desc:     "size 0 no proof needed",
-			witSize:  0,
-			wantBody: fmt.Sprintf("old 0\n\n%s", logSignedCheckpoint),
-		},
-		{
-			desc:     "non zero size requires proof",
-			witSize:  6,
-			wantBody: fmt.Sprintf("old 6\nycRkkNklus5eMVRUvkD1pK321vMrA+jjOiZKU8aOcY4=\nnk9gCR+floFqznAPtqjjcnnV64dge2jQB95D5t164Hg=\nzY1lN35vrXYAPixXSd59LsU29xUJtuW4o2dNNg5Y2Co=\n91HQqaPzWlbBsUDk3JvSpOTK7Bc4ifZGxXZzfABOmuU=\n\n%s", logSignedCheckpoint),
-		},
-	}
-	for _, tC := range testCases {
-		t.Run(tC.desc, func(t *testing.T) {
-			ctx := t.Context()
-			var gotBody string
-			var initDone bool
-			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if !initDone {
-					w.Header().Add("Content-Type", "text/x.tlog.size")
-					w.WriteHeader(409)
-					_, _ = fmt.Fprintf(w, "%d", tC.witSize)
-					initDone = true
-					return
-				}
-
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatal(err)
-				}
-
-				gotBody = string(body)
-				_, checkpoint, ok := bytes.Cut(body, []byte("\n\n"))
-				if !ok {
-					t.Fatalf("expected two newlines in body, got: %q", body)
-				}
-
-				_, _, n, err := log.ParseCheckpoint(checkpoint, logVerifier.Name(), logVerifier)
-				if err != nil {
-					t.Fatal(err)
-				}
-				_, _ = w.Write(sigForSigner(t, n.Text, wit1Skey))
-			}))
-			baseURL := mustURL(t, ts.URL)
-			var err error
-			wit1, err := tessera.NewWitness(wit1Vkey, baseURL)
-			if err != nil {
-				t.Fatal(err)
-			}
-			group := tessera.NewWitnessGroup(1, wit1)
-			wg := witness.NewWitnessGateway(group, ts.Client(), 0, reader.ReadTile)
-			_, err = wg.Witness(ctx, logSignedCheckpoint)
-			if got, want := err != nil, tC.wantErr; got != want {
-				t.Fatalf("got != want (%t != %t): %v", got, want, err)
-			}
-			if tC.wantErr {
-				return
-			}
-
-			if gotBody != tC.wantBody {
-				t.Errorf("body does not match expected (want vs got):\n%q\n%q", tC.wantBody, gotBody)
-			}
-		})
-	}
-}
-
-func TestWitness_UpdateResponse(t *testing.T) {
-	logSignedCheckpoint, cp := loadCheckpoint(t, 9)
-
-	sig1 := sigForSigner(t, cp, wit1Skey)
-	sig2 := sigForSigner(t, cp, wit2Skey)
-
-	testCases := []struct {
-		desc       string
-		statusCode int
-		body       []byte
-		pre        error
-		wantErr    bool
-		wantResult []byte
-	}{
-		{
-			desc:       "all good",
-			statusCode: 200,
-			body:       sig1,
-			wantResult: sig1,
-		}, {
-			desc:       "all good, two sigs",
-			statusCode: 200,
-			body:       append(sig1, sig2...),
-			wantResult: sig1,
-		}, {
-			desc:       "404 is an error",
-			statusCode: 404,
-			wantErr:    true,
-		}, {
-			desc:       "403 is an error",
-			statusCode: 403,
-			wantErr:    true,
-		}, {
-			desc:       "422 is an error",
-			statusCode: 422,
-			wantErr:    true,
-		}, {
-			desc:       "409 with no headers is error",
-			statusCode: 409,
-			wantErr:    true,
-		},
-	}
-	for _, tC := range testCases {
-		t.Run(tC.desc, func(t *testing.T) {
-			ctx := t.Context()
-			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(tC.statusCode)
-				_, _ = w.Write(tC.body)
-			}))
-
-			baseURL := mustURL(t, ts.URL)
-			wit1, err := tessera.NewWitness(wit1Vkey, baseURL)
-			if err != nil {
-				t.Fatal(err)
-			}
-			g := witness.NewWitnessGateway(tessera.NewWitnessGroup(1, wit1), ts.Client(), 0, testLogTileFetcher)
-			cpSigs, err := g.Witness(ctx, logSignedCheckpoint)
-			if got, want := err != nil, tC.wantErr; got != want {
-				t.Fatalf("got != want (%t != %t): %v", got, want, err)
-			}
-			if tC.wantErr {
-				return
-			}
-
-			if !bytes.Equal(cpSigs, tC.wantResult) {
-				t.Errorf("expected result %q but got %q", tC.body, cpSigs)
-			}
-		})
-	}
-}
-
-func TestWitnessConflict(t *testing.T) {
-	for _, test := range []struct {
-		name        string
-		witnessSeen uint64
-		oldSizeHint uint64
-		wantErr     bool
-	}{
-		{
-			name: "nothing seen before",
-		},
-		{
-			name:        "correct hint",
-			witnessSeen: 8,
-			oldSizeHint: 8,
-		},
-		{
-			name:        "hint stale - witness missed an update",
-			witnessSeen: 4,
-			oldSizeHint: 8,
-		},
-		{
-			name:        "log rolled back - witness is ahead of log",
-			witnessSeen: 20,
-			wantErr:     true,
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			logSignedCheckpoint, cp := loadCheckpoint(t, 9)
-
-			var wit1 tessera.Witness
-			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w1u := mustURL(t, wit1.URL)
-				if got, want := r.URL.String(), w1u.Path+"/add-checkpoint"; got != want {
-					t.Fatalf("got request to URL %q but expected %q", got, want)
-				}
-
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatalf("error reading body: %v", err)
-				}
-				lines := bytes.Split(body, []byte("\n"))
-				if len(lines) == 0 {
-					t.Fatal("empty body")
-				}
-				bits := strings.Split(string(lines[0]), " ")
-				if len(bits) != 2 || bits[0] != "old" {
-					t.Fatal("invalid old line")
-				}
-				oldSize, err := strconv.ParseUint(bits[1], 10, 64)
-				if err != nil {
-					t.Fatalf("Invalid old size %v", err)
-				}
-
-				if oldSize != test.witnessSeen {
-					t.Logf("Saw stale %d != %d", oldSize, test.witnessSeen)
-					w.Header().Add("Content-Type", "text/x.tlog.size")
-					w.WriteHeader(409)
-					_, _ = fmt.Fprintf(w, "%d\n", test.witnessSeen)
-					return
-				}
-
-				_, _ = w.Write(sigForSigner(t, cp, wit1Skey))
-				test.witnessSeen = oldSize
-			}))
-			baseURL := mustURL(t, ts.URL)
-			var err error
-			wit1, err = tessera.NewWitness(wit1Vkey, baseURL)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			group := tessera.NewWitnessGroup(1, wit1)
-			g := witness.NewWitnessGateway(group, ts.Client(), test.oldSizeHint, testLogTileFetcher)
-			_, err = g.Witness(t.Context(), logSignedCheckpoint)
-			if gotErr := err != nil; gotErr != test.wantErr {
-				t.Fatalf("Got err %v, want err %t", err, test.wantErr)
-			}
-		})
-	}
-}
-
-func TestWitnessStateEvolution(t *testing.T) {
-	logSignedCheckpoint, cp := loadCheckpoint(t, 9)
-
-	// Set up a fake server hosting the witnesses.
-	// The witnesses just sign the checkpoint with whatever key is requested, they don't check the body at all.
-	// An improvement on this would be to make the fake witnesses more realistic, but it's a non-trivial
-	// amount of code to add to this already long test!
-	var wit1 tessera.Witness
-	var count int
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w1u := mustURL(t, wit1.URL)
-		if got, want := r.URL.String(), w1u.Path+"/add-checkpoint"; got != want {
-			t.Fatalf("got request to URL %q but expected %q", got, want)
-		}
-
-		switch count {
-		case 0:
-			w.Header().Add("Content-Type", "text/x.tlog.size")
-			w.WriteHeader(409)
-			_, _ = w.Write([]byte("8"))
-		case 1:
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.HasPrefix(body, []byte("old 8")) {
-				t.Fatalf("expected body to start with old 8 but got\n%v", body)
-			}
-
-			_, _ = w.Write(sigForSigner(t, cp, wit1Skey))
-		case 2:
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.HasPrefix(body, []byte("old 9")) {
-				t.Fatalf("expected body to start with old 9 but got\n%v", string(body))
-			}
-			// End of test; we don't even bother constructing a valid response here
-		}
-		count++
-	}))
-	baseURL := mustURL(t, ts.URL)
-	var err error
-	wit1, err = tessera.NewWitness(wit1Vkey, baseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	group := tessera.NewWitnessGroup(1, wit1)
-
-	ctx := t.Context()
-
-	g := witness.NewWitnessGateway(group, ts.Client(), 0, testLogTileFetcher)
-	// This call will trigger case 0 and then case 1 in the witness handler above.
-	// case 0 will return a response that notifies the log that its view of the witness size is wrong.
-	// This method will then update its size and make a second request with a consistency proof, triggering case 1.
-	_, err = g.Witness(ctx, logSignedCheckpoint)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// This triggers case 2 in the witness, which isn't implemented so we don't care about any error,
-	// we just invoke this to cause the validation in that witness body to trigger.
-	_, _ = g.Witness(ctx, logSignedCheckpoint)
 }
 
 func TestSlipperyWitness(t *testing.T) {
@@ -557,15 +275,24 @@ func TestSlipperyWitness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	group := tessera.NewWitnessGroup(1, wit1)
 
 	ctx := t.Context()
 
-	g := witness.NewWitnessGateway(group, ts.Client(), 0, testLogTileFetcher)
-	_, err = g.Witness(ctx, logSignedCheckpoint)
-	if err == nil {
-		t.Fatal("Expected error from not getting witness checkpoint")
+	g, err := witness.NewGateway(ctx, witness.Options{
+		Witnesses:  []witness.Witness{{URL: baseURL, Verifiers: []note.Verifier{wit1.Key}}},
+		HTTPClient: ts.Client(),
+		FetchTiles: testLogTileFetcher,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	sigs, N := collectSigs(t, g.CosignCheckpoint(ctx, logSignedCheckpoint, uint64(logSize)))
+	if N != 0 || len(sigs) != 0 {
+		t.Errorf("Expected 0 signatures from slippery witness, got %d (%s)", N, sigs)
+	}
+
 }
 
 func TestWitnessReusesProofs(t *testing.T) {
@@ -598,11 +325,13 @@ func TestWitnessReusesProofs(t *testing.T) {
 	}))
 	baseURL := mustURL(t, ts.URL)
 	var err error
-	wit1, err = tessera.NewWitness(wit1Vkey, baseURL.JoinPath("wit1"))
+	wit1URL := baseURL.JoinPath("wit1")
+	wit1, err = tessera.NewWitness(wit1Vkey, wit1URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wit2, err = tessera.NewWitness(wit2Vkey, baseURL.JoinPath("wit2"))
+	wit2URL := baseURL.JoinPath("wit2")
+	wit2, err = tessera.NewWitness(wit2Vkey, wit2URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,18 +347,35 @@ func TestWitnessReusesProofs(t *testing.T) {
 		tf2.Add(1)
 		return testLogTileFetcher(ctx, level, index, p)
 	}
-	g1 := witness.NewWitnessGateway(tessera.NewWitnessGroup(1, wit1), ts.Client(), 0, cf1)
-	g2 := witness.NewWitnessGateway(tessera.NewWitnessGroup(2, wit1, wit2), ts.Client(), 0, cf2)
+	g1, err := witness.NewGateway(ctx, witness.Options{
+		HTTPClient: ts.Client(),
+		Witnesses:  []witness.Witness{{URL: wit1URL, Verifiers: []note.Verifier{wit1.Key}}},
+		FetchTiles: cf1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g2, err := witness.NewGateway(ctx, witness.Options{
+		HTTPClient: ts.Client(),
+		Witnesses: []witness.Witness{
+			{URL: wit1URL, Verifiers: []note.Verifier{wit1.Key}},
+			{URL: wit2URL, Verifiers: []note.Verifier{wit2.Key}},
+		},
+		FetchTiles: cf2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for i := range 10 {
 		logSignedCheckpoint, _ := loadCheckpoint(t, i)
-		_, err = g1.Witness(ctx, logSignedCheckpoint)
-		if err != nil {
-			t.Fatal(err)
+		_, N1 := collectSigs(t, g1.CosignCheckpoint(ctx, logSignedCheckpoint, uint64(i)))
+		_, N2 := collectSigs(t, g2.CosignCheckpoint(ctx, logSignedCheckpoint, uint64(i)))
+		if N1 != 1 {
+			t.Fatalf("expected 1 signature from g1 but got %d", N1)
 		}
-		_, err = g2.Witness(ctx, logSignedCheckpoint)
-		if err != nil {
-			t.Fatal(err)
+		if N2 != 2 {
+			t.Fatalf("expected 2 signatures from g2 but got %d", N2)
 		}
 	}
 
@@ -687,13 +433,4 @@ func mustCreateVerifier(vkey string) note.Verifier {
 		panic(err)
 	}
 	return verifier
-}
-
-func mustCreateCoSigSigner(t *testing.T, skey string) note.Signer {
-	t.Helper()
-	signer, err := f_note.NewSignerForCosignatureV1(skey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return signer
 }
