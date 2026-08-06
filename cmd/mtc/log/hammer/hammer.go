@@ -18,24 +18,19 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
-	"math/rand/v2"
-	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
-	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/json"
@@ -44,8 +39,6 @@ import (
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/cmd/mtc/log"
 	"github.com/transparency-dev/tessera/internal/hammer/loadtest"
-
-	"golang.org/x/net/http2"
 
 	"log/slog"
 )
@@ -60,7 +53,7 @@ const (
 )
 
 var (
-	oidPublicKeyRSA = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 1}
+	oidPublicKeyMLDSA44 = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 17}
 )
 
 var (
@@ -79,7 +72,6 @@ var (
 	caID         = flag.String("ca_id", "44363.47", "The CA ID (e.g. 44363.47)")
 	logNumber    = flag.Uint64("log_number", 1, "The issuance log number (strictly positive)")
 	certLifetime = flag.Duration("cert_lifetime", 24*time.Hour, "Validity duration for generated certificates")
-	dupChance    = flag.Float64("dup_chance", 0.1, "The probability of a generated leaf being a duplicate of a previous value")
 
 	leafWriteGoal = flag.Int64("leaf_write_goal", 0, "Exit after writing this number of leaves, or 0 to keep going indefinitely")
 	maxRunTime    = flag.Duration("max_runtime", 0, "Fail after this amount of time has passed, or 0 to keep going indefinitely")
@@ -100,24 +92,21 @@ func main() {
 	flag.Parse()
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 
-	hc = &http.Client{
-		Transport: &http.Transport{
-			MaxIdleConns:        *numWriters + *numReadersFull + *numReadersRandom,
-			MaxIdleConnsPerHost: *numWriters + *numReadersFull + *numReadersRandom,
-			DisableKeepAlives:   false,
-		},
-		Timeout: *httpTimeout,
+	t := &http.Transport{
+		MaxIdleConns:        *numWriters + *numReadersFull + *numReadersRandom,
+		MaxIdleConnsPerHost: *numWriters + *numReadersFull + *numReadersRandom,
+		DisableKeepAlives:   false,
 	}
 	if *forceHTTP2 {
-		hc.Transport = &http2.Transport{
-			// So http2.Transport doesn't complain the URL scheme isn't 'https'
-			AllowHTTP: true,
-			// Pretend we are dialing a TLS endpoint. (Note, we ignore the passed tls.Config)
-			DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, network, addr)
-			},
-		}
+		p := http.Protocols{}
+		p.SetHTTP1(false)
+		p.SetHTTP2(true)
+		p.SetUnencryptedHTTP2(true)
+		t.Protocols = &p
+	}
+	hc = &http.Client{
+		Transport: t,
+		Timeout:   *httpTimeout,
 	}
 
 	// If bearerTokenWrite is unset, default it to whatever bearerToken has (which may too be unset).
@@ -157,7 +146,7 @@ func main() {
 	ha := loadtest.NewHammerAnalyser(func() uint64 { return tracker.Latest().Size })
 	ha.Run(ctx)
 
-	gen := newLeafGenerator(tracker.Latest().Size, *caID, *dupChance, *certLifetime)
+	gen := newLeafGenerator(tracker.Latest().Size, *caID, *certLifetime)
 	opts := loadtest.HammerOpts{
 		MaxReadOpsPerSecond:  *maxReadOpsPerSecond,
 		MaxWriteOpsPerSecond: *maxWriteOpsPerSecond,
@@ -218,23 +207,7 @@ func main() {
 
 // newLeafGenerator returns a function that generates values to append to an MTC log.
 // The generator can be used by concurrent threads.
-//
-// dupChance provides the probability that a new leaf will be a duplicate of a previous entry.
-// Leaves will be unique if dupChance is 0, and if set to 1 then all values will be duplicates.
-// startSize should be set to the initial size of the log so that repeated runs of the
-// hammer can start seeding leaves to avoid duplicates with previous runs.
-type randReader struct {
-	r *rand.Rand
-}
-
-func (rr randReader) Read(p []byte) (int, error) {
-	for i := range p {
-		p[i] = byte(rr.r.Int())
-	}
-	return len(p), nil
-}
-
-func newLeafGenerator(startSize uint64, caID string, dupChance float64, certLifetime time.Duration) func() []byte {
+func newLeafGenerator(startSize uint64, caID string, certLifetime time.Duration) func() []byte {
 	issuer := pkix.Name{
 		CommonName: caID,
 	}
@@ -258,33 +231,18 @@ func newLeafGenerator(startSize uint64, caID string, dupChance float64, certLife
 		os.Exit(1)
 	}
 
-	// TODO:move to ML-DSA when available in go1.27
-	source := rand.New(rand.NewPCG(0, 42))
 	type algorithmIdentifier struct {
-		Algorithm  asn1.ObjectIdentifier
-		Parameters asn1.RawValue `asn1:"optional"`
+		Algorithm asn1.ObjectIdentifier
 	}
 	spkiAlgDER, err := asn1.Marshal(algorithmIdentifier{
-		Algorithm:  oidPublicKeyRSA,
-		Parameters: asn1.RawValue{Tag: asn1.TagNull},
+		Algorithm: oidPublicKeyMLDSA44,
 	})
 	if err != nil {
 		slog.ErrorContext(context.Background(), "Failed to marshal subjectPublicKeyAlgorithm", slog.Any("error", err))
 		os.Exit(1)
 	}
 
-	privKey, err := rsa.GenerateKey(randReader{source}, 2048)
-	if err != nil {
-		slog.ErrorContext(context.Background(), "Failed to generate RSA key", slog.Any("error", err))
-		os.Exit(1)
-	}
-	spkiDER, err := x509.MarshalPKIXPublicKey(&privKey.PublicKey)
-	if err != nil {
-		slog.ErrorContext(context.Background(), "Failed to marshal SubjectPublicKeyInfo DER", slog.Any("error", err))
-		os.Exit(1)
-	}
-
-	hash := sha256.Sum256(spkiDER)
+	hash := sha256.Sum256([]byte("fake-mldsa-public-key"))
 
 	// genLeaf MUST be deterministic given n
 	genLeaf := func(n uint64) []byte {
@@ -314,21 +272,10 @@ func newLeafGenerator(startSize uint64, caID string, dupChance float64, certLife
 		return jsonBytes
 	}
 
-	sizeLocked := startSize
-	var mu sync.Mutex
+	var size atomic.Uint64
+	size.Store(startSize)
 	return func() []byte {
-		mu.Lock()
-		thisSize := sizeLocked
-
-		if thisSize > 0 && rand.Float64() <= dupChance {
-			thisSize = rand.Uint64N(thisSize)
-		} else {
-			sizeLocked++
-		}
-		mu.Unlock()
-
-		// Do this outside of the protected block so that writers don't block on leaf generation (especially for larger leaves).
-		return genLeaf(thisSize)
+		return genLeaf(size.Add(1) - 1)
 	}
 }
 

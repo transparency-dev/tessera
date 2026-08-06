@@ -29,7 +29,9 @@ go run github.com/transparency-dev/witness/cmd/generate_keys@main \
 ```
 
 > [!WARNING] Ensure that these keys are stored somewhere safe, and not in a
-> location which could accidentally be made public when exporting the log data!
+> location which could accidentally be made public when exporting the log data.
+> If you're running this server in production, this key MUST be HSM-backed as
+> per Chrome's draft CQRP policy.
 
 ### Starting the log server
 
