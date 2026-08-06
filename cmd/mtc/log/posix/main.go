@@ -33,25 +33,30 @@ import (
 var (
 	slogLevel = flag.Int("slog_level", 0, "The cut-off threshold for structured logging.")
 
+	// HTTP server settings
 	listenAddr        = flag.String("listen_addr", ":8080", "The address to listen on for HTTP requests.")
 	readHeaderTimeout = flag.Duration("read_header_timeout", 5*time.Second, "The maximum duration for reading request headers.")
 	maxHeaderBytes    = flag.Int("max_header_bytes", http.DefaultMaxHeaderBytes, "Maximum number of bytes the server will read parsing request headers.")
 	writeTimeout      = flag.Duration("write_timeout", 0, "The maximum duration before timing out writes of the response.")
 
+	// Tessera settings
 	storageDir                = flag.String("storage_dir", "", "Path to root of log storage.")
-	caID                      = flag.String("ca_id", "44363.47", "The CA ID as per draft-ietf-plants-merkle-tree-certs section 5.1 (e.g. 44363.47)")
-	logNumber                 = flag.Uint64("log_number", 1, "The issuance log number (strictly positive)")
-	privKeyFile               = flag.String("private_key", "", "Location of private key file. If unset, uses the contents of the LOG_PRIVATE_KEY environment variable.")
 	checkpointInterval        = flag.Duration("checkpoint_interval", 1500*time.Millisecond, "Interval between publishing checkpoints when the log has grown")
 	batchMaxSize              = flag.Uint("batch_max_size", tessera.DefaultBatchMaxSize, "Maximum number of entries to process in a single sequencing batch.")
 	batchMaxAge               = flag.Duration("batch_max_age", tessera.DefaultBatchMaxAge, "Maximum age of entries in a single sequencing batch.")
 	awaiterPollInterval       = flag.Duration("awaiter_poll_interval", 100*time.Millisecond, "Interval between checkpoint polls by the publication awaiter.")
 	pushbackMaxOutstanding    = flag.Uint("pushback_max_outstanding", tessera.DefaultPushbackMaxOutstanding, "Maximum number of in-flight add requests - i.e. the number of entries with sequence numbers assigned, but which are not yet integrated into the log.")
 	garbageCollectionInterval = flag.Duration("garbage_collection_interval", 10*time.Second, "Interval between scans to remove obsolete partial tiles and entry bundles. Set to 0 to disable.")
-
+	// Tessera's HTTP client settings
 	clientHTTPTimeout        = flag.Duration("client_http_timeout", 5*time.Second, "Timeout for outgoing HTTP requests")
 	clientHTTPMaxIdle        = flag.Int("client_http_max_idle", 20, "Maximum number of idle HTTP connections for outgoing requests.")
 	clientHTTPMaxIdlePerHost = flag.Int("client_http_max_idle_per_host", 10, "Maximum number of idle HTTP connections per host for outgoing requests.")
+
+	// CA settings
+	caID            = flag.String("ca_id", "44363.47", "The CA ID as per draft-ietf-plants-merkle-tree-certs section 5.1 (e.g. 44363.47)")
+	logNumber       = flag.Uint64("log_number", 1, "The issuance log number (strictly positive)")
+	privKeyFile     = flag.String("private_key", "", "Location of private key file. If unset, uses the contents of the LOG_PRIVATE_KEY environment variable.")
+	maxCertLifetime = flag.Duration("max_cert_lifetime", log.DefaultMaxCertLifetime, "Maximum validity duration allowed for submitted certificate entries.")
 )
 
 func main() {
@@ -68,7 +73,8 @@ func main() {
 	appender, shutdown, reader := newAppenderFromFlags(ctx, origin, signer)
 	opts := log.NewOptions().
 		WithTesseraReader(reader).
-		WithAwaiterPollInterval(*awaiterPollInterval)
+		WithAwaiterPollInterval(*awaiterPollInterval).
+		WithMaxCertLifetime(*maxCertLifetime)
 	mtcLog, err := log.NewMTCLog(ctx, appender, opts)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to initialize MTC log", slog.Any("error", err))
