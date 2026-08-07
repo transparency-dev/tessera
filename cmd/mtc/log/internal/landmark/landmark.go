@@ -22,11 +22,12 @@ import (
 	"strings"
 )
 
-// Landmarks represents the active landmarks published by a CA log.
+// ActiveLandmarks represents the active landmarks published by a CA log.
 // as described in draft-ietf-plants-merkle-tree-certs section 6.4.3.
 //
-// Landmarks is not safe for concurrent use without external synchronization.
-type Landmarks struct {
+// ActiveLandmarks is not safe for concurrent use without external synchronization.
+type ActiveLandmarks struct {
+	// The number of non-zero landmark tree sizes the log has ever published.
 	lastLandmark       uint64
 	numActiveLandmarks uint64
 	// treeSizes contains numActiveLandmarks + 1 tree sizes in strictly decreasing order.
@@ -35,10 +36,10 @@ type Landmarks struct {
 	treeSizes []uint64
 }
 
-// newLandmarks creates a new Landmarks struct with the given parameters.
+// newActiveLandmarks creates a new ActiveLandmarks struct with the given parameters.
 // Parameters must represent a valid landmarks file as per specs, otherwise
 // returns an error. Specifically, treeSizes MUST have at least one entry.
-func newLandmarks(lastLandmark, numActive uint64, treeSizes []uint64) (*Landmarks, error) {
+func newActiveLandmarks(lastLandmark, numActive uint64, treeSizes []uint64) (*ActiveLandmarks, error) {
 	// SPEC: draft-ietf-plants-merkle-tree-certs section 6.4.3.
 	// "num_active_landmarks <= last_landmark"
 	if numActive > lastLandmark {
@@ -66,11 +67,10 @@ func newLandmarks(lastLandmark, numActive uint64, treeSizes []uint64) (*Landmark
 			return nil, fmt.Errorf("tree sizes must be strictly decreasing: treeSizes[%d]=%d <= treeSizes[%d]=%d", i-1, treeSizes[i-1], i, treeSizes[i])
 		}
 	}
-	tsCopy := slices.Clone(treeSizes)
-	return &Landmarks{
+	return &ActiveLandmarks{
 		lastLandmark:       lastLandmark,
 		numActiveLandmarks: numActive,
-		treeSizes:          tsCopy,
+		treeSizes:          slices.Clone(treeSizes),
 	}, nil
 }
 
@@ -93,7 +93,7 @@ func newLandmarks(lastLandmark, numActive uint64, treeSizes []uint64) (*Landmark
 // 200\n
 // 100\n
 // 0\n"
-func (a *Landmarks) UnmarshalText(text []byte) error {
+func (a *ActiveLandmarks) UnmarshalText(text []byte) error {
 	if len(text) == 0 || text[len(text)-1] != '\n' {
 		return errors.New("landmarks text must not be empty and must end with a newline")
 	}
@@ -103,9 +103,10 @@ func (a *Landmarks) UnmarshalText(text []byte) error {
 		return fmt.Errorf("expected at least header line and one tree size line, got %d lines", len(lines))
 	}
 
-	headerParts := strings.Split(lines[0], " ")
+	headerLine, lines := lines[0], lines[1:]
+	headerParts := strings.Split(headerLine, " ")
 	if len(headerParts) != 2 {
-		return fmt.Errorf("invalid header line format %q: expected two space-separated integers", lines[0])
+		return fmt.Errorf("invalid header line format %q: expected two space-separated integers", headerLine)
 	}
 
 	lastLM, err := strconv.ParseUint(headerParts[0], 10, 64)
@@ -118,8 +119,8 @@ func (a *Landmarks) UnmarshalText(text []byte) error {
 		return fmt.Errorf("invalid num_active_landmarks %q: %w", headerParts[1], err)
 	}
 
-	treeSizes := make([]uint64, len(lines)-1)
-	for i, line := range lines[1:] {
+	treeSizes := make([]uint64, len(lines))
+	for i, line := range lines {
 		size, err := strconv.ParseUint(line, 10, 64)
 		if err != nil {
 			return fmt.Errorf("invalid tree size on line %d (%q): %w", i+2, line, err)
@@ -127,7 +128,7 @@ func (a *Landmarks) UnmarshalText(text []byte) error {
 		treeSizes[i] = size
 	}
 
-	lm, err := newLandmarks(lastLM, numActive, treeSizes)
+	lm, err := newActiveLandmarks(lastLM, numActive, treeSizes)
 	if err != nil {
 		return err
 	}
@@ -137,9 +138,9 @@ func (a *Landmarks) UnmarshalText(text []byte) error {
 
 // MarshalText returns the text representation of active landmarks.
 // a.treeSizes must contain at least one tree size, otherwise returns an error.
-func (a *Landmarks) MarshalText() ([]byte, error) {
+func (a *ActiveLandmarks) MarshalText() ([]byte, error) {
 	if len(a.treeSizes) == 0 {
-		return nil, errors.New("cannot marshal uninitialized Landmarks instance, treeSizes must not be empty")
+		return nil, errors.New("cannot marshal uninitialized ActiveLandmarks instance, treeSizes must not be empty")
 	}
 
 	var b strings.Builder
@@ -152,12 +153,12 @@ func (a *Landmarks) MarshalText() ([]byte, error) {
 
 // AddLandmark appends treeSize to landmarks and prunes active landmarks using maxActive.
 // a.treeSizes must contain at least one tree size, otherwise returns an error.
-func (a *Landmarks) AddLandmark(treeSize, maxActive uint64) error {
+func (a *ActiveLandmarks) AddLandmark(treeSize, maxActive uint64) error {
 	if maxActive == 0 {
 		return errors.New("maxActive must be strictly positive (> 0)")
 	}
 	if len(a.treeSizes) == 0 {
-		return errors.New("cannot add landmark to uninitialized Landmarks instance, treeSizes must not be empty")
+		return errors.New("cannot add landmark to uninitialized ActiveLandmarks instance, treeSizes must not be empty")
 	}
 	if treeSize <= a.treeSizes[0] {
 		return fmt.Errorf("new landmark tree size %d must be strictly greater than current last landmark tree size %d", treeSize, a.treeSizes[0])

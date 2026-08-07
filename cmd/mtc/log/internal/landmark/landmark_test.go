@@ -19,16 +19,16 @@ import (
 	"testing"
 )
 
-func mustNew(t *testing.T, lastLandmark, numActive uint64, treeSizes []uint64) *Landmarks {
+func mustNew(t *testing.T, lastLandmark, numActive uint64, treeSizes []uint64) *ActiveLandmarks {
 	t.Helper()
-	lm, err := newLandmarks(lastLandmark, numActive, treeSizes)
+	lm, err := newActiveLandmarks(lastLandmark, numActive, treeSizes)
 	if err != nil {
-		t.Fatalf("newLandmarks(%d, %d, %v) unexpected error: %v", lastLandmark, numActive, treeSizes, err)
+		t.Fatalf("newActiveLandmarks(%d, %d, %v) unexpected error: %v", lastLandmark, numActive, treeSizes, err)
 	}
 	return lm
 }
 
-func TestNewLandmarks(t *testing.T) {
+func TestNewActiveLandmarks(t *testing.T) {
 	tests := []struct {
 		name         string
 		lastLandmark uint64
@@ -107,9 +107,9 @@ func TestNewLandmarks(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := newLandmarks(tc.lastLandmark, tc.numActive, tc.treeSizes)
+			_, err := newActiveLandmarks(tc.lastLandmark, tc.numActive, tc.treeSizes)
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("newLandmarks() error = %v, wantErr %v", err, tc.wantErr)
+				t.Fatalf("newActiveLandmarks() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
 	}
@@ -119,18 +119,18 @@ func TestParseLandmarks(t *testing.T) {
 	tests := []struct {
 		name    string
 		input   string
-		want    func(t *testing.T) *Landmarks
+		want    func(t *testing.T) *ActiveLandmarks
 		wantErr bool
 	}{
 		{
 			name:  "valid active landmarks",
 			input: "1 1\n100\n0\n",
-			want:  func(t *testing.T) *Landmarks { return mustNew(t, 1, 1, []uint64{100, 0}) },
+			want:  func(t *testing.T) *ActiveLandmarks { return mustNew(t, 1, 1, []uint64{100, 0}) },
 		},
 		{
 			name:  "valid initial landmarks zero active",
 			input: "0 0\n0\n",
-			want:  func(t *testing.T) *Landmarks { return mustNew(t, 0, 0, []uint64{0}) },
+			want:  func(t *testing.T) *ActiveLandmarks { return mustNew(t, 0, 0, []uint64{0}) },
 		},
 		{
 			name:    "invalid landmark 0 non-zero tree size",
@@ -166,7 +166,7 @@ func TestParseLandmarks(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := &Landmarks{}
+			got := &ActiveLandmarks{}
 			err := got.UnmarshalText([]byte(tc.input))
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("UnmarshalText() error = %v, wantErr %v", err, tc.wantErr)
@@ -188,7 +188,7 @@ func TestMarshalText(t *testing.T) {
 		t.Fatalf("MarshalText() unexpected error: %v", err)
 	}
 
-	got := &Landmarks{}
+	got := &ActiveLandmarks{}
 	if err := got.UnmarshalText(data); err != nil {
 		t.Fatalf("UnmarshalText() unexpected error: %v", err)
 	}
@@ -197,8 +197,8 @@ func TestMarshalText(t *testing.T) {
 		t.Errorf("Roundtrip result = %+v, want %+v", got, lm)
 	}
 
-	// Marshaling on uninitialized Landmarks struct should return error
-	var emptyLM Landmarks
+	// Marshaling on uninitialized ActiveLandmarks struct should return error
+	var emptyLM ActiveLandmarks
 	if _, err := emptyLM.MarshalText(); err == nil {
 		t.Errorf("MarshalText on uninitialized struct expected error, got nil")
 	}
@@ -209,7 +209,7 @@ func TestAddLandmark(t *testing.T) {
 	if err := lm.AddLandmark(100, 2); err != nil {
 		t.Fatalf("AddLandmark(100, 2) error: %v", err)
 	}
-	want1 := &Landmarks{lastLandmark: 1, numActiveLandmarks: 1, treeSizes: []uint64{100, 0}}
+	want1 := &ActiveLandmarks{lastLandmark: 1, numActiveLandmarks: 1, treeSizes: []uint64{100, 0}}
 	if !reflect.DeepEqual(lm, want1) {
 		t.Errorf("After 1st AddLandmark = %+v, want %+v", lm, want1)
 	}
@@ -217,7 +217,7 @@ func TestAddLandmark(t *testing.T) {
 	if err := lm.AddLandmark(200, 2); err != nil {
 		t.Fatalf("AddLandmark(200, 2) error: %v", err)
 	}
-	want2 := &Landmarks{lastLandmark: 2, numActiveLandmarks: 2, treeSizes: []uint64{200, 100, 0}}
+	want2 := &ActiveLandmarks{lastLandmark: 2, numActiveLandmarks: 2, treeSizes: []uint64{200, 100, 0}}
 	if !reflect.DeepEqual(lm, want2) {
 		t.Errorf("After 2nd AddLandmark = %+v, want %+v", lm, want2)
 	}
@@ -226,13 +226,13 @@ func TestAddLandmark(t *testing.T) {
 	if err := lm.AddLandmark(300, 2); err != nil {
 		t.Fatalf("AddLandmark(300, 2) error: %v", err)
 	}
-	want3 := &Landmarks{lastLandmark: 3, numActiveLandmarks: 2, treeSizes: []uint64{300, 200, 100}}
+	want3 := &ActiveLandmarks{lastLandmark: 3, numActiveLandmarks: 2, treeSizes: []uint64{300, 200, 100}}
 	if !reflect.DeepEqual(lm, want3) {
 		t.Errorf("After 3rd AddLandmark (pruned) = %+v, want %+v", lm, want3)
 	}
 
-	// Adding landmark on uninitialized Landmarks struct should return error
-	var emptyLM Landmarks
+	// Adding landmark on uninitialized ActiveLandmarks struct should return error
+	var emptyLM ActiveLandmarks
 	if err := emptyLM.AddLandmark(100, 2); err == nil {
 		t.Errorf("AddLandmark on uninitialized struct expected error, got nil")
 	}
