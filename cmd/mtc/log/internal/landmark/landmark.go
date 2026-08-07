@@ -35,10 +35,10 @@ type Landmarks struct {
 	treeSizes []uint64
 }
 
-// New creates a new Landmarks struct with the given parameters.
+// newLandmarks creates a new Landmarks struct with the given parameters.
 // Parameters must represent a valid landmarks file as per specs, otherwise
 // returns an error. Specifically, treeSizes MUST have at least one entry.
-func New(lastLandmark, numActive uint64, treeSizes []uint64) (*Landmarks, error) {
+func newLandmarks(lastLandmark, numActive uint64, treeSizes []uint64) (*Landmarks, error) {
 	// SPEC: draft-ietf-plants-merkle-tree-certs section 6.4.3.
 	// "num_active_landmarks <= last_landmark"
 	if numActive > lastLandmark {
@@ -127,7 +127,7 @@ func (a *Landmarks) UnmarshalText(text []byte) error {
 		treeSizes[i] = size
 	}
 
-	lm, err := New(lastLM, numActive, treeSizes)
+	lm, err := newLandmarks(lastLM, numActive, treeSizes)
 	if err != nil {
 		return err
 	}

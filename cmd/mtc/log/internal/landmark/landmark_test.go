@@ -21,14 +21,14 @@ import (
 
 func mustNew(t *testing.T, lastLandmark, numActive uint64, treeSizes []uint64) *Landmarks {
 	t.Helper()
-	lm, err := New(lastLandmark, numActive, treeSizes)
+	lm, err := newLandmarks(lastLandmark, numActive, treeSizes)
 	if err != nil {
-		t.Fatalf("New(%d, %d, %v) unexpected error: %v", lastLandmark, numActive, treeSizes, err)
+		t.Fatalf("newLandmarks(%d, %d, %v) unexpected error: %v", lastLandmark, numActive, treeSizes, err)
 	}
 	return lm
 }
 
-func TestNew(t *testing.T) {
+func TestNewLandmarks(t *testing.T) {
 	tests := []struct {
 		name         string
 		lastLandmark uint64
@@ -107,9 +107,9 @@ func TestNew(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := New(tc.lastLandmark, tc.numActive, tc.treeSizes)
+			_, err := newLandmarks(tc.lastLandmark, tc.numActive, tc.treeSizes)
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("New() error = %v, wantErr %v", err, tc.wantErr)
+				t.Fatalf("newLandmarks() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
 	}
