@@ -236,10 +236,15 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq sequencer, op
 		},
 	}
 
+	newCP, err := opts.CheckpointPublisherContext(ctx, logStore, s.cfg.HTTPClient)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create checkpoint publisher: %v", err)
+	}
+
 	r := &Appender{
 		logStore:        logStore,
 		sequencer:       seq,
-		newCP:           opts.CheckpointPublisher(logStore, s.cfg.HTTPClient),
+		newCP:           newCP,
 		treeUpdated:     make(chan struct{}),
 		entriesAssigned: make(chan struct{}, 1),
 	}

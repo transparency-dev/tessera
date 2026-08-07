@@ -15,17 +15,23 @@
 package tessera
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	f_note "github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/witness/config"
 	"github.com/transparency-dev/witness/persistence/inmemory"
 	"github.com/transparency-dev/witness/witness"
@@ -286,6 +292,9 @@ func TestWithMirrors(t *testing.T) {
 const (
 	testWit1VKey = "Wit1+55ee4561+AVhZSmQj9+SoL+p/nN0Hh76xXmF7QcHfytUrI1XfSClk"
 	testWit1SKey = "PRIVATE+KEY+Wit1+55ee4561+AeadRiG7XM4XiieCHzD8lxysXMwcViy5nYsoXURWGrlE"
+
+	testMirrorVKey = "Mirror1+66ee4561+AVhZSmQj9+SoL+p/nN0Hh76xXmF7QcHfytUrI1XfSClk"
+	testMirrorSKey = "PRIVATE+KEY+Mirror1+66ee4561+AeadRiG7XM4XiieCHzD8lxysXMwcViy5nYsoXURWGrlE"
 )
 
 func newWitnessHandler(t *testing.T, logVerifier note.Verifier, witnessSKey string) http.HandlerFunc {
@@ -347,7 +356,23 @@ func TestCheckpointPublisher(t *testing.T) {
 		t.Fatalf("failed to create witness verifier: %v", err)
 	}
 
-	dummyMirrors := NewWitnessGroup(1, wit)
+	mirrorServer := httptest.NewServer(newMirrorHandler(t, testMirrorSKey))
+	t.Cleanup(mirrorServer.Close)
+
+	mirrorServerURL, err := url.Parse(mirrorServer.URL)
+	if err != nil {
+		t.Fatalf("failed to parse mirror server url: %v", err)
+	}
+
+	m, err := NewWitness(testMirrorVKey, mirrorServerURL)
+	if err != nil {
+		t.Fatalf("failed to create mirror: %v", err)
+	}
+	mirrors := NewWitnessGroup(1, m)
+	mirrorVerifier, err := f_note.NewVerifierForCosignatureV1(testMirrorVKey)
+	if err != nil {
+		t.Fatalf("failed to create mirror verifier: %v", err)
+	}
 
 	for _, test := range []struct {
 		desc               string
@@ -366,13 +391,14 @@ func TestCheckpointPublisher(t *testing.T) {
 			expectCosignatures: []note.Verifier{witVerifier},
 		},
 		{
-			desc: "mirrors only",
-			opts: NewAppendOptions().WithCheckpointSigner(logSigner).WithMirrors(dummyMirrors, nil),
+			desc:               "mirrors only",
+			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithMirrors(mirrors, nil),
+			expectCosignatures: []note.Verifier{mirrorVerifier},
 		},
 		{
 			desc:               "witnesses and mirrors",
-			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, nil).WithMirrors(dummyMirrors, nil),
-			expectCosignatures: []note.Verifier{witVerifier},
+			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, nil).WithMirrors(mirrors, nil),
+			expectCosignatures: []note.Verifier{witVerifier, mirrorVerifier},
 		},
 		{
 			desc:         "witness fails, failOpen=false",
@@ -403,13 +429,12 @@ func TestCheckpointPublisher(t *testing.T) {
 				test.opts.WithWitnesses(failingWitnesses, wOpts)
 			}
 
-			lr := &fakeLogReader{
-				readCheckpoint: func(ctx context.Context) ([]byte, error) {
-					return nil, errors.New("no checkpoint yet")
-				},
-			}
+			lr := newFakeLogReaderForTest(t)
 
-			publisher := test.opts.CheckpointPublisher(lr, client)
+			publisher, err := test.opts.CheckpointPublisherContext(t.Context(), lr, client)
+			if err != nil {
+				t.Fatalf("expected error %v but got: %v", test.expectErr, err)
+			}
 			cp, err := publisher(t.Context(), 5, []byte("12345678901234567890123456789012"))
 			if (err != nil) != test.expectErr {
 				t.Fatalf("expected error %v but got: %v", test.expectErr, err)
@@ -432,5 +457,128 @@ func TestCheckpointPublisher(t *testing.T) {
 				t.Errorf("expected %d signatures, got %d", len(wantV), len(n.Sigs))
 			}
 		})
+	}
+}
+
+func newFakeLogReaderForTest(t *testing.T) *fakeLogReader {
+	hasher := rfc6962.DefaultHasher
+	entries := [][]byte{
+		[]byte("entry-0"),
+		[]byte("entry-1"),
+		[]byte("entry-2"),
+		[]byte("entry-3"),
+		[]byte("entry-4"),
+	}
+
+	h0 := hasher.HashLeaf(entries[0])
+	h1 := hasher.HashLeaf(entries[1])
+	h01 := hasher.HashChildren(h0, h1)
+	h2 := hasher.HashLeaf(entries[2])
+	h3 := hasher.HashLeaf(entries[3])
+	h23 := hasher.HashChildren(h2, h3)
+	h0123 := hasher.HashChildren(h01, h23)
+	h4 := hasher.HashLeaf(entries[4])
+
+	tileNodes := [][]byte{h0, h1, h01, h2, h3, h23, h0123, h4}
+	var tileBuf bytes.Buffer
+	for _, n := range tileNodes {
+		tileBuf.Write(n)
+	}
+	tileBytes := tileBuf.Bytes()
+
+	var bundleBuf bytes.Buffer
+	for _, entry := range entries {
+		_ = binary.Write(&bundleBuf, binary.BigEndian, uint16(len(entry)))
+		bundleBuf.Write(entry)
+	}
+	bundleBytes := bundleBuf.Bytes()
+
+	return &fakeLogReader{
+		readCheckpoint: func(ctx context.Context) ([]byte, error) {
+			return nil, os.ErrNotExist
+		},
+		readTile: func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
+			if level == 0 && index == 0 {
+				return tileBytes, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		readEntryBundle: func(ctx context.Context, index uint64, p uint8) ([]byte, error) {
+			if index == 0 {
+				return bundleBytes, nil
+			}
+			return nil, os.ErrNotExist
+		},
+	}
+}
+
+func newMirrorHandler(t *testing.T, mirrorSKey string) http.HandlerFunc {
+	mirrorSigner, err := f_note.NewSignerForCosignatureV1(mirrorSKey)
+	if err != nil {
+		t.Fatalf("failed to create mirror signer: %v", err)
+	}
+	logVerifier, err := note.NewVerifier("example.com/log/testdata+33d7b496+AeHTu4Q3hEIMHNqc6fASMsq3rKNx280NI+oO5xCFkkSx")
+	if err != nil {
+		t.Fatalf("failed to create log verifier: %v", err)
+	}
+
+	var mu sync.Mutex
+	var pendingCP []byte
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/add-checkpoint") {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			parts := bytes.SplitN(body, []byte("\n\n"), 2)
+			if len(parts) == 2 {
+				mu.Lock()
+				pendingCP = parts[1]
+				mu.Unlock()
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/add-entries") {
+			_, _ = io.Copy(io.Discard, r.Body)
+
+			mu.Lock()
+			cp := pendingCP
+			mu.Unlock()
+
+			if len(cp) == 0 {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+
+			// Open and parse the checkpoint note using log's verifier.
+			n, err := note.Open(cp, note.VerifierList(logVerifier))
+			if err != nil {
+				t.Errorf("failed to open checkpoint in mock mirror: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+
+			// Sign it with the mirror signer.
+			signedNote, err := note.Sign(n, mirrorSigner)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			// Extract only the signature line we added.
+			idx := strings.Index(string(signedNote), "\n— "+mirrorSigner.Name()+" ")
+			if idx < 0 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			sigLine := string(signedNote)[idx+1:]
+
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(sigLine))
+			return
+		}
 	}
 }

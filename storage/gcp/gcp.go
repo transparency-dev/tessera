@@ -311,7 +311,11 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoord
 		},
 		nextIndex: a.sequencer.nextIndex,
 	}
-	a.newCP = opts.CheckpointPublisher(reader, s.cfg.HTTPClient)
+	var err error
+	a.newCP, err = opts.CheckpointPublisherContext(ctx, reader, s.cfg.HTTPClient)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create checkpoint publisher: %v", err)
+	}
 
 	if err := a.init(ctx); err != nil {
 		return nil, nil, fmt.Errorf("failed to initialise log storage: %v", err)

@@ -15,10 +15,13 @@
 package tessera
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"sync"
@@ -30,6 +33,7 @@ import (
 	f_log "github.com/transparency-dev/formats/log"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api/layout"
+	m_gateway "github.com/transparency-dev/tessera/internal/mirror/gateway"
 	"github.com/transparency-dev/tessera/internal/otel"
 	"github.com/transparency-dev/tessera/internal/parse"
 	"github.com/transparency-dev/tessera/internal/witness"
@@ -744,8 +748,33 @@ func (o *AppendOptions) WithAntispam(inMemEntries uint, as Antispam) *AppendOpti
 	return o
 }
 
-// CheckpointPublisher returns a function which should be used to create, sign, and potentially witness a new checkpoint.
+// parseURLs converts a list of URL strings to a list of *url.URL, failing if any cannot be parsed.
+func parseURLs(us []string) ([]*url.URL, error) {
+	ret := make([]*url.URL, 0, len(us))
+	for _, s := range us {
+		u, err := url.Parse(s)
+		if err != nil {
+			return nil, err
+		}
+		ret = append(ret, u)
+	}
+	return ret, nil
+}
+
+// CheckpointPublisher should not be used.
+// Deprecated: Use CheckpointPublisherContext.
 func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client) func(context.Context, uint64, []byte) ([]byte, error) {
+	panic("CheckpointPublisher is deprecated, Tessera should be using CheckpointPublisherContext instead.\nPlease file an issue if this has affected you.")
+}
+
+// CheckpointPublisherContext returns a function which should be used to create, sign, and potentially witness and/or mirror a new checkpoint.
+func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogReader, httpClient *http.Client) (func(context.Context, uint64, []byte) ([]byte, error), error) {
+	mirrorGW, err := o.mirrorGateway(ctx, lr)
+	if err != nil {
+		return nil, err
+	}
+
+	// Now return the actual publisher func.
 	return func(ctx context.Context, size uint64, root []byte) ([]byte, error) {
 		return otel.Trace(ctx, "tessera.CheckpointPublisher", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
 			cp, err := o.newCP(ctx, size, root)
@@ -762,11 +791,15 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 				ws, err = witnessCheckpoint(ctx, cp, size, o.witnesses, lr, httpClient, o.witnessOpts)
 				return err
 			})
-			eg.Go(func() error {
-				var err error
-				ms, err = mirrorCheckpoint(ctx, cp, size, o.mirrors, lr, httpClient, o.mirrorOpts)
-				return err
-			})
+			if mirrorGW != nil {
+				eg.Go(func() error {
+					mirrorCtx, cancel := context.WithTimeout(ctx, o.mirrorOpts.Timeout)
+					defer cancel()
+					var err error
+					ms, err = mirrorCheckpoint(mirrorCtx, cp, size, mirrorGW, &o.mirrors, o.mirrorOpts.FailOpen)
+					return err
+				})
+			}
 
 			if err := eg.Wait(); err != nil {
 				return nil, fmt.Errorf("failed to fetch cosignatures: %v", err)
@@ -775,7 +808,28 @@ func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client
 			cp = append(append(slices.Clone(cp), ws...), ms...)
 			return cp, nil
 		})
+	}, nil
+}
+
+// mirrorGateway creates and returns a mirrorGateway instance, or nil if no mirrors are configured.
+func (o AppendOptions) mirrorGateway(ctx context.Context, lr LogReader) (*m_gateway.Gateway, error) {
+	mirrorURLs, err := parseURLs(slices.Collect(maps.Keys(o.mirrors.WitnessEndpoints())))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse mirror URLs: %w", err)
 	}
+	if len(mirrorURLs) == 0 {
+		return nil, nil
+	}
+
+	mirrorGateway, err := m_gateway.NewGateway(ctx, m_gateway.Options{
+		Mirrors:   mirrorURLs,
+		LogReader: lr,
+		LogOrigin: o.primarySigner.Name(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gateway: %w", err)
+	}
+	return mirrorGateway, nil
 }
 
 // witnessCheckpoint takes care of witnessing the given checkpoint with the provided witness policy.
@@ -827,15 +881,38 @@ func witnessCheckpoint(ctx context.Context, cp []byte, cpSize uint64, witnesses 
 	})
 }
 
-// mirrorCheckpoint takes care of mirroring the given checkpoint with the provided mirror policy.
-// Returns signatures from mirrors, ready to append to the checkpoint, or an error.
-func mirrorCheckpoint(ctx context.Context, cp []byte, cpSize uint64, mirrors WitnessGroup, lr LogReader, httpClient *http.Client, opts MirroringOptions) ([]byte, error) {
-	return otel.Trace(ctx, "tessera.mirrorCheckpoint", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
-		if len(mirrors.Components) == 0 {
-			return nil, nil
+func mirrorCheckpoint(ctx context.Context, cp []byte, cpSize uint64, gw *m_gateway.Gateway, policy *WitnessGroup, failOpen bool) ([]byte, error) {
+	// TODO(al): Add metrics
+	checkPolicy := func(sigs []byte, failOpen bool) ([]byte, error) {
+		newCP := append(slices.Clone(cp), sigs...)
+		if !policy.Satisfied(newCP) {
+			if failOpen {
+				slog.WarnContext(ctx, "MirrorGateway: policy not met, failing-open")
+				return sigs, nil
+			}
+			return sigs, fmt.Errorf("MirrorGateway: policy not met")
 		}
-		span.AddEvent("Starting mirroring")
-		return nil, nil
+		return sigs, nil
+	}
+
+	return otel.Trace(ctx, "tessera.mirrorCheckpoint", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		sigCh := gw.CosignCheckpoint(ctx, cp, cpSize)
+		var sigBlock bytes.Buffer
+		for {
+			select {
+			case <-ctx.Done():
+				return checkPolicy(sigBlock.Bytes(), failOpen)
+			case sig, ok := <-sigCh:
+				if !ok {
+					return checkPolicy(sigBlock.Bytes(), failOpen)
+				}
+				sigBlock.Write(sig)
+				// Don't allow failOpen here, or we'll break out of the collection loop prematurely.
+				if sigs, err := checkPolicy(sigBlock.Bytes(), false); err == nil {
+					return sigs, nil
+				}
+			}
+		}
 	})
 }
 

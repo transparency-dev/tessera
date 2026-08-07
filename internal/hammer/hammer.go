@@ -35,7 +35,7 @@ import (
 
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/internal/hammer/loadtest"
-	"golang.org/x/mod/sumdb/note"
+	f_note "github.com/transparency-dev/formats/note"
 	"golang.org/x/net/http2"
 
 	"log/slog"
@@ -108,7 +108,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	logSigV, err := note.NewVerifier(*logPubKey)
+	logSigV, err := f_note.NewVerifier(*logPubKey)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to create verifier", slog.Any("error", err))
 		os.Exit(1)

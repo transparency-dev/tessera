@@ -147,11 +147,16 @@ func (s *Storage) newAppender(ctx context.Context, o *logResourceStorage, opts *
 		return nil, nil, fmt.Errorf("requested CheckpointInterval (%v) is less than minimum permitted %v", opts.CheckpointInterval(), minCheckpointInterval)
 	}
 
+	newCP, err := opts.CheckpointPublisherContext(ctx, o, s.cfg.HTTPClient)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create checkpoint publisher: %v", err)
+	}
+
 	a := &appender{
 		s:          s,
 		logStorage: o,
 		cpUpdated:  make(chan struct{}),
-		newCP:      opts.CheckpointPublisher(o, s.cfg.HTTPClient),
+		newCP:      newCP,
 	}
 	if err := a.initialise(ctx); err != nil {
 		return nil, nil, err
