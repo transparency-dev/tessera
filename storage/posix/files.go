@@ -202,8 +202,8 @@ func (a *appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 }
 
 // lockFile creates/opens a lock file at the specified path, and flocks it.
-// Once locked, the caller perform whatever operations are necessary, before
-// calling the returned function to unlock it.
+// Once locked, the caller performs necessary operations before calling the
+// returned function to unlock it.
 //
 // Note that a) this is advisory, and b) should use an non-API specified file
 // (e.g. <something>.lock>) to avoid inherent brittleness of the `fcntrl` API

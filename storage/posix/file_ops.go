@@ -195,7 +195,7 @@ func overwrite(name string, d []byte) error {
 // Multiple programs or goroutines calling CreateTemp simultaneously will not choose the same file.
 // It is the caller's responsibility to remove the file when it is no longer needed.
 //
-// Ths file data is written with O_SYNC, however the containing directory is NOT sync'd on the assumption
+// This file data is written with O_SYNC, however the containing directory is NOT sync'd on the assumption
 // that this temporary file will be linked/renamed by the caller who will also sync the directory.
 func createTemp(prefix string, d []byte) (name string, err error) {
 	try := 0
