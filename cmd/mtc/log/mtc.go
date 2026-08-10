@@ -26,6 +26,8 @@ import (
 	"github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/entry"
+	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/landmark"
+	"github.com/transparency-dev/tessera/internal/parse"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
 )
@@ -33,6 +35,9 @@ import (
 const (
 	// DefaultAwaiterPollInterval is the fallback polling period for the publication awaiter.
 	DefaultAwaiterPollInterval = 200 * time.Millisecond
+
+	// DefaultLandmarkInterval is the default interval between landmark publications (1 hour).
+	DefaultLandmarkInterval = 1 * time.Hour
 
 	// SPEC: CQRP Policy v0.2.0
 	// "MTC CA Operators MUST NOT issue Subscriber certificates with a
@@ -48,16 +53,19 @@ const (
 
 // Options holds settings for configuring MTCLog instances.
 type Options struct {
-	reader          tessera.LogReader
-	pollPeriod      time.Duration
-	maxCertLifetime time.Duration
+	reader           tessera.LogReader
+	pollPeriod       time.Duration
+	landmarkStorage  landmark.LandmarksStorage
+	landmarkInterval time.Duration
+	maxCertLifetime  time.Duration
 }
 
 // NewOptions creates a new options struct for configuring MTCLog instances.
 func NewOptions() *Options {
 	return &Options{
-		pollPeriod:      DefaultAwaiterPollInterval,
-		maxCertLifetime: DefaultMaxCertLifetime,
+		pollPeriod:       DefaultAwaiterPollInterval,
+		landmarkInterval: DefaultLandmarkInterval,
+		maxCertLifetime:  DefaultMaxCertLifetime,
 	}
 }
 
@@ -65,6 +73,12 @@ func NewOptions() *Options {
 func (o *Options) valid() error {
 	if o.reader == nil {
 		return errors.New("invalid Options: WithTesseraReader must be set")
+	}
+	if o.landmarkStorage == nil {
+		return errors.New("invalid Options: WithLandmarksStorage must be set")
+	}
+	if o.landmarkInterval <= 0 {
+		return errors.New("invalid Options: WithLandmarkInterval must be strictly positive")
 	}
 	if o.pollPeriod < 0 {
 		return errors.New("invalid Options: pollPeriod must be >= 0")
@@ -86,9 +100,24 @@ func (o *Options) WithTesseraReader(r tessera.LogReader) *Options {
 
 // WithAwaiterPollInterval configures the polling period for the publication awaiter.
 // duration MUST be strictly positive, otherwise valid() will fail.
-// If 0, falls back to DefaultAwaiterPollInterval.
+// If unset, falls back to DefaultAwaiterPollInterval.
 func (o *Options) WithAwaiterPollInterval(duration time.Duration) *Options {
 	o.pollPeriod = duration
+	return o
+}
+
+// WithLandmarksStorage configures the LandmarksStorage backend used for active landmarks.
+// storage MUST not be nil, otherwise valid() will fail.
+func (o *Options) WithLandmarksStorage(storage landmark.LandmarksStorage) *Options {
+	o.landmarkStorage = storage
+	return o
+}
+
+// WithLandmarkInterval configures the interval between publishing active landmarks.
+// duration MUST be strictly positive, otherwise valid() will fail.
+// If unset, defaults to DefaultLandmarkInterval.
+func (o *Options) WithLandmarkInterval(duration time.Duration) *Options {
+	o.landmarkInterval = duration
 	return o
 }
 
@@ -104,9 +133,11 @@ func (o *Options) WithMaxCertLifetime(duration time.Duration) *Options {
 }
 
 type MTCLog struct {
-	a               *tessera.Appender
-	awaiter         *tessera.PublicationAwaiter
-	maxCertLifetime time.Duration
+	a                 *tessera.Appender
+	reader            tessera.LogReader
+	awaiter           *tessera.PublicationAwaiter
+	landmarkPublisher *landmark.Publisher
+	maxCertLifetime   time.Duration
 }
 
 // MTCProof represents an MTC inclusion proof as per
@@ -289,10 +320,27 @@ func (l *MTCLog) accept(tbs TBSCertificateLogEntry) error {
 	return nil
 }
 
+func (l *MTCLog) readCheckpointSize(ctx context.Context) (uint64, error) {
+	if l.reader == nil {
+		return 0, errors.New("log reader is not configured")
+	}
+
+	rawCp, err := l.reader.ReadCheckpoint(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("read checkpoint: %w", err)
+	}
+
+	_, size, _, err := parse.CheckpointUnsafe(rawCp)
+	if err != nil {
+		return 0, fmt.Errorf("parse checkpoint: %w", err)
+	}
+
+	return size, nil
+}
+
 // NewMTCLog creates a new MTCLog compliant with
 // draft-ietf-plants-merkle-tree-certs and http://c2sp.org/mtc-tlog.
 func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog, error) {
-	// TODO: schedule landmark publishing
 	if a == nil {
 		return nil, errors.New("appender must not be nil")
 	}
@@ -305,9 +353,17 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 
 	l := &MTCLog{
 		a:               a,
+		reader:          opts.reader,
 		awaiter:         tessera.NewPublicationAwaiter(ctx, opts.reader.ReadCheckpoint, opts.pollPeriod),
 		maxCertLifetime: opts.maxCertLifetime,
 	}
+
+	pub, err := landmark.NewPublisher(ctx, l.readCheckpointSize, opts.landmarkStorage, opts.maxCertLifetime, opts.landmarkInterval)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialise landmark publisher: %w", err)
+	}
+	l.landmarkPublisher = pub
+
 	return l, nil
 }
 

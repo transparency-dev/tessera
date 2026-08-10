@@ -15,8 +15,13 @@
 package landmark
 
 import (
+	"bytes"
+	"context"
+	"os"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 )
 
 func mustNew(t *testing.T, lastLandmark, numActive uint64, treeSizes []uint64) *ActiveLandmarks {
@@ -247,4 +252,154 @@ func TestAddLandmark(t *testing.T) {
 		t.Errorf("AddLandmark(400, 0) expected error for maxActive == 0, got nil")
 	}
 }
+
+type mockStorage struct {
+	mu      sync.Mutex
+	data    []byte
+	modTime time.Time
+}
+
+func (m *mockStorage) ReadLandmarks(ctx context.Context) ([]byte, time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.data) == 0 {
+		return nil, time.Time{}, os.ErrNotExist
+	}
+	return m.data, m.modTime, nil
+}
+
+func (m *mockStorage) UpdateLandmarks(ctx context.Context, fn func(old []byte, oldModTime time.Time) ([]byte, error)) (time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	newData, err := fn(m.data, m.modTime)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if newData != nil && !bytes.Equal(m.data, newData) {
+		m.data = newData
+		m.modTime = time.Now()
+	}
+	return m.modTime, nil
+}
+
+func (m *mockStorage) setModTime(t time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.modTime = t
+}
+
+func TestPublisher_Initialise(t *testing.T) {
+	ctx := context.Background()
+	existingLM := mustNew(t, 1, 1, []uint64{50, 0})
+	existingBytes, _ := existingLM.MarshalText()
+
+	testCases := []struct {
+		name          string
+		initialData   []byte
+		wantLandmarks *ActiveLandmarks
+	}{
+		{
+			name:          "no existing resource: initialises landmark 0",
+			initialData:   nil,
+			wantLandmarks: mustNew(t, 0, 0, []uint64{0}),
+		},
+		{
+			name:          "existing resource: loads existing landmarks",
+			initialData:   existingBytes,
+			wantLandmarks: existingLM,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			loopCtx, cancelLoop := context.WithCancel(ctx)
+			memStorage := &mockStorage{data: tc.initialData}
+			pub, err := NewPublisher(loopCtx, func(ctx context.Context) (uint64, error) { return 0, nil }, memStorage, 24*time.Hour, 1*time.Hour)
+			if err != nil {
+				t.Fatalf("NewPublisher() error: %v", err)
+			}
+			cancelLoop()
+
+			got := pub.published.Load().active
+			if !reflect.DeepEqual(got, tc.wantLandmarks) {
+				t.Errorf("pub.published = %+v, want %+v", got, tc.wantLandmarks)
+			}
+		})
+	}
+}
+
+func TestPublisher_Update(t *testing.T) {
+	ctx := context.Background()
+	loopCtx, cancelLoop := context.WithCancel(ctx)
+	currentSize := uint64(0)
+	readCheckpointSize := func(ctx context.Context) (uint64, error) {
+		return currentSize, nil
+	}
+
+	memStorage := &mockStorage{}
+	pub, err := NewPublisher(loopCtx, readCheckpointSize, memStorage, 24*time.Hour, 1*time.Hour)
+	if err != nil {
+		t.Fatalf("NewPublisher() error: %v", err)
+	}
+	cancelLoop()
+
+	// Verify initial state (landmark 0 at size 0).
+	wantInit := mustNew(t, 0, 0, []uint64{0})
+	if got := pub.published.Load().active; !reflect.DeepEqual(got, wantInit) {
+		t.Fatalf("initial landmarks = %+v, want %+v", got, wantInit)
+	}
+
+	now := time.Now()
+	testCases := []struct {
+		name          string
+		currentSize   uint64
+		lastPublished time.Time
+		wantLandmarks *ActiveLandmarks
+	}{
+		{
+			name:          "skip because last update too recent",
+			currentSize:   50,
+			lastPublished: now,
+			wantLandmarks: mustNew(t, 0, 0, []uint64{0}),
+		},
+		{
+			name:          "publish new landmark on tree growth after interval",
+			currentSize:   50,
+			lastPublished: now.Add(-2 * time.Hour),
+			wantLandmarks: mustNew(t, 1, 1, []uint64{50, 0}),
+		},
+		{
+			name:          "skip because tree has not grown",
+			currentSize:   50,
+			lastPublished: now.Add(-2 * time.Hour),
+			wantLandmarks: mustNew(t, 1, 1, []uint64{50, 0}),
+		},
+		{
+			name:          "publish next landmark on further tree growth",
+			currentSize:   100,
+			lastPublished: now.Add(-2 * time.Hour),
+			wantLandmarks: mustNew(t, 2, 2, []uint64{100, 50, 0}),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			currentSize = tc.currentSize
+			memStorage.setModTime(tc.lastPublished)
+
+			nextIn, err := pub.Update(ctx)
+			if err != nil {
+				t.Fatalf("Update() error: %v", err)
+			}
+			if nextIn <= 0 {
+				t.Errorf("Update() nextIn = %v, want > 0", nextIn)
+			}
+			got := pub.published.Load().active
+			if !reflect.DeepEqual(got, tc.wantLandmarks) {
+				t.Errorf("published landmarks = %+v, want %+v", got, tc.wantLandmarks)
+			}
+		})
+	}
+}
+
 
