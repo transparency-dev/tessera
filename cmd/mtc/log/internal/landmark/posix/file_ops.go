@@ -1,4 +1,4 @@
-// Copyright 2025 The Tessera authors. All Rights Reserved.
+// Copyright 2026 The Tessera authors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
 package posix
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -106,56 +105,6 @@ func mkdirAll(name string, perm os.FileMode) error {
 	}
 }
 
-// createEx atomically creates a file at the given path containing the provided data, and syncs the
-// directory containing the newly created file.
-//
-// Returns an error if a file already exists at the specified location, or it's unable to fully write the
-// data & close the file.
-func createEx(name string, d []byte) error {
-	dir := filepath.Dir(name)
-	if err := mkdirAll(dir, dirPerm); err != nil {
-		return fmt.Errorf("failed to make directory structure: %w", err)
-	}
-	return syncDir(dir, func() error {
-		tmpName, err := createTemp(name, d)
-		if err != nil {
-			return fmt.Errorf("failed to create temp file: %w", err)
-		}
-		defer func() {
-			if err := os.Remove(tmpName); err != nil {
-				slog.WarnContext(context.Background(), "Failed to remove temporary file", slog.String("tmpname", tmpName), slog.Any("error", err))
-			}
-		}()
-
-		if err := os.Link(tmpName, name); err != nil {
-			// Wrap the error here because we need to know if it's os.ErrExist at higher levels.
-			return fmt.Errorf("failed to link temporary file to target %q: %w", name, err)
-		}
-		return nil
-	})
-}
-
-// createIdempotent atomically creates a file at the given path containing the provided data, and syncs the
-// directory containing the newly created file.
-//
-// Returns an error if a file already exists at the specified location and it contents are not identical to
-// the provided data, or if it's unable to fully write the data & close the file.
-func createIdempotent(name string, d []byte) error {
-	if err := createEx(name, d); err != nil {
-		if !errors.Is(err, os.ErrExist) {
-			return err
-		}
-		e, err := os.ReadFile(name)
-		if err != nil {
-			return fmt.Errorf("failed to read existing file: %w", err)
-		}
-		if !bytes.Equal(e, d) {
-			return fmt.Errorf("existing file %q has different contents", name)
-		}
-	}
-	return nil
-}
-
 // overwrite atomically creates/overwrites a file at the given path containing the provided data, and syncs
 // the directory containing the overwritten/created file.
 func overwrite(name string, d []byte) error {
@@ -195,7 +144,7 @@ func overwrite(name string, d []byte) error {
 // Multiple programs or goroutines calling CreateTemp simultaneously will not choose the same file.
 // It is the caller's responsibility to remove the file when it is no longer needed.
 //
-// Ths file data is written with O_SYNC, however the containing directory is NOT sync'd on the assumption
+// This file data is written with O_SYNC, however the containing directory is NOT sync'd on the assumption
 // that this temporary file will be linked/renamed by the caller who will also sync the directory.
 func createTemp(prefix string, d []byte) (name string, err error) {
 	try := 0

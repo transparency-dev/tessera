@@ -1,10 +1,10 @@
-// Copyright 2025 The Tessera authors. All Rights Reserved.
+// Copyright 2026 The Tessera authors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//	http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,8 +22,8 @@ import (
 )
 
 // lockFile creates/opens a lock file at the specified path, and flocks it.
-// Once locked, the caller perform whatever operations are necessary, before
-// calling the returned function to unlock it.
+// Once locked, the caller performs necessary operations before calling the
+// returned function to unlock it.
 //
 // Note that a) this is advisory, and b) should use an non-API specified file
 // (e.g. <something>.lock>) to avoid inherent brittleness of the `fcntrl` API
@@ -35,7 +35,6 @@ func lockFile(ctx context.Context, p string) (func() error, error) {
 		return nil, err
 	}
 
-	// Keep trying until we manage to get a lock without being interrupted.
 	for {
 		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != syscall.EINTR {
 			if err != nil {
