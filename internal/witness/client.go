@@ -44,10 +44,6 @@ import (
 	"github.com/transparency-dev/witness/witness"
 )
 
-const (
-	maxUpdateRetries = 5
-)
-
 var (
 	witnessClientReqsTotal    metric.Int64Counter
 	witnessClientReqHistogram metric.Int64Histogram
@@ -112,10 +108,13 @@ func NewGateway(ctx context.Context, opts Options) (*WitnessGateway, error) {
 	}
 
 	witnesses := make([]*witnessClient, 0, len(opts.Witnesses))
-	for _, w := range dedup(opts.Witnesses) {
-		if w.URL == nil || w.URL.String() == "" {
-			return nil, fmt.Errorf("no URL for witness")
-		}
+	if ddw, err := dedup(opts.Witnesses); err != nil {
+		return nil, err
+	} else {
+		opts.Witnesses = ddw
+	}
+
+	for _, w := range opts.Witnesses {
 		if len(w.Verifiers) == 0 {
 			return nil, fmt.Errorf("no verifiers for witness %s", w.URL.String())
 		}
@@ -132,10 +131,13 @@ func NewGateway(ctx context.Context, opts Options) (*WitnessGateway, error) {
 }
 
 // dedup merges witnesses with the same URL, deduplicating verifiers within each witness.
-func dedup(ws []Witness) []Witness {
+func dedup(ws []Witness) ([]Witness, error) {
 	// Collapse by URL, grouping verifiers if necessary
 	d := make(map[string]*Witness)
-	for _, w := range ws {
+	for i, w := range ws {
+		if w.URL == nil || w.URL.String() == "" {
+			return nil, fmt.Errorf("empty URL for witness at index %d", i)
+		}
 		uStr := w.URL.String()
 		if wit, ok := d[uStr]; !ok {
 			d[uStr] = &w
@@ -166,7 +168,7 @@ func dedup(ws []Witness) []Witness {
 			Verifiers: vs,
 		})
 	}
-	return out
+	return out, nil
 }
 
 // WitnessGateway allows a log implementation to send out a checkpoint to witnesses.
@@ -289,16 +291,22 @@ func names(w []note.Verifier) []string {
 }
 
 func (w *witnessClient) update(ctx context.Context, cp []byte, cpSize uint64, fetchProof func(ctx context.Context, from, to uint64) ([][]byte, error)) ([]byte, error) {
+	const maxUpdateRetries = 3
+	// Set InitialInterval low so that we handle catching up after StatusConflict/ErrCheckpointStale quickly.
+	// But ramp up quickly to avoid DoSing witnesses.
+	retryBackoff := &backoff.ExponentialBackOff{
+		InitialInterval: 10 * time.Millisecond,
+		MaxInterval:     250 * time.Millisecond,
+		Multiplier:      5,
+	}
+
 	return otel.Trace(ctx, "tessera.witness.update", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
 		witNames := names(w.verifiers)
 		nameAttr := witnessNameKey.String(strings.Join(witNames, ","))
 
-		exp := backoff.NewExponentialBackOff()
-		exp.InitialInterval = 10 * time.Millisecond
-		exp.MaxInterval = 200 * time.Millisecond
-		exp.Multiplier = 2
-
-		return backoff.Retry(ctx, func() ([]byte, error) {
+		// doUpdate implements a single attempt at updating the witness.
+		// Used in the backoff.Retry() call below.
+		doUpdate := func() ([]byte, error) {
 			var (
 				proof [][]byte
 				err   error
@@ -318,6 +326,10 @@ func (w *witnessClient) update(ctx context.Context, cp []byte, cpSize uint64, fe
 				witnessClientRespsTotal.Add(ctx, 1, metric.WithAttributes(nameAttr, statusAttr))
 
 				if errors.Is(err, witness.ErrCheckpointStale) {
+					if actualSize > cpSize {
+						// This should _never_ happen - the witness somehow knows about a checkpoint larger than we have.
+						return nil, fmt.Errorf("witness at %q replied with x.tlog.size %d, larger than log size %d", w.url, actualSize, cpSize)
+					}
 					w.oldSize = actualSize
 					// Don't mark as permanent so that the backoff will retry.
 					return nil, err
@@ -331,9 +343,12 @@ func (w *witnessClient) update(ctx context.Context, cp []byte, cpSize uint64, fe
 			witnessClientReqHistogram.Record(ctx, d.Milliseconds(), metric.WithAttributes(nameAttr, statusAttr))
 			w.oldSize = cpSize
 			return sigs, nil
-		},
+		}
+
+		// Try the update with back-off.
+		return backoff.Retry(ctx, doUpdate,
 			backoff.WithMaxTries(maxUpdateRetries),
-			backoff.WithBackOff(exp),
+			backoff.WithBackOff(retryBackoff),
 		)
 	})
 }
