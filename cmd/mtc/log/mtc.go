@@ -392,7 +392,7 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 
 	pub, err := landmark.NewPublisher(ctx, l.readCheckpointSize, opts.landmarkStorage, opts.maxCertLifetime, interval)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialise landmark publisher: %w", err)
+		return nil, fmt.Errorf("failed to initialise landmark publisher: %v", err)
 	}
 	l.landmarkPublisher = pub
 
