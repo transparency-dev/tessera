@@ -21,6 +21,7 @@ import (
 	stdasn1 "encoding/asn1"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/transparency-dev/formats/note"
@@ -36,13 +37,35 @@ const (
 	// DefaultAwaiterPollInterval is the fallback polling period for the publication awaiter.
 	DefaultAwaiterPollInterval = 200 * time.Millisecond
 
-	// DefaultLandmarkInterval is the default interval between landmark publications (1 hour).
-	DefaultLandmarkInterval = 1 * time.Hour
-
 	// SPEC: CQRP Policy v0.2.0
 	// "MTC CA Operators MUST NOT issue Subscriber certificates with a
 	// validity period exceeding 47 days."
 	DefaultMaxCertLifetime = 47 * 24 * time.Hour
+)
+
+// RecommendedLandmarkInterval returns the recommended landmark publication interval
+// for a given maximum certificate lifetime, based on CQRP Policy v0.2.0 values.
+//
+// - Up to 15 days: 1 hour (CQRP recommendation for 7-day certs)
+// - Up to 30 days: 2 hours
+// - Up to 47 days: 4 hours (CQRP recommendation for 47-day certs)
+func RecommendedLandmarkInterval(maxCertLifetime time.Duration) time.Duration {
+	// SPEC: CQRP Policy v0.2.0
+	// "For CA Cosigners with a maximum permitted certificate validity of up to
+	// 7 days, MTC CA landmarks SHOULD be generated approximately every hour"
+	if maxCertLifetime <= 15*24*time.Hour {
+		return 1 * time.Hour
+	}
+	if maxCertLifetime <= 30*24*time.Hour {
+		return 2 * time.Hour
+	}
+	// SPEC: CQRP Policy v0.2.0
+	// "For CA Cosigners with a maximum permitted certificate validity of up to
+	// 47 days, MTC CA landmarks SHOULD be generated approximately 4 hour"
+	return 4 * time.Hour
+}
+
+const (
 
 	// SPEC: draft-ietf-plants-merkle-tree-certs section 5.3.1.
 	// "cosigner_name and log_origin are computed from the cosigner ID and the
@@ -63,9 +86,8 @@ type Options struct {
 // NewOptions creates a new options struct for configuring MTCLog instances.
 func NewOptions() *Options {
 	return &Options{
-		pollPeriod:       DefaultAwaiterPollInterval,
-		landmarkInterval: DefaultLandmarkInterval,
-		maxCertLifetime:  DefaultMaxCertLifetime,
+		pollPeriod:      DefaultAwaiterPollInterval,
+		maxCertLifetime: DefaultMaxCertLifetime,
 	}
 }
 
@@ -77,8 +99,8 @@ func (o *Options) valid() error {
 	if o.landmarkStorage == nil {
 		return errors.New("invalid Options: WithLandmarksStorage must be set")
 	}
-	if o.landmarkInterval <= 0 {
-		return errors.New("invalid Options: WithLandmarkInterval must be strictly positive")
+	if o.landmarkInterval < 0 {
+		return errors.New("invalid Options: WithLandmarkInterval must be >= 0")
 	}
 	if o.pollPeriod < 0 {
 		return errors.New("invalid Options: pollPeriod must be >= 0")
@@ -114,8 +136,8 @@ func (o *Options) WithLandmarksStorage(storage landmark.LandmarksStorage) *Optio
 }
 
 // WithLandmarkInterval configures the interval between publishing active landmarks.
-// duration MUST be strictly positive, otherwise valid() will fail.
-// If unset, defaults to DefaultLandmarkInterval.
+// duration MUST be >= 0, otherwise valid() will fail.
+// If 0 or unset, defaults to RecommendedLandmarkInterval(maxCertLifetime).
 func (o *Options) WithLandmarkInterval(duration time.Duration) *Options {
 	o.landmarkInterval = duration
 	return o
@@ -358,7 +380,17 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 		maxCertLifetime: opts.maxCertLifetime,
 	}
 
-	pub, err := landmark.NewPublisher(ctx, l.readCheckpointSize, opts.landmarkStorage, opts.maxCertLifetime, opts.landmarkInterval)
+	interval := opts.landmarkInterval
+	if interval <= 0 {
+		interval = RecommendedLandmarkInterval(opts.maxCertLifetime)
+	} else if rec := RecommendedLandmarkInterval(opts.maxCertLifetime); interval != rec {
+		slog.WarnContext(ctx, "configured landmark interval differs from CQRP recommendation",
+			slog.Duration("configured", interval),
+			slog.Duration("recommended", rec),
+		)
+	}
+
+	pub, err := landmark.NewPublisher(ctx, l.readCheckpointSize, opts.landmarkStorage, opts.maxCertLifetime, interval)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialise landmark publisher: %w", err)
 	}

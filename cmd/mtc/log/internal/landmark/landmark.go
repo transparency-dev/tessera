@@ -23,7 +23,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
@@ -33,6 +32,19 @@ const (
 
 	// publishRetryOnFailure configures when to schedule a new publication upon failure.
 	publishRetryOnFailure = time.Second * 5
+
+	// MaxActiveLandmarks is the maximum allowed number of active landmarks over
+	// any certificate validity period.
+	//
+	// SPEC: CQRP Policy v0.2.0
+	// "MTC CA Operators MUST NOT issue Subscriber certificates with a validity
+	// period exceeding 47 days."
+	//
+	// SPEC: CQRP Policy v0.2.0
+	// "For CA Cosigners with a maximum permitted certificate validity of up to 47
+	// days, MTC CA landmarks SHOULD be generated approximately every four 4 hours,
+	// and MUST NOT exceed a total of 370 landmarks over any 47-day period."
+	MaxActiveLandmarks = 370
 )
 
 // ReadCheckpointSize returns the current log checkpoint size.
@@ -207,19 +219,12 @@ func (a *ActiveLandmarks) AddLandmark(treeSize, maxActive uint64) error {
 	return nil
 }
 
-type published struct {
-	active *ActiveLandmarks
-	pubAt  time.Time
-}
-
 // Publisher manages publication of the landmarks resource at regular intervals.
 type Publisher struct {
 	storage            LandmarksStorage
 	readCheckpointSize ReadCheckpointSize
 	maxActive          uint64
 	pubInterval        time.Duration
-
-	published atomic.Pointer[published]
 }
 
 // NewPublisher creates a new Publisher instance.
@@ -236,8 +241,21 @@ func NewPublisher(ctx context.Context, readCheckpointSize ReadCheckpointSize, st
 	if pubInterval <= 0 {
 		return nil, errors.New("pubInterval must be strictly positive")
 	}
+	if pubInterval > maxCertLifetime {
+		return nil, fmt.Errorf("pubInterval (%v) must not exceed maxCertLifetime (%v)", pubInterval, maxCertLifetime)
+	}
 
-	maxActive := uint64(math.Ceil(float64(maxCertLifetime) / float64(pubInterval)))
+	// SPEC: draft-ietf-plants-merkle-tree-certs section 6.4.3.
+	// "To ensure that only active landmarks contain unexpired certificates,
+	// max_active_landmarks is set to ceil(max_cert_lifetime / time_between_landmarks) + 1,
+	// where max_cert_lifetime is the CA's maximum certificate lifetime.
+	// The + 1 accounts for landmarks not allocated at the exact start of their time interval,
+	// which can push certificate expiry one interval further than
+	// ceil(max_cert_lifetime / time_between_landmarks) alone would bound."
+	maxActive := uint64(math.Ceil(float64(maxCertLifetime)/float64(pubInterval))) + 1
+	if maxActive > MaxActiveLandmarks {
+		return nil, fmt.Errorf("max active landmarks (%d) exceeds limit (%d); increase pubInterval or decrease maxCertLifetime", maxActive, MaxActiveLandmarks)
+	}
 
 	p := &Publisher{
 		storage:            storage,
@@ -261,7 +279,7 @@ func (p *Publisher) initialise(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create initial landmark 0: %w", err)
 	}
-	modTime, err := p.storage.UpdateLandmarks(ctx, func(old []byte, _ time.Time) ([]byte, error) {
+	_, err = p.storage.UpdateLandmarks(ctx, func(old []byte, _ time.Time) ([]byte, error) {
 		if len(old) == 0 {
 			return activeLM.MarshalText()
 		}
@@ -275,30 +293,29 @@ func (p *Publisher) initialise(ctx context.Context) error {
 		return fmt.Errorf("failed to initialise active landmarks: %w", err)
 	}
 
-	p.published.Store(&published{
-		active: activeLM,
-		pubAt:  modTime,
-	})
 	return nil
 }
 
 // start runs the background landmark publishing loop until ctx is canceled.
 func (p *Publisher) start(ctx context.Context) {
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
+			if ctx.Err() != nil {
+				return
+			}
 			nextIn, err := p.Update(ctx)
 			if err != nil {
 				slog.ErrorContext(ctx, "landmarks update: failed", slog.Any("error", err), slog.Duration("next-in", publishRetryOnFailure))
-				ticker.Reset(publishRetryOnFailure)
+				timer.Reset(publishRetryOnFailure)
 				continue
 			}
-			ticker.Reset(nextIn)
+			timer.Reset(nextIn)
 		}
 	}
 }
@@ -329,7 +346,10 @@ func (p *Publisher) Update(ctx context.Context) (time.Duration, error) {
 			slog.DebugContext(ctx, "landmarks update: skipping landmarks write because last update too recent", slog.Time("lastUpdate", oldModTime))
 			return old, nil
 		}
-		if cpSize <= active.latestTreeSize() {
+		if cpSize < active.latestTreeSize() {
+			return nil, fmt.Errorf("checkpoint size (%d) smaller than last landmark size (%d)", cpSize, active.latestTreeSize())
+		}
+		if cpSize == active.latestTreeSize() {
 			grown = false
 			slog.DebugContext(ctx, "landmarks update: skipping landmarks write because tree has not grown", slog.Uint64("cpSize", cpSize))
 			return old, nil
@@ -345,11 +365,6 @@ func (p *Publisher) Update(ctx context.Context) (time.Duration, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to update landmarks resource: %v", err)
 	}
-
-	p.published.Store(&published{
-		active: active,
-		pubAt:  modTime,
-	})
 
 	next := p.pubInterval
 	if grown {

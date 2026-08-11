@@ -422,9 +422,9 @@ func TestMTCOptionsValid(t *testing.T) {
 			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}),
 			wantErr: true,
 		}, {
-			name:    "Error: Zero LandmarkInterval",
+			name:    "Valid: Zero LandmarkInterval defaults to recommended",
 			opts:    newDummyOptions().WithLandmarkInterval(0),
-			wantErr: true,
+			wantErr: false,
 		}, {
 			name:    "Error: Negative LandmarkInterval",
 			opts:    newDummyOptions().WithLandmarkInterval(-1 * time.Hour),
@@ -453,6 +453,27 @@ func TestMTCOptionsValid(t *testing.T) {
 				t.Errorf("valid() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestRecommendedLandmarkInterval(t *testing.T) {
+	tests := []struct {
+		lifetime time.Duration
+		want     time.Duration
+	}{
+		{lifetime: 1 * time.Hour, want: 1 * time.Hour},
+		{lifetime: 7 * 24 * time.Hour, want: 1 * time.Hour},
+		{lifetime: 15 * 24 * time.Hour, want: 1 * time.Hour},
+		{lifetime: 16 * 24 * time.Hour, want: 2 * time.Hour},
+		{lifetime: 25 * 24 * time.Hour, want: 2 * time.Hour},
+		{lifetime: 30 * 24 * time.Hour, want: 2 * time.Hour},
+		{lifetime: 31 * 24 * time.Hour, want: 4 * time.Hour},
+		{lifetime: 47 * 24 * time.Hour, want: 4 * time.Hour},
+	}
+	for _, tc := range tests {
+		if got := RecommendedLandmarkInterval(tc.lifetime); got != tc.want {
+			t.Errorf("RecommendedLandmarkInterval(%v) = %v, want %v", tc.lifetime, got, tc.want)
+		}
 	}
 }
 
@@ -616,8 +637,43 @@ func TestNewMTCLog(t *testing.T) {
 		}
 	})
 
-	t.Run("valid", func(t *testing.T) {
+	t.Run("valid default options (47-day certs)", func(t *testing.T) {
 		logInst, err := NewMTCLog(ctx, &tessera.Appender{}, opts)
+		if err != nil {
+			t.Fatalf("NewMTCLog unexpected error: %v", err)
+		}
+		if logInst == nil {
+			t.Fatal("NewMTCLog returned nil instance")
+		}
+	})
+
+	t.Run("valid 7-day certs with default interval", func(t *testing.T) {
+		opts7d := newDummyOptions().WithMaxCertLifetime(7 * 24 * time.Hour)
+		logInst, err := NewMTCLog(ctx, &tessera.Appender{}, opts7d)
+		if err != nil {
+			t.Fatalf("NewMTCLog unexpected error: %v", err)
+		}
+		if logInst == nil {
+			t.Fatal("NewMTCLog returned nil instance")
+		}
+	})
+
+	t.Run("valid explicit 0 interval defaults to recommended", func(t *testing.T) {
+		opts0 := newDummyOptions().WithLandmarkInterval(0)
+		logInst, err := NewMTCLog(ctx, &tessera.Appender{}, opts0)
+		if err != nil {
+			t.Fatalf("NewMTCLog unexpected error: %v", err)
+		}
+		if logInst == nil {
+			t.Fatal("NewMTCLog returned nil instance")
+		}
+	})
+
+	t.Run("valid custom landmark interval", func(t *testing.T) {
+		optsCustom := newDummyOptions().
+			WithMaxCertLifetime(20 * 24 * time.Hour).
+			WithLandmarkInterval(2 * time.Hour)
+		logInst, err := NewMTCLog(ctx, &tessera.Appender{}, optsCustom)
 		if err != nil {
 			t.Fatalf("NewMTCLog unexpected error: %v", err)
 		}

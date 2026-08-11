@@ -43,7 +43,7 @@ var (
 	// Tessera settings
 	storageDir                = flag.String("storage_dir", "", "Path to root of log storage.")
 	checkpointInterval        = flag.Duration("checkpoint_interval", 1500*time.Millisecond, "Interval between publishing checkpoints when the log has grown")
-	landmarkInterval          = flag.Duration("landmark_interval", 1*time.Hour, "Interval between publishing landmarks.")
+	landmarkInterval          = flag.Duration("landmark_interval", 0, "Interval between publishing landmarks. If 0, defaults to CQRP recommended interval for max_cert_lifetime.")
 	batchMaxSize              = flag.Uint("batch_max_size", tessera.DefaultBatchMaxSize, "Maximum number of entries to process in a single sequencing batch.")
 	batchMaxAge               = flag.Duration("batch_max_age", tessera.DefaultBatchMaxAge, "Maximum age of entries in a single sequencing batch.")
 	awaiterPollInterval       = flag.Duration("awaiter_poll_interval", 100*time.Millisecond, "Interval between checkpoint polls by the publication awaiter.")

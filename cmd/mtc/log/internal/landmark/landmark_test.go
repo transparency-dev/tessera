@@ -314,15 +314,22 @@ func TestPublisher_Initialise(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			loopCtx, cancelLoop := context.WithCancel(ctx)
 			memStorage := &mockStorage{data: tc.initialData}
-			pub, err := NewPublisher(loopCtx, func(ctx context.Context) (uint64, error) { return 0, nil }, memStorage, 24*time.Hour, 1*time.Hour)
+			_, err := NewPublisher(loopCtx, func(ctx context.Context) (uint64, error) { return 0, nil }, memStorage, 24*time.Hour, 1*time.Hour)
 			if err != nil {
 				t.Fatalf("NewPublisher() error: %v", err)
 			}
 			cancelLoop()
 
-			got := pub.published.Load().active
+			data, _, err := memStorage.ReadLandmarks(ctx)
+			if err != nil {
+				t.Fatalf("memStorage.ReadLandmarks() error: %v", err)
+			}
+			got := &ActiveLandmarks{}
+			if err := got.UnmarshalText(data); err != nil {
+				t.Fatalf("UnmarshalText() error: %v", err)
+			}
 			if !reflect.DeepEqual(got, tc.wantLandmarks) {
-				t.Errorf("pub.published = %+v, want %+v", got, tc.wantLandmarks)
+				t.Errorf("stored landmarks = %+v, want %+v", got, tc.wantLandmarks)
 			}
 		})
 	}
@@ -337,7 +344,8 @@ func TestPublisher_Update(t *testing.T) {
 	}
 
 	memStorage := &mockStorage{}
-	pub, err := NewPublisher(loopCtx, readCheckpointSize, memStorage, 24*time.Hour, 1*time.Hour)
+	// maxCertLifetime = 1h, pubInterval = 1h => maxActive = ceil(1/1) + 1 = 2
+	pub, err := NewPublisher(loopCtx, readCheckpointSize, memStorage, 1*time.Hour, 1*time.Hour)
 	if err != nil {
 		t.Fatalf("NewPublisher() error: %v", err)
 	}
@@ -345,8 +353,16 @@ func TestPublisher_Update(t *testing.T) {
 
 	// Verify initial state (landmark 0 at size 0).
 	wantInit := mustNew(t, 0, 0, []uint64{0})
-	if got := pub.published.Load().active; !reflect.DeepEqual(got, wantInit) {
-		t.Fatalf("initial landmarks = %+v, want %+v", got, wantInit)
+	data, _, err := memStorage.ReadLandmarks(ctx)
+	if err != nil {
+		t.Fatalf("memStorage.ReadLandmarks() error: %v", err)
+	}
+	gotInit := &ActiveLandmarks{}
+	if err := gotInit.UnmarshalText(data); err != nil {
+		t.Fatalf("UnmarshalText() error: %v", err)
+	}
+	if !reflect.DeepEqual(gotInit, wantInit) {
+		t.Fatalf("initial landmarks = %+v, want %+v", gotInit, wantInit)
 	}
 
 	now := time.Now()
@@ -355,6 +371,7 @@ func TestPublisher_Update(t *testing.T) {
 		currentSize   uint64
 		lastPublished time.Time
 		wantLandmarks *ActiveLandmarks
+		wantErr       bool
 	}{
 		{
 			name:          "skip because last update too recent",
@@ -375,10 +392,22 @@ func TestPublisher_Update(t *testing.T) {
 			wantLandmarks: mustNew(t, 1, 1, []uint64{50, 0}),
 		},
 		{
-			name:          "publish next landmark on further tree growth",
+			name:          "publish next landmark on further tree growth without pruning (maxActive is 2 due to +1)",
 			currentSize:   100,
 			lastPublished: now.Add(-2 * time.Hour),
 			wantLandmarks: mustNew(t, 2, 2, []uint64{100, 50, 0}),
+		},
+		{
+			name:          "publish next landmark on further tree growth with pruning",
+			currentSize:   150,
+			lastPublished: now.Add(-2 * time.Hour),
+			wantLandmarks: mustNew(t, 3, 2, []uint64{150, 100, 50}),
+		},
+		{
+			name:          "error when checkpoint size is smaller than last landmark size",
+			currentSize:   120,
+			lastPublished: now.Add(-2 * time.Hour),
+			wantErr:       true,
 		},
 	}
 
@@ -388,18 +417,156 @@ func TestPublisher_Update(t *testing.T) {
 			memStorage.setModTime(tc.lastPublished)
 
 			nextIn, err := pub.Update(ctx)
-			if err != nil {
-				t.Fatalf("Update() error: %v", err)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Update() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
 			}
 			if nextIn <= 0 {
 				t.Errorf("Update() nextIn = %v, want > 0", nextIn)
 			}
-			got := pub.published.Load().active
+			data, _, err := memStorage.ReadLandmarks(ctx)
+			if err != nil {
+				t.Fatalf("memStorage.ReadLandmarks() error: %v", err)
+			}
+			got := &ActiveLandmarks{}
+			if err := got.UnmarshalText(data); err != nil {
+				t.Fatalf("UnmarshalText() error: %v", err)
+			}
 			if !reflect.DeepEqual(got, tc.wantLandmarks) {
 				t.Errorf("published landmarks = %+v, want %+v", got, tc.wantLandmarks)
 			}
 		})
 	}
 }
+
+func TestNewPublisher(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	dummyReader := func(ctx context.Context) (uint64, error) { return 0, nil }
+	dummyStorage := &mockStorage{}
+
+	tests := []struct {
+		name               string
+		readCheckpointSize ReadCheckpointSize
+		storage            LandmarksStorage
+		maxCertLifetime    time.Duration
+		pubInterval        time.Duration
+		wantErr            bool
+		wantMaxActive      uint64
+	}{
+		{
+			name:               "valid exact division",
+			readCheckpointSize: dummyReader,
+			storage:            dummyStorage,
+			maxCertLifetime:    24 * time.Hour,
+			pubInterval:        1 * time.Hour,
+			wantMaxActive:      25, // ceil(24/1) + 1 = 25
+		},
+		{
+			name:               "valid inexact division rounds up plus one",
+			readCheckpointSize: dummyReader,
+			storage:            dummyStorage,
+			maxCertLifetime:    25 * time.Hour,
+			pubInterval:        2 * time.Hour,
+			wantMaxActive:      14, // ceil(12.5) + 1 = 13 + 1 = 14
+		},
+		{
+			name:               "valid lifetime equal to interval",
+			readCheckpointSize: dummyReader,
+			storage:            dummyStorage,
+			maxCertLifetime:    1 * time.Hour,
+			pubInterval:        1 * time.Hour,
+			wantMaxActive:      2, // ceil(1/1) + 1 = 2
+		},
+		{
+			name:               "valid 47-day lifetime with 4-hour interval",
+			readCheckpointSize: dummyReader,
+			storage:            dummyStorage,
+			maxCertLifetime:    47 * 24 * time.Hour,
+			pubInterval:        4 * time.Hour,
+			wantMaxActive:      283, // ceil(1128/4) + 1 = 283
+		},
+		{
+			name:               "pubInterval exceeds maxCertLifetime",
+			readCheckpointSize: dummyReader,
+			storage:            dummyStorage,
+			maxCertLifetime:    10 * time.Minute,
+			pubInterval:        15 * time.Minute,
+			wantErr:            true,
+		},
+		{
+			name:               "maxActive exceeds limit (47 days with 1-hour interval yields 1129 > 370)",
+			readCheckpointSize: dummyReader,
+			storage:            dummyStorage,
+			maxCertLifetime:    47 * 24 * time.Hour,
+			pubInterval:        1 * time.Hour,
+			wantErr:            true,
+		},
+		{
+			name:               "nil storage",
+			readCheckpointSize: dummyReader,
+			storage:            nil,
+			maxCertLifetime:    24 * time.Hour,
+			pubInterval:        1 * time.Hour,
+			wantErr:            true,
+		},
+		{
+			name:               "nil readCheckpointSize",
+			readCheckpointSize: nil,
+			storage:            dummyStorage,
+			maxCertLifetime:    24 * time.Hour,
+			pubInterval:        1 * time.Hour,
+			wantErr:            true,
+		},
+		{
+			name:               "zero maxCertLifetime",
+			readCheckpointSize: dummyReader,
+			storage:            dummyStorage,
+			maxCertLifetime:    0,
+			pubInterval:        1 * time.Hour,
+			wantErr:            true,
+		},
+		{
+			name:               "negative maxCertLifetime",
+			readCheckpointSize: dummyReader,
+			storage:            dummyStorage,
+			maxCertLifetime:    -1 * time.Hour,
+			pubInterval:        1 * time.Hour,
+			wantErr:            true,
+		},
+		{
+			name:               "zero pubInterval",
+			readCheckpointSize: dummyReader,
+			storage:            dummyStorage,
+			maxCertLifetime:    24 * time.Hour,
+			pubInterval:        0,
+			wantErr:            true,
+		},
+		{
+			name:               "negative pubInterval",
+			readCheckpointSize: dummyReader,
+			storage:            dummyStorage,
+			maxCertLifetime:    24 * time.Hour,
+			pubInterval:        -1 * time.Hour,
+			wantErr:            true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pub, err := NewPublisher(ctx, tc.readCheckpointSize, tc.storage, tc.maxCertLifetime, tc.pubInterval)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("NewPublisher() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if !tc.wantErr && pub.maxActive != tc.wantMaxActive {
+				t.Errorf("pub.maxActive = %d, want %d", pub.maxActive, tc.wantMaxActive)
+			}
+		})
+	}
+}
+
 
 
