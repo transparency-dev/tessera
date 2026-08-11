@@ -132,7 +132,7 @@ func TestWitnessGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	testCases := []struct {
+	for _, test := range []struct {
 		desc             string
 		witnesses        []witness.Witness
 		wantSigs         int
@@ -206,15 +206,14 @@ func TestWitnessGateway(t *testing.T) {
 			wantSigs:         1,
 			wantWitnessCalls: exactly(2),
 		},
-	}
-	for _, tC := range testCases {
-		t.Run(tC.desc, func(t *testing.T) {
+	} {
+		t.Run(test.desc, func(t *testing.T) {
 			ctx := t.Context()
 			witCalls.Store(0)
 
 			g, err := witness.NewGateway(ctx, witness.Options{
 				HTTPClient: ts.Client(),
-				Witnesses:  tC.witnesses,
+				Witnesses:  test.witnesses,
 				FetchTiles: testLogTileFetcher,
 			})
 			if err != nil {
@@ -227,11 +226,11 @@ func TestWitnessGateway(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to open note %q: %v", witnessedCP, err)
 			}
-			if len(n.Sigs)-1 < tC.wantSigs {
-				t.Errorf("wanted %d sigs but got %d", tC.wantSigs, len(n.Sigs)-1)
+			if len(n.Sigs)-1 < test.wantSigs {
+				t.Errorf("wanted %d sigs but got %d", test.wantSigs, len(n.Sigs)-1)
 			}
-			if tC.wantWitnessCalls != nil {
-				if err := tC.wantWitnessCalls(witCalls.Load()); err != nil {
+			if test.wantWitnessCalls != nil {
+				if err := test.wantWitnessCalls(witCalls.Load()); err != nil {
 					t.Error(err)
 				}
 			}

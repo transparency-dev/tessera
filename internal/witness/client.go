@@ -91,7 +91,7 @@ type Witness struct {
 type Options struct {
 	// HTTPClient is the HTTP client to use for all HTTP operations, if nil uses the DefaultHTTPClient.
 	HTTPClient *http.Client
-	// Witnesses defines the pool of mirrors to update.
+	// Witnesses defines the pool of witnesses to update.
 	Witnesses []Witness
 	// FetchTiles knows how to fetch tiles from the log. Used for building consistency proofs.
 	FetchTiles client.TileFetcherFunc
@@ -140,6 +140,7 @@ func dedup(ws []Witness) ([]Witness, error) {
 		}
 		uStr := w.URL.String()
 		if wit, ok := d[uStr]; !ok {
+			w.Verifiers = slices.Clone(w.Verifiers)
 			d[uStr] = &w
 		} else {
 			wit.Verifiers = append(wit.Verifiers, w.Verifiers...)
@@ -153,7 +154,9 @@ func dedup(ws []Witness) ([]Witness, error) {
 	}
 
 	out := make([]Witness, 0, len(d))
-	for _, w := range d {
+	for _, k := range slices.Sorted(maps.Keys(d)) {
+		w := d[k]
+
 		seen := make(map[verifierKey]bool)
 		vs := make([]note.Verifier, 0, len(w.Verifiers))
 		for _, v := range w.Verifiers {
@@ -279,7 +282,7 @@ type witnessClient struct {
 	oldSize uint64
 }
 
-// names returns a string with unique names of the verifiers, sorted.
+// names returns a []string with unique names of the verifiers, sorted.
 func names(w []note.Verifier) []string {
 	m := make(map[string]struct{}, len(w))
 	for _, v := range w {
@@ -322,17 +325,22 @@ func (w *witnessClient) update(ctx context.Context, cp []byte, cpSize uint64, fe
 			witnessClientReqsTotal.Add(ctx, 1, metric.WithAttributes(nameAttr))
 			sigs, actualSize, err := w.client.Update(ctx, w.oldSize, cp, proof)
 			if err != nil {
-				statusAttr := witnessStatusKey.String(err.Error())
+				statusAttr := witnessStatusKey.String(witnessErrorStatus(err))
 				witnessClientRespsTotal.Add(ctx, 1, metric.WithAttributes(nameAttr, statusAttr))
 
-				if errors.Is(err, witness.ErrCheckpointStale) {
+				switch {
+				case errors.Is(err, witness.ErrCheckpointStale):
 					if actualSize > cpSize {
 						// This should _never_ happen - the witness somehow knows about a checkpoint larger than we have.
-						return nil, fmt.Errorf("witness at %q replied with x.tlog.size %d, larger than log size %d", w.url, actualSize, cpSize)
+						return nil, backoff.Permanent(fmt.Errorf("witness at %q replied with x.tlog.size %d, larger than log size %d", w.url, actualSize, cpSize))
 					}
+					slog.InfoContext(ctx, "Retrying stale checkpoint", slog.String("url", w.url), slog.Uint64("actualSize", actualSize), slog.Uint64("cpSize", cpSize))
 					w.oldSize = actualSize
 					// Don't mark as permanent so that the backoff will retry.
 					return nil, err
+				case errors.Is(err, witness.ErrRootMismatch):
+					// This is a non-retryable error, the log is broken.
+					return nil, backoff.Permanent(err)
 				}
 				// To keep behaviour the same as it was previously, we won't retry for any other type of error.
 				return nil, backoff.Permanent(err)
@@ -351,4 +359,34 @@ func (w *witnessClient) update(ctx context.Context, cp []byte, cpSize uint64, fe
 			backoff.WithBackOff(retryBackoff),
 		)
 	})
+}
+
+// witnessErrorStatus returns a string representation of the given witness error, for use in metrics.
+//
+// All errors from the witness package are here, regardless of whether we _expect_ to receive them.
+func witnessErrorStatus(err error) string {
+	switch {
+	case errors.Is(err, witness.ErrNoValidSignature):
+		return "no_valid_signature"
+	case errors.Is(err, witness.ErrUnknownLog):
+		return "unknown_log"
+	case errors.Is(err, witness.ErrOldSizeInvalid):
+		return "old_size_invalid"
+	case errors.Is(err, witness.ErrCheckpointStale):
+		return "stale"
+	case errors.Is(err, witness.ErrInvalidProof):
+		return "invalid_proof"
+	case errors.Is(err, witness.ErrRootMismatch):
+		return "root_mismatch"
+	case errors.Is(err, witness.ErrPushback):
+		return "pushback"
+	case errors.Is(err, witness.ErrNoWitnessSignature):
+		return "no_witness_signature"
+	case errors.Is(err, witness.ErrSubtreeRangeInvalid):
+		return "subtree_range_invalid"
+	case errors.Is(err, witness.ErrNotImplemented):
+		return "not_implemented"
+	default:
+		return "unknown_error"
+	}
 }
