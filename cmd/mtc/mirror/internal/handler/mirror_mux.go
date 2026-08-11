@@ -16,18 +16,18 @@ package handler
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/internal/parse"
+	"github.com/transparency-dev/witness/witness"
 )
 
 var (
 	// ErrUnknownLog is returned when a requested log is unknown to the mirror
-	ErrUnknownLog = errors.New("unknown log origin")
+	ErrUnknownLog = witness.ErrUnknownLog
 )
 
 // NewMirrorMux creates a new MirrorMux from the provided map of origins to mirror targets.
@@ -67,7 +67,10 @@ func (m *MirrorMux) AddEntries(ctx context.Context, origin string, uploadStart, 
 }
 
 func (m *MirrorMux) SignSubtree(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, cp []byte) ([]byte, error) {
-	cpOrigin, cpSize, _, err := parse.CheckpointUnsafe(cp)
+	// Need to crack open the checkpoint to figure out the origin so we know which mux target to send it to.
+	// This is safe, though, because the target's SignSubtree will open the checkpoint properly, verifying its
+	// signature and asserting the origin is correct.
+	cpOrigin, _, _, err := parse.CheckpointUnsafe(cp)
 	if err != nil {
 		return nil, err
 	}
@@ -76,8 +79,8 @@ func (m *MirrorMux) SignSubtree(ctx context.Context, start, end uint64, subRoot 
 	if err != nil {
 		return nil, ErrUnknownLog
 	}
-	slog.InfoContext(ctx, "SignSubtree", slog.String("origin", cpOrigin), slog.Uint64("size", cpSize))
 
+	slog.InfoContext(ctx, "SignSubtree", slog.String("origin", cpOrigin))
 	return t.SignSubtree(ctx, start, end, subRoot, proof, cp)
 }
 
@@ -96,5 +99,7 @@ func (m *MirrorMux) target(origin string) (MirrorTarget, error) {
 type MirrorTarget interface {
 	// AddEntries adds verified consistent entries to the mirror.
 	AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (nextIdx uint64, curSize uint64, newTicket []byte, cosigs []byte, err error)
+	// SignSubtree should verify that the provided checkpoint originates from a known log and is valid, and that the provided subtree and proof
+	// are valid for the provided checkpoint, and, if so, returns a cosignature for the subtree.
 	SignSubtree(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, cp []byte) ([]byte, error)
 }
