@@ -5,7 +5,7 @@ go 1.25.8
 toolchain go1.25.12
 
 require (
-	cloud.google.com/go/spanner v1.93.0
+	cloud.google.com/go/spanner v1.94.0
 	cloud.google.com/go/storage v1.64.0
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.59.0
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace v1.35.0
@@ -29,15 +29,15 @@ require (
 	github.com/rivo/tview v0.42.0
 	github.com/transparency-dev/formats v0.1.2-0.20260805102052-38e6e69c4152
 	github.com/transparency-dev/merkle v0.0.3-0.20260727102338-4491f478b7dc
-	github.com/transparency-dev/witness v0.0.0-20260701145555-54dbcdd14f82
+	github.com/transparency-dev/witness v0.0.0-20260810125022-f643e5982b05
 	go.opentelemetry.io/contrib/detectors/aws/ec2/v2 v2.5.1
 	go.opentelemetry.io/contrib/detectors/aws/ecs v1.44.0
 	go.opentelemetry.io/contrib/detectors/gcp v1.44.0
 	go.opentelemetry.io/contrib/propagators/aws v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.44.0
-	go.opentelemetry.io/otel/sdk v1.44.0
-	go.opentelemetry.io/otel/sdk/metric v1.44.0
+	go.opentelemetry.io/otel/sdk v1.45.0
+	go.opentelemetry.io/otel/sdk/metric v1.45.0
 	golang.org/x/exp v0.0.0-20240325151524-a685a6edb6d8
 	golang.org/x/mod v0.38.0
 	google.golang.org/api v0.290.0
@@ -79,7 +79,7 @@ require (
 	github.com/itchyny/gojq v0.12.13 // indirect
 	github.com/itchyny/timefmt-go v0.1.5 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
@@ -92,10 +92,10 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
-	modernc.org/libc v1.72.3 // indirect
+	modernc.org/libc v1.74.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.52.0 // indirect
+	modernc.org/sqlite v1.56.0 // indirect
 	mvdan.cc/sh/v3 v3.7.0 // indirect
 )
 
@@ -113,7 +113,7 @@ require (
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/gdamore/encoding v1.0.1 // indirect
-	github.com/go-logr/logr v1.4.3 // indirect
+	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
@@ -127,9 +127,9 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0 // indirect
-	go.opentelemetry.io/otel v1.44.0
-	go.opentelemetry.io/otel/metric v1.44.0
-	go.opentelemetry.io/otel/trace v1.44.0
+	go.opentelemetry.io/otel v1.45.0
+	go.opentelemetry.io/otel/metric v1.45.0
+	go.opentelemetry.io/otel/trace v1.45.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0
 	golang.org/x/oauth2 v0.36.0 // indirect
