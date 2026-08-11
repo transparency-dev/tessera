@@ -378,16 +378,16 @@ func TestMirrorTarget_AddEntries_ZeroCheckpoint(t *testing.T) {
 	}
 }
 
-func mustGenerateKey(origin string) (note.Signer, note.Verifier) {
+func mustGenerateKey(origin string) (fnote.SubtreeSigner, fnote.SubtreeVerifier) {
 	sk, vk, err := fnote.GenerateMLDSAKey(origin)
 	if err != nil {
 		panic(fmt.Errorf("Failed to generate key for %q: %v", origin, err))
 	}
-	s, err := fnote.NewSignerForCosignatureV1(sk)
+	s, err := fnote.NewMLDSASigner(sk)
 	if err != nil {
 		panic(fmt.Errorf("Failed to instantiate signer: %v", err))
 	}
-	v, err := fnote.NewVerifierForCosignatureV1(vk)
+	v, err := fnote.NewMLDSAVerifier(vk)
 	if err != nil {
 		panic(fmt.Errorf("Failed to instantiate verifier: %v", err))
 	}

@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/transparency-dev/tessera"
+	"github.com/transparency-dev/tessera/internal/parse"
 )
 
 var (
@@ -65,6 +66,21 @@ func (m *MirrorMux) AddEntries(ctx context.Context, origin string, uploadStart, 
 	return t.AddEntries(ctx, uploadStart, uploadEnd, ticket, next)
 }
 
+func (m *MirrorMux) SignSubtree(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, cp []byte) ([]byte, error) {
+	cpOrigin, cpSize, _, err := parse.CheckpointUnsafe(cp)
+	if err != nil {
+		return nil, err
+	}
+
+	t, err := m.target(cpOrigin)
+	if err != nil {
+		return nil, ErrUnknownLog
+	}
+	slog.InfoContext(ctx, "SignSubtree", slog.String("origin", cpOrigin), slog.Uint64("size", cpSize))
+
+	return t.SignSubtree(ctx, start, end, subRoot, proof, cp)
+}
+
 // target returns the target for the given origin, or ErrUnknownLog if it doesn't exist.
 func (m *MirrorMux) target(origin string) (MirrorTarget, error) {
 	m.mu.RLock()
@@ -80,4 +96,5 @@ func (m *MirrorMux) target(origin string) (MirrorTarget, error) {
 type MirrorTarget interface {
 	// AddEntries adds verified consistent entries to the mirror.
 	AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (nextIdx uint64, curSize uint64, newTicket []byte, cosigs []byte, err error)
+	SignSubtree(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, cp []byte) ([]byte, error)
 }

@@ -162,7 +162,8 @@ func TestAddEntries(t *testing.T) {
 }
 
 type mockTarget struct {
-	addEntriesFunc func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (nextIdx uint64, curSize uint64, newTicket []byte, cosigs []byte, err error)
+	addEntriesFunc  func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (nextIdx uint64, curSize uint64, newTicket []byte, cosigs []byte, err error)
+	signSubtreeFunc func(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, cp []byte) ([]byte, error)
 }
 
 func (m *mockTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (nextIdx uint64, curSize uint64, newTicket []byte, cosigs []byte, err error) {
@@ -170,6 +171,13 @@ func (m *mockTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint
 		return m.addEntriesFunc(ctx, uploadStart, uploadEnd, ticket, next)
 	}
 	return uploadEnd, 0, nil, nil, nil
+}
+
+func (m *mockTarget) SignSubtree(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, cp []byte) ([]byte, error) {
+	if m.signSubtreeFunc != nil {
+		return m.signSubtreeFunc(ctx, start, end, subRoot, proof, cp)
+	}
+	return nil, nil
 }
 
 func TestAddEntries_StatusCodes(t *testing.T) {

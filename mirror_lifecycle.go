@@ -34,12 +34,15 @@ import (
 	"unicode/utf8"
 
 	"github.com/transparency-dev/formats/log"
+	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/merkle"
 	"github.com/transparency-dev/merkle/compact"
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
+	"github.com/transparency-dev/witness/persistence/inmemory"
+	"github.com/transparency-dev/witness/witness"
 	"golang.org/x/mod/sumdb/note"
 )
 
@@ -61,7 +64,7 @@ const maxExcessEntries = 2048
 
 // MirrorOptions holds mirror lifecycle settings for all storage implementations.
 type MirrorOptions struct {
-	signer      note.Signer
+	signer      fnote.SubtreeSigner
 	cpSource    func(context.Context) ([]byte, error)
 	logVerifier note.Verifier
 	origin      string
@@ -86,7 +89,7 @@ func (o *MirrorOptions) WithLogVerifier(v note.Verifier) *MirrorOptions {
 }
 
 // WithSigner configures the note.Signer to use when cosigning checkpoints.
-func (o *MirrorOptions) WithSigner(s note.Signer) *MirrorOptions {
+func (o *MirrorOptions) WithSigner(s fnote.SubtreeSigner) *MirrorOptions {
 	o.signer = s
 	return o
 }
@@ -97,7 +100,7 @@ func (o *MirrorOptions) WithCheckpointSource(f func(context.Context) ([]byte, er
 }
 
 // Signer returns the configured note.Signer.
-func (o *MirrorOptions) Signer() note.Signer {
+func (o *MirrorOptions) Signer() fnote.SubtreeSigner {
 	return o.signer
 }
 
@@ -148,9 +151,10 @@ type MirrorTarget struct {
 	reader             LogReader
 	cpSource           func(context.Context) ([]byte, error)
 	origin             string
-	signer             note.Signer
+	signer             fnote.SubtreeSigner
 	logVerifier        note.Verifier
 	verifySubtreeProof func(hasher merkle.LogHasher, start, end, size uint64, proof [][]byte, subRoot []byte, root []byte) error
+	signSubtree        signSubtreeFunc
 	ticketKey          []byte
 }
 
@@ -180,6 +184,10 @@ func NewMirrorTarget(ctx context.Context, d Driver, opts *MirrorOptions) (*Mirro
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive ticket key: %v", err)
 	}
+	signSubtree, err := subtreeWitness(ctx, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create subtree witness: %v", err)
+	}
 	return &MirrorTarget{
 		writer:             mw,
 		reader:             r,
@@ -188,6 +196,7 @@ func NewMirrorTarget(ctx context.Context, d Driver, opts *MirrorOptions) (*Mirro
 		logVerifier:        opts.logVerifier,
 		origin:             opts.origin,
 		verifySubtreeProof: proof.VerifySubtreeConsistency,
+		signSubtree:        signSubtree,
 		ticketKey:          tK,
 	}, nil
 }
@@ -497,6 +506,11 @@ func (mt *MirrorTarget) open(sealed []byte) ([]byte, error) {
 	return b, nil
 }
 
+// SignSubtree returns a cosignature for a subtree of the mirrored log.
+func (mt *MirrorTarget) SignSubtree(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, cp []byte) ([]byte, error) {
+	return mt.signSubtree(ctx, start, end, subRoot, proof, cp)
+}
+
 func signNote(n *note.Note, signers ...note.Signer) ([]byte, []byte, error) {
 	// Code below is a lightly tweaked snippet from sumdb/note/note.go
 	// https://cs.opensource.google/go/x/mod/+/refs/tags/v0.24.0:sumdb/note/note.go;l=625-649
@@ -554,4 +568,32 @@ func signNote(n *note.Note, signers ...note.Signer) ([]byte, []byte, error) {
 // It must be non-empty and not have any Unicode spaces or pluses.
 func isValidSignerName(name string) bool {
 	return name != "" && utf8.ValidString(name) && strings.IndexFunc(name, unicode.IsSpace) < 0 && !strings.Contains(name, "+")
+}
+
+type signSubtreeFunc func(context.Context, uint64, uint64, []byte, [][]byte, []byte) ([]byte, error)
+
+// subtreeWitness returns a function which implements the witness sign-subtree operation for the configured log.
+//
+// The returned function will only sign subtrees where the provided checkpoint has already been signed by the mirror.
+func subtreeWitness(ctx context.Context, opts *MirrorOptions) (signSubtreeFunc, error) {
+	// Instantiate a witness for the configured log, but we'll only use its SignSubtree method.
+	// SignSubtree doesn't persist any state since everything required is provided by the request.
+	subW, err := witness.New(ctx, witness.Opts{
+		// Use in-memory persistence as we don't need to persist any state for the SignSubtree operation.
+		Persistence: inmemory.New(),
+		Signers:     []note.Signer{opts.signer},
+		VerifierForLog: func(_ context.Context, origin string) (note.Verifier, bool, error) {
+			// Only accept the log we're configured to mirror.
+			if origin != opts.origin {
+				return nil, false, nil
+			}
+			return opts.logVerifier, true, nil
+		},
+		EnableSubtreeSigning: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("witness.New: %v", err)
+	}
+
+	return subW.SignSubtree, nil
 }
