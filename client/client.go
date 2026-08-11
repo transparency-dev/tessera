@@ -234,6 +234,21 @@ func (pb *ProofBuilder) SubtreeConsistencyProof(ctx context.Context, start, end 
 	})
 }
 
+// SubtreeInclusionProof constructs a subtree inclusion proof for index in the specified range [start, end).
+func (pb *ProofBuilder) SubtreeInclusionProof(ctx context.Context, index, start, end uint64) ([][]byte, error) {
+	return otel.Trace(ctx, "tessera.client.SubtreeInclusionProof", tracer, func(ctx context.Context, span trace.Span) ([][]byte, error) {
+		if end > pb.treeSize {
+			return nil, fmt.Errorf("requested subtree inclusion proof to %d which is larger than tree size %d", end, pb.treeSize)
+		}
+
+		nodes, err := proof.SubtreeInclusion(index, start, end)
+		if err != nil {
+			return nil, fmt.Errorf("failed to calculate subtree consistency proof node list: %v", err)
+		}
+		return pb.materialiseProof(ctx, nodes)
+	})
+}
+
 // materialiseProof retrieves the specified proof nodes via pb's nodeCache, recreating ephemeral nodes if necessary.
 func (pb *ProofBuilder) materialiseProof(ctx context.Context, nodes proof.Nodes) ([][]byte, error) {
 	hashes, err := pb.nodeCache.GetNodes(ctx, nodes.IDs)
