@@ -29,6 +29,7 @@ import (
 
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/log"
+	lmp "github.com/transparency-dev/tessera/cmd/mtc/log/internal/landmark/posix"
 	tposix "github.com/transparency-dev/tessera/storage/posix"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
@@ -60,6 +61,7 @@ func setupTestLog(t *testing.T) *log.MTCLog {
 	mtcLog, err := log.NewMTCLog(ctx, appender, log.NewOptions().
 		WithTesseraReader(reader).
 		WithAwaiterPollInterval(20*time.Millisecond).
+		WithLandmarksStorage(lmp.NewStorage(storageDir)).
 		WithMaxCertLifetime(7*24*time.Hour))
 	if err != nil {
 		t.Fatalf("Failed to initialize MTC log: %v", err)

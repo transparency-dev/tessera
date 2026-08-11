@@ -19,6 +19,7 @@ import (
 	"context"
 	stdasn1 "encoding/asn1"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -27,7 +28,6 @@ import (
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
 )
-
 
 // unmarshal decodes the contents octets of a TBSCertificateLogEntry
 // (i.e. WITHOUT the outer SEQUENCE tag and length prefix) into the struct.
@@ -370,6 +370,23 @@ func (dummyLogReader) ReadCheckpoint(context.Context) ([]byte, error) {
 	return nil, nil
 }
 
+type dummyLandmarksStorage struct{}
+
+func (dummyLandmarksStorage) ReadLandmarks(context.Context) ([]byte, time.Time, error) {
+	return nil, time.Time{}, os.ErrNotExist
+}
+
+func (dummyLandmarksStorage) UpdateLandmarks(_ context.Context, fn func([]byte, time.Time) ([]byte, error)) (time.Time, error) {
+	_, _ = fn(nil, time.Time{})
+	return time.Now(), nil
+}
+
+func newDummyOptions() *Options {
+	return NewOptions().
+		WithTesseraReader(&dummyLogReader{}).
+		WithLandmarksStorage(&dummyLandmarksStorage{})
+}
+
 func TestMTCOptionsValid(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -378,35 +395,55 @@ func TestMTCOptionsValid(t *testing.T) {
 	}{
 		{
 			name:    "Valid",
-			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}),
+			opts:    newDummyOptions(),
+			wantErr: false,
+		}, {
+			name:    "Valid: custom landmark interval",
+			opts:    newDummyOptions().WithLandmarkInterval(2 * time.Hour),
+			wantErr: false,
+		}, {
+			name:    "Valid: order independence (interval before storage)",
+			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithLandmarkInterval(2 * time.Hour).WithLandmarksStorage(&dummyLandmarksStorage{}),
 			wantErr: false,
 		}, {
 			name:    "Valid: custom poll period",
-			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithAwaiterPollInterval(10 * time.Millisecond),
+			opts:    newDummyOptions().WithAwaiterPollInterval(10 * time.Millisecond),
 			wantErr: false,
 		}, {
 			name:    "Error: Negative poll period",
-			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithAwaiterPollInterval(-10 * time.Millisecond),
+			opts:    newDummyOptions().WithAwaiterPollInterval(-10 * time.Millisecond),
 			wantErr: true,
 		}, {
 			name:    "Error: No TesseraReader",
-			opts:    NewOptions(),
+			opts:    NewOptions().WithLandmarksStorage(&dummyLandmarksStorage{}),
+			wantErr: true,
+		}, {
+			name:    "Error: No LandmarksStorage",
+			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}),
+			wantErr: true,
+		}, {
+			name:    "Valid: Zero LandmarkInterval defaults to recommended",
+			opts:    newDummyOptions().WithLandmarkInterval(0),
+			wantErr: false,
+		}, {
+			name:    "Error: Negative LandmarkInterval",
+			opts:    newDummyOptions().WithLandmarkInterval(-1 * time.Hour),
 			wantErr: true,
 		}, {
 			name:    "Error: Zero MaxCertLifetime",
-			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithMaxCertLifetime(0),
+			opts:    newDummyOptions().WithMaxCertLifetime(0),
 			wantErr: true,
 		}, {
 			name:    "Error: Negative MaxCertLifetime",
-			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithMaxCertLifetime(-1 * time.Hour),
+			opts:    newDummyOptions().WithMaxCertLifetime(-1 * time.Hour),
 			wantErr: true,
 		}, {
 			name:    "Error: MaxCertLifetime exceeds default max",
-			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithMaxCertLifetime(DefaultMaxCertLifetime + 24*time.Hour),
+			opts:    newDummyOptions().WithMaxCertLifetime(DefaultMaxCertLifetime + 24*time.Hour),
 			wantErr: true,
 		}, {
 			name:    "Error: MaxCertLifetime has sub-second precision",
-			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithMaxCertLifetime(1*time.Hour + 500*time.Millisecond),
+			opts:    newDummyOptions().WithMaxCertLifetime(1*time.Hour + 500*time.Millisecond),
 			wantErr: true,
 		},
 	} {
@@ -416,6 +453,27 @@ func TestMTCOptionsValid(t *testing.T) {
 				t.Errorf("valid() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestRecommendedLandmarkInterval(t *testing.T) {
+	tests := []struct {
+		lifetime time.Duration
+		want     time.Duration
+	}{
+		{lifetime: 1 * time.Hour, want: 1 * time.Hour},
+		{lifetime: 7 * 24 * time.Hour, want: 1 * time.Hour},
+		{lifetime: 15 * 24 * time.Hour, want: 1 * time.Hour},
+		{lifetime: 16 * 24 * time.Hour, want: 2 * time.Hour},
+		{lifetime: 25 * 24 * time.Hour, want: 2 * time.Hour},
+		{lifetime: 30 * 24 * time.Hour, want: 2 * time.Hour},
+		{lifetime: 31 * 24 * time.Hour, want: 4 * time.Hour},
+		{lifetime: 47 * 24 * time.Hour, want: 4 * time.Hour},
+	}
+	for _, tc := range tests {
+		if got := RecommendedLandmarkInterval(tc.lifetime); got != tc.want {
+			t.Errorf("RecommendedLandmarkInterval(%v) = %v, want %v", tc.lifetime, got, tc.want)
+		}
 	}
 }
 
@@ -563,8 +621,9 @@ func TestCreateSignerAndOrigin(t *testing.T) {
 }
 
 func TestNewMTCLog(t *testing.T) {
-	ctx := context.Background()
-	opts := NewOptions().WithTesseraReader(&dummyLogReader{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opts := newDummyOptions()
 
 	t.Run("nil appender", func(t *testing.T) {
 		if _, err := NewMTCLog(ctx, nil, opts); err == nil {
@@ -578,8 +637,43 @@ func TestNewMTCLog(t *testing.T) {
 		}
 	})
 
-	t.Run("valid", func(t *testing.T) {
+	t.Run("valid default options (47-day certs)", func(t *testing.T) {
 		logInst, err := NewMTCLog(ctx, &tessera.Appender{}, opts)
+		if err != nil {
+			t.Fatalf("NewMTCLog unexpected error: %v", err)
+		}
+		if logInst == nil {
+			t.Fatal("NewMTCLog returned nil instance")
+		}
+	})
+
+	t.Run("valid 7-day certs with default interval", func(t *testing.T) {
+		opts7d := newDummyOptions().WithMaxCertLifetime(7 * 24 * time.Hour)
+		logInst, err := NewMTCLog(ctx, &tessera.Appender{}, opts7d)
+		if err != nil {
+			t.Fatalf("NewMTCLog unexpected error: %v", err)
+		}
+		if logInst == nil {
+			t.Fatal("NewMTCLog returned nil instance")
+		}
+	})
+
+	t.Run("valid explicit 0 interval defaults to recommended", func(t *testing.T) {
+		opts0 := newDummyOptions().WithLandmarkInterval(0)
+		logInst, err := NewMTCLog(ctx, &tessera.Appender{}, opts0)
+		if err != nil {
+			t.Fatalf("NewMTCLog unexpected error: %v", err)
+		}
+		if logInst == nil {
+			t.Fatal("NewMTCLog returned nil instance")
+		}
+	})
+
+	t.Run("valid custom landmark interval", func(t *testing.T) {
+		optsCustom := newDummyOptions().
+			WithMaxCertLifetime(20 * 24 * time.Hour).
+			WithLandmarkInterval(2 * time.Hour)
+		logInst, err := NewMTCLog(ctx, &tessera.Appender{}, optsCustom)
 		if err != nil {
 			t.Fatalf("NewMTCLog unexpected error: %v", err)
 		}

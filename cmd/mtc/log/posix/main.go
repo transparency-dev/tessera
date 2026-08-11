@@ -27,6 +27,7 @@ import (
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/log"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/handler"
+	lmp "github.com/transparency-dev/tessera/cmd/mtc/log/internal/landmark/posix"
 	"github.com/transparency-dev/tessera/storage/posix"
 )
 
@@ -42,6 +43,7 @@ var (
 	// Tessera settings
 	storageDir                = flag.String("storage_dir", "", "Path to root of log storage.")
 	checkpointInterval        = flag.Duration("checkpoint_interval", 1500*time.Millisecond, "Interval between publishing checkpoints when the log has grown")
+	landmarkInterval          = flag.Duration("landmark_interval", 0, "Interval between publishing landmarks. If 0, defaults to CQRP recommended interval for max_cert_lifetime.")
 	batchMaxSize              = flag.Uint("batch_max_size", tessera.DefaultBatchMaxSize, "Maximum number of entries to process in a single sequencing batch.")
 	batchMaxAge               = flag.Duration("batch_max_age", tessera.DefaultBatchMaxAge, "Maximum age of entries in a single sequencing batch.")
 	awaiterPollInterval       = flag.Duration("awaiter_poll_interval", 100*time.Millisecond, "Interval between checkpoint polls by the publication awaiter.")
@@ -74,6 +76,8 @@ func main() {
 	opts := log.NewOptions().
 		WithTesseraReader(reader).
 		WithAwaiterPollInterval(*awaiterPollInterval).
+		WithLandmarksStorage(lmp.NewStorage(*storageDir)).
+		WithLandmarkInterval(*landmarkInterval).
 		WithMaxCertLifetime(*maxCertLifetime)
 	mtcLog, err := log.NewMTCLog(ctx, appender, opts)
 	if err != nil {
