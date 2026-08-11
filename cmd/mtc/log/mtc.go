@@ -26,9 +26,9 @@ import (
 
 	"github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
+	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/checkpoint"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/entry"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/landmark"
-	"github.com/transparency-dev/tessera/internal/parse"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
 )
@@ -196,7 +196,7 @@ func parseValidity(data []byte) (validity, error) {
 	var v validity
 	rest, err := stdasn1.Unmarshal(data, &v)
 	if err != nil {
-		return validity{}, fmt.Errorf("unmarshal validity: %w", err)
+		return validity{}, fmt.Errorf("unmarshal validity: %v", err)
 	}
 	if len(rest) > 0 {
 		return validity{}, errors.New("trailing bytes in validity SEQUENCE")
@@ -342,24 +342,6 @@ func (l *MTCLog) accept(tbs TBSCertificateLogEntry) error {
 	return nil
 }
 
-func (l *MTCLog) readCheckpointSize(ctx context.Context) (uint64, error) {
-	if l.reader == nil {
-		return 0, errors.New("log reader is not configured")
-	}
-
-	rawCp, err := l.reader.ReadCheckpoint(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("read checkpoint: %w", err)
-	}
-
-	_, size, _, err := parse.CheckpointUnsafe(rawCp)
-	if err != nil {
-		return 0, fmt.Errorf("parse checkpoint: %w", err)
-	}
-
-	return size, nil
-}
-
 // NewMTCLog creates a new MTCLog compliant with
 // draft-ietf-plants-merkle-tree-certs and http://c2sp.org/mtc-tlog.
 func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog, error) {
@@ -373,11 +355,9 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 		return nil, err
 	}
 
-	l := &MTCLog{
-		a:               a,
-		reader:          opts.reader,
-		awaiter:         tessera.NewPublicationAwaiter(ctx, opts.reader.ReadCheckpoint, opts.pollPeriod),
-		maxCertLifetime: opts.maxCertLifetime,
+	cpReader, err := checkpoint.NewReader(ctx, opts.reader.ReadCheckpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read initial checkpoint: %v", err)
 	}
 
 	interval := opts.landmarkInterval
@@ -390,13 +370,18 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 		)
 	}
 
-	pub, err := landmark.NewPublisher(ctx, l.readCheckpointSize, opts.landmarkStorage, opts.maxCertLifetime, interval)
+	pub, err := landmark.NewPublisher(ctx, cpReader.LatestSize, opts.landmarkStorage, opts.maxCertLifetime, interval)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialise landmark publisher: %v", err)
 	}
-	l.landmarkPublisher = pub
 
-	return l, nil
+	return &MTCLog{
+		a:                 a,
+		reader:            opts.reader,
+		awaiter:           tessera.NewPublicationAwaiter(ctx, cpReader.Checkpoint, opts.pollPeriod),
+		landmarkPublisher: pub,
+		maxCertLifetime:   opts.maxCertLifetime,
+	}, nil
 }
 
 // AddTBS adds a TBSCertificateLogEntry to the log.
