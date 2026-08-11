@@ -158,3 +158,13 @@ func (e *MTCLogEntry) Marshal() ([]byte, error) {
 	}
 	return res, nil
 }
+
+// ExtractExtensions returns the raw extensions bytes from an encoded MTCLogEntry.
+func ExtractExtensions(entryData []byte) ([]byte, error) {
+	s := cryptobyte.String(entryData)
+	var ext cryptobyte.String
+	if !s.ReadUint16LengthPrefixed(&ext) {
+		return nil, errors.New("malformed extensions length prefix")
+	}
+	return ext, nil
+}

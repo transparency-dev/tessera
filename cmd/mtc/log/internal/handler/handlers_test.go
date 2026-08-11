@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -224,9 +225,9 @@ func TestNew_Routes(t *testing.T) {
 		{
 			name:       "GET /proof-to-landmark valid method",
 			method:     http.MethodGet,
-			path:       "/proof-to-landmark",
+			path:       "/proof-to-landmark?index=0",
 			body:       func() io.Reader { return nil },
-			wantStatus: http.StatusNotImplemented,
+			wantStatus: http.StatusBadRequest, // Proves routing reached proofToLandmarkHandler
 		},
 		{
 			name:       "POST /proof-to-landmark invalid method",
@@ -253,6 +254,100 @@ func TestNew_Routes(t *testing.T) {
 
 			if w.Code != tc.wantStatus {
 				t.Errorf("%s %s: want status %d, got %d: %s", tc.method, tc.path, tc.wantStatus, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestProofToLandmarkHandler(t *testing.T) {
+	tests := []struct {
+		name           string
+		path           string
+		proofFn        proofToLandmark
+		wantStatus     int
+		wantBody       string
+		wantRetryAfter string
+	}{
+		{
+			name: "success json body",
+			path: "/proof-to-landmark?index=10",
+			proofFn: func(_ context.Context, idx uint64) ([]byte, time.Duration, error) {
+				if idx != 10 {
+					return nil, 0, fmt.Errorf("unexpected index %d", idx)
+				}
+				return []byte("proof-data"), 0, nil
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   `"mtcProof":"cHJvb2YtZGF0YQ=="`,
+		},
+		{
+			name: "too old entry",
+			path: "/proof-to-landmark?index=5",
+			proofFn: func(_ context.Context, idx uint64) ([]byte, time.Duration, error) {
+				return nil, 0, log.ErrTooOld
+			},
+			wantStatus: http.StatusGone,
+			wantBody:   log.ErrTooOld.Error(),
+		},
+		{
+			name: "retry after future entry",
+			path: "/proof-to-landmark?index=100",
+			proofFn: func(_ context.Context, idx uint64) ([]byte, time.Duration, error) {
+				return nil, 45 * time.Second, nil
+			},
+			wantStatus:     http.StatusAccepted,
+			wantRetryAfter: "45",
+		},
+		{
+			name:       "missing index query parameter",
+			path:       "/proof-to-landmark",
+			proofFn:    func(_ context.Context, _ uint64) ([]byte, time.Duration, error) { return nil, 0, nil },
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "missing 'index' query parameter",
+		},
+		{
+			name:       "invalid index query parameter",
+			path:       "/proof-to-landmark?index=invalid",
+			proofFn:    func(_ context.Context, _ uint64) ([]byte, time.Duration, error) { return nil, 0, nil },
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "invalid 'index' query parameter",
+		},
+		{
+			name: "error exceeding tree size",
+			path: "/proof-to-landmark?index=10000",
+			proofFn: func(_ context.Context, idx uint64) ([]byte, time.Duration, error) {
+				return nil, 0, log.ErrExceedsTreeSize
+			},
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "index exceeds current log tree size",
+		},
+		{
+			name: "internal server error",
+			path: "/proof-to-landmark?index=10",
+			proofFn: func(_ context.Context, idx uint64) ([]byte, time.Duration, error) {
+				return nil, 0, errors.New("storage disk failure")
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   `Could not fetch inclusion proof to landmark`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := proofToLandmarkHandler(tc.proofFn)
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			w := httptest.NewRecorder()
+
+			h.ServeHTTP(w, req)
+
+			if w.Code != tc.wantStatus {
+				t.Errorf("want status %d, got %d: %s", tc.wantStatus, w.Code, w.Body.String())
+			}
+			if tc.wantBody != "" && !strings.Contains(w.Body.String(), tc.wantBody) {
+				t.Errorf("want body containing %q, got %q", tc.wantBody, w.Body.String())
+			}
+			if tc.wantRetryAfter != "" && w.Header().Get("Retry-After") != tc.wantRetryAfter {
+				t.Errorf("want Retry-After header %q, got %q", tc.wantRetryAfter, w.Header().Get("Retry-After"))
 			}
 		})
 	}

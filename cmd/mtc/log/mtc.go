@@ -22,13 +22,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"time"
 
 	"github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
+	"github.com/transparency-dev/tessera/api/layout"
+	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/checkpoint"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/entry"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/landmark"
+	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/mtcproof"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
 )
@@ -41,6 +45,22 @@ const (
 	// "MTC CA Operators MUST NOT issue Subscriber certificates with a
 	// validity period exceeding 47 days."
 	DefaultMaxCertLifetime = 47 * 24 * time.Hour
+
+	// landmarkPublicationBuffer is an additional buffer added to RetryAfter in ProofToLandmark
+	// responses to account for landmark publication latency (integrating entries, signing, and storage writes).
+	landmarkPublicationBuffer = 500 * time.Millisecond
+
+	// maxRetryAfterJitter is the upper bound of randomized jitter added to RetryAfter in ProofToLandmark
+	// responses to desynchronize polling clients and prevent a thundering herd when a new landmark closes.
+	maxRetryAfterJitter = 15 * time.Second
+)
+
+var (
+	// ErrTooOld indicates that the requested index precedes the earliest available active landmark.
+	ErrTooOld = errors.New("entry precedes earliest active landmark")
+
+	// ErrExceedsTreeSize indicates that the requested index exceeds the current log tree size.
+	ErrExceedsTreeSize = errors.New("index exceeds current log tree size")
 )
 
 // RecommendedLandmarkInterval returns the recommended landmark publication interval
@@ -180,6 +200,12 @@ type TBSCertificateLogEntry struct {
 	IssuerUniqueID            []byte `json:"issuerUniqueId,omitempty"`  // Optional raw IMPLICIT BIT STRING bytes, tag 1
 	SubjectUniqueID           []byte `json:"subjectUniqueId,omitempty"` // Optional raw IMPLICIT BIT STRING bytes, tag 2
 	Extensions                []byte `json:"extensions,omitempty"`      // Optional raw EXPLICIT SEQUENCE bytes, tag 3
+}
+
+// ProofToLandmarkRsp contains the landmark inclusion proof.
+type ProofToLandmarkRsp struct {
+	// MTCProof is the TLS-encoded landmark-relative certificate proof.
+	MTCProof []byte `json:"mtcProof"`
 }
 
 type validity struct {
@@ -412,14 +438,61 @@ func (l *MTCLog) AddTBS(ctx context.Context, tbs TBSCertificateLogEntry) (*AddTB
 	}, nil
 }
 
-// ProofToLandmark builds an MTCProof for the entry at idx to a
-// published landmark.
-// TODO: better arg
-func (l *MTCLog) ProofToLandmark(ctx context.Context, idx uint64) ([]byte, error) {
-	// TODO check if landmark is available
-	//   If available, build and return an MTCProof
-	//   If not, return a clever error
-	return nil, nil
+// ProofToLandmark builds an MTCProof for the entry at index to a published landmark.
+//   - If index precedes the earliest available active landmark, returns ErrTooOld.
+//   - If index exceeds the current log tree size, returns ErrExceedsTreeSize.
+//   - If index belongs to an unclosed/pending landmark, returns retryAfter indicating when
+//     the client should retry (including a publication buffer and randomized jitter to avoid a thundering herd).
+//   - If proof generation fails, returns an error.
+func (l *MTCLog) ProofToLandmark(ctx context.Context, index uint64) ([]byte, time.Duration, error) {
+	start, end, retryAfter, err := l.landmarkPublisher.GetSubtreeFor(ctx, index)
+	switch {
+	case errors.Is(err, landmark.ErrTooOld):
+		return nil, 0, ErrTooOld
+	case errors.Is(err, landmark.ErrExceedsTreeSize):
+		return nil, 0, ErrExceedsTreeSize
+	case err != nil:
+		return nil, 0, fmt.Errorf("get subtree for index %d: %v", index, err)
+	case retryAfter > 0:
+		jitter := time.Duration(rand.Int64N(int64(maxRetryAfterJitter)))
+		return nil, retryAfter + landmarkPublicationBuffer + jitter, nil
+	}
+
+	// Construct the inclusion proof to the active landmark.
+	pb, err := client.NewProofBuilder(ctx, end, l.reader.ReadTile)
+	if err != nil {
+		return nil, 0, fmt.Errorf("cannot create proof builder")
+	}
+	proofNodes, err := pb.SubtreeInclusionProof(ctx, index, start, end)
+	if err != nil {
+		return nil, 0, fmt.Errorf("cannot get subtree inclusion proof for index %d in subtree [%d, %d): %v", index, start, end, err)
+	}
+
+	// Extract extensions from the log entry.
+	// SPEC: draft-ietf-plants-merkle-tree-certs Section 6.2
+	// "extensions MUST contain the log entry's extensions value (Section 5.2.1)."
+	bundleIndex := index / layout.EntryBundleWidth
+	entryOffset := index % layout.EntryBundleWidth
+	eb, err := client.GetEntryBundle(ctx, l.reader.ReadEntryBundle, bundleIndex, end)
+	if err != nil {
+		return nil, 0, fmt.Errorf("cannot read entry bundle for entry %d: %v", index, err)
+	}
+	if entryOffset >= uint64(len(eb.Entries)) {
+		return nil, 0, fmt.Errorf("entry offset %d exceeds bundle size %d for entry %d", entryOffset, len(eb.Entries), index)
+	}
+	extBytes, err := entry.ExtractExtensions(eb.Entries[entryOffset])
+	if err != nil {
+		return nil, 0, fmt.Errorf("cannot read extensions for entry %d: %v", index, err)
+	}
+
+	// SPEC: draft-ietf-plants-merkle-tree-certs Section 6.4
+	// "A landmark-relative certificate is a Merkle Tree certificate which contains no signatures"
+	proof, err := mtcproof.Serialize(extBytes, start, end, proofNodes, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("cannot construct MTCProof: %w", err)
+	}
+
+	return proof, 0, nil
 }
 
 // formatOriginAndSigner generates valid MTC origin and signerName.
