@@ -29,7 +29,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// NewPublicationAwaiter provides an PublicationAwaiter that can be cancelled
+// NewPublicationAwaiter provides a PublicationAwaiter that can be cancelled
 // using the provided context. The PublicationAwaiter will poll every `pollPeriod`
 // to fetch checkpoints using the `readCheckpoint` function.
 func NewPublicationAwaiter(ctx context.Context, readCheckpoint func(ctx context.Context) ([]byte, error), pollPeriod time.Duration) *PublicationAwaiter {
@@ -45,7 +45,7 @@ func NewPublicationAwaiter(ctx context.Context, readCheckpoint func(ctx context.
 // a checkpoint has been published for it.
 // A single long-lived PublicationAwaiter instance
 // should be reused for all requests in the application code as there is some
-// overhead to each one; the core of an PublicationAwaiter is a poll loop that
+// overhead to each one; the core of a PublicationAwaiter is a poll loop that
 // will fetch checkpoints whenever it has clients waiting.
 //
 // The expected call pattern is:
@@ -111,11 +111,11 @@ func (a *PublicationAwaiter) Await(ctx context.Context, future IndexFuture) (Ind
 	})
 }
 
-// pollLoop MUST be called in a goroutine when constructing an PublicationAwaiter
+// pollLoop MUST be called in a goroutine when constructing a PublicationAwaiter
 // and will run continually until its context is cancelled. It wakes up every
-// `pollPeriod` to check if there are clients blocking. If there are, it requests
-// the latest checkpoint from the log, parses the tree size, and releases all clients
-// that were blocked on an index smaller than this tree size.
+// `pollPeriod`, requests the latest checkpoint from the log, parses the tree
+// size, and releases all clients that were blocked on an index smaller than
+// this tree size.
 func (a *PublicationAwaiter) pollLoop(ctx context.Context, readCheckpoint func(ctx context.Context) ([]byte, error), pollPeriod time.Duration) {
 	var (
 		cp     []byte
