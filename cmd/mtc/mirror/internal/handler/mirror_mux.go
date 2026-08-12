@@ -99,7 +99,9 @@ func (m *MirrorMux) target(origin string) (MirrorTarget, error) {
 type MirrorTarget interface {
 	// AddEntries adds verified consistent entries to the mirror.
 	AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (nextIdx uint64, curSize uint64, newTicket []byte, cosigs []byte, err error)
-	// SignSubtree should verify that the provided checkpoint originates from a known log and is valid, and that the provided subtree and proof
-	// are valid for the provided checkpoint, and, if so, returns a cosignature for the subtree.
+	// SignSubtree should verify that:
+	// - The provided checkpoint originates from a known log, is valid, and is counter-signed by the same key which will cosign the subtree.
+	// - The provided subtree and proof are valid for the provided checkpoint.
+	// If all checks pass, it should return a cosignature for the subtree, or an error.
 	SignSubtree(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, cp []byte) ([]byte, error)
 }
