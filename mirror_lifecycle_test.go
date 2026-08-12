@@ -267,10 +267,7 @@ func TestMirrorTarget_AddEntries_CompleteUpload(t *testing.T) {
 
 	ctx := context.Background()
 	var gotUpdatedCP []byte
-	mt := &MirrorTarget{
-		origin:      testPendingCPOrigin,
-		logVerifier: testLogVerifier,
-		signer:      testMirrorSigner,
+	drv := &fakeDriver{
 		writer: &fakeMirrorWriter{
 			integrateFunc: func(ctx context.Context, fromBundleIdx uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
 				if fromBundleIdx != testUploadStart/layout.EntryBundleWidth {
@@ -288,7 +285,17 @@ func TestMirrorTarget_AddEntries_CompleteUpload(t *testing.T) {
 		reader: &fakeLogReader{
 			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
 		},
-		cpSource: func(ctx context.Context) ([]byte, error) { return []byte(testPendingCP), nil },
+	}
+	mt, err := NewMirrorTarget(t.Context(), drv, &MirrorOptions{
+		origin:      testPendingCPOrigin,
+		logVerifier: testLogVerifier,
+		signer:      testMirrorSigner,
+		cpSource: func(ctx context.Context) ([]byte, error) {
+			return []byte(testPendingCP), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewMirrorTarget failed: %v", err)
 	}
 
 	validTicket, err := mt.seal([]byte(testPendingCP))
@@ -308,21 +315,19 @@ func TestMirrorTarget_AddEntries_CompleteUpload(t *testing.T) {
 		t.Errorf("got %d, want %d", got, want)
 	}
 	if len(cosigs) == 0 {
-		t.Errorf("got empty cosigs, want non-empty")
+		t.Fatalf("got empty cosigs, want non-empty")
 	}
 	if wantCP := append([]byte(testPendingCP), cosigs...); !bytes.Equal(gotUpdatedCP, wantCP) {
-		t.Errorf("got updated CP %x, want %x", gotUpdatedCP, wantCP)
+		t.Errorf("got updated CP %s, want %s", gotUpdatedCP, wantCP)
 	}
 }
 
 func TestMirrorTarget_AddEntries_ZeroCheckpoint(t *testing.T) {
 	testPendingCPZero := mustSignCP(testPendingCPOrigin, 0, testPendingCPRoot, testLogSigner)
-	ctx := context.Background()
+	ctx := t.Context()
 	var gotUpdatedCP []byte
-	mt := &MirrorTarget{
-		origin:      testPendingCPOrigin,
-		logVerifier: testLogVerifier,
-		signer:      testMirrorSigner,
+
+	drv := &fakeDriver{
 		writer: &fakeMirrorWriter{
 			integrateFunc: func(ctx context.Context, fromBundleIdx uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
 				pendingCPRoot, err := base64.StdEncoding.DecodeString(testPendingCPRoot)
@@ -337,7 +342,17 @@ func TestMirrorTarget_AddEntries_ZeroCheckpoint(t *testing.T) {
 		reader: &fakeLogReader{
 			sizeFunc: func(ctx context.Context) (uint64, error) { return 0, nil },
 		},
-		cpSource: func(ctx context.Context) ([]byte, error) { return []byte(testPendingCPZero), nil },
+	}
+	mt, err := NewMirrorTarget(t.Context(), drv, &MirrorOptions{
+		origin:      testPendingCPOrigin,
+		logVerifier: testLogVerifier,
+		signer:      testMirrorSigner,
+		cpSource: func(ctx context.Context) ([]byte, error) {
+			return []byte(testPendingCPZero), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewMirrorTarget failed: %v", err)
 	}
 
 	// 1. First call with no ticket and uploadStart=0, uploadEnd=0.
@@ -436,17 +451,14 @@ func TestMirrorTarget_AddEntries_VerifySubtreeProof(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 
 			var verifyCalled bool
 			var gotStart, gotEnd, gotSize uint64
 			var gotProof [][]byte
 			var gotRoot []byte
 
-			mt := &MirrorTarget{
-				origin:      testPendingCPOrigin,
-				logVerifier: testLogVerifier,
-				signer:      testMirrorSigner,
+			drv := &fakeDriver{
 				writer: &fakeMirrorWriter{
 					integrateFunc: func(ctx context.Context, from uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
 						for _, err := range bundles {
@@ -461,16 +473,25 @@ func TestMirrorTarget_AddEntries_VerifySubtreeProof(t *testing.T) {
 				reader: &fakeLogReader{
 					sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
 				},
-				cpSource: func(ctx context.Context) ([]byte, error) { return []byte(testPendingCP), nil },
-				verifySubtreeProof: func(hasher merkle.LogHasher, start, end, size uint64, proof [][]byte, subRoot, root []byte) error {
-					verifyCalled = true
-					gotStart = start
-					gotEnd = end
-					gotSize = size
-					gotProof = proof
-					gotRoot = root
-					return tc.verifyErr
-				},
+			}
+			mt, err := NewMirrorTarget(ctx, drv, &MirrorOptions{
+				origin:      testPendingCPOrigin,
+				logVerifier: testLogVerifier,
+				signer:      testMirrorSigner,
+				cpSource:    func(ctx context.Context) ([]byte, error) { return []byte(testPendingCP), nil },
+			})
+			if err != nil {
+				t.Fatalf("NewMirrorTarget() failed: %v", err)
+			}
+
+			mt.verifySubtreeProof = func(hasher merkle.LogHasher, start, end, size uint64, proof [][]byte, subRoot, root []byte) error {
+				verifyCalled = true
+				gotStart = start
+				gotEnd = end
+				gotSize = size
+				gotProof = proof
+				gotRoot = root
+				return tc.verifyErr
 			}
 
 			validTicket, err := mt.seal([]byte(testPendingCP))
@@ -534,10 +555,7 @@ func TestMirrorTarget_AddEntries_Unaligned_PadsFirstBundle(t *testing.T) {
 	padEntries := testUploadStart % layout.EntryBundleWidth
 	padBundleRaw := make([]byte, 2*padEntries)
 
-	mt := &MirrorTarget{
-		origin:      testPendingCPOrigin,
-		logVerifier: testLogVerifier,
-		signer:      testMirrorSigner,
+	drv := &fakeDriver{
 		writer: &fakeMirrorWriter{
 			integrateFunc: func(ctx context.Context, fromBundleIdx uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
 				if want := testUploadStart / layout.EntryBundleWidth; fromBundleIdx != want {
@@ -572,7 +590,16 @@ func TestMirrorTarget_AddEntries_Unaligned_PadsFirstBundle(t *testing.T) {
 				return padBundleRaw, nil
 			},
 		},
-		cpSource: func(ctx context.Context) ([]byte, error) { return []byte(testPendingCP), nil },
+	}
+
+	mt, err := NewMirrorTarget(t.Context(), drv, &MirrorOptions{
+		origin:      testPendingCPOrigin,
+		logVerifier: testLogVerifier,
+		signer:      testMirrorSigner,
+		cpSource:    func(ctx context.Context) ([]byte, error) { return []byte(testPendingCP), nil },
+	})
+	if err != nil {
+		t.Fatalf("NewMirrorTarget() failed: %v", err)
 	}
 
 	validTicket, err := mt.seal([]byte(testPendingCP))
@@ -597,22 +624,27 @@ func TestMirrorTarget_AddEntries_NoPendingCheckpoint(t *testing.T) {
 	)
 	ctx := t.Context()
 
-	mt := &MirrorTarget{
-		origin:      testPendingCPOrigin,
-		logVerifier: testLogVerifier,
-		signer:      testMirrorSigner,
+	drv := &fakeDriver{
 		writer: &fakeMirrorWriter{
 			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
 		},
 		reader: &fakeLogReader{
 			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
 		},
+	}
+	mt, err := NewMirrorTarget(ctx, drv, &MirrorOptions{
+		origin:      testPendingCPOrigin,
+		logVerifier: testLogVerifier,
+		signer:      testMirrorSigner,
 		cpSource: func(ctx context.Context) ([]byte, error) {
 			return nil, nil // No pending checkpoint
 		},
+	})
+	if err != nil {
+		t.Fatalf("NewMirrorTarget() failed: %v", err)
 	}
 
-	_, _, _, _, err := mt.AddEntries(ctx, testIntegratedSize, testIntegratedSize+10, nil, func() (*MirrorPackage, error) {
+	_, _, _, _, err = mt.AddEntries(ctx, testIntegratedSize, testIntegratedSize+10, nil, func() (*MirrorPackage, error) {
 		return nil, io.EOF
 	})
 	if !errors.Is(err, ErrNoPendingCheckpoint) {
@@ -656,10 +688,7 @@ func TestMirrorTarget_AddEntries_UploadStartConflicts(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			mt := &MirrorTarget{
-				origin:      testPendingCPOrigin,
-				logVerifier: testLogVerifier,
-				signer:      testMirrorSigner,
+			drv := &fakeDriver{
 				writer: &fakeMirrorWriter{
 					integrateFunc: func(ctx context.Context, fromBundleIdx uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
 						for _, err := range bundles {
@@ -677,7 +706,15 @@ func TestMirrorTarget_AddEntries_UploadStartConflicts(t *testing.T) {
 				reader: &fakeLogReader{
 					sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
 				},
-				cpSource: func(ctx context.Context) ([]byte, error) { return []byte(testPendingCPCustom), nil },
+			}
+			mt, err := NewMirrorTarget(ctx, drv, &MirrorOptions{
+				origin:      testPendingCPOrigin,
+				logVerifier: testLogVerifier,
+				signer:      testMirrorSigner,
+				cpSource:    func(ctx context.Context) ([]byte, error) { return []byte(testPendingCPCustom), nil },
+			})
+			if err != nil {
+				t.Fatalf("NewMirrorTarget() failed: %v", err)
 			}
 
 			validTicket, err := mt.seal([]byte(testPendingCPCustom))
@@ -795,10 +832,21 @@ func TestMirrorTarget_CustomOrigin_AddEntries(t *testing.T) {
 	}
 }
 
-type fakeDriver struct{}
+type fakeDriver struct {
+	writer MirrorWriter
+	reader LogReader
+}
 
 func (f *fakeDriver) MirrorWriter(ctx context.Context, opts *MirrorOptions) (MirrorWriter, LogReader, error) {
-	return &fakeMirrorWriter{}, &fakeLogReader{}, nil
+	w := f.writer
+	if w == nil {
+		w = &fakeMirrorWriter{}
+	}
+	r := f.reader
+	if r == nil {
+		r = &fakeLogReader{}
+	}
+	return w, r, nil
 }
 
 func TestMirrorTarget_SignSubtree(t *testing.T) {
