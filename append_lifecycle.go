@@ -949,20 +949,19 @@ func gatherCosignatures(ctx context.Context, name string, fetcher cosigSource, p
 				return sigs, pErr
 			case sig, ok := <-sigCh:
 				if !ok {
+					// No more signatures are coming.
 					sigs, pErr := checkPolicy(sigBlock.Bytes(), failOpen)
 					if pErr != nil {
 						pErr = fmt.Errorf("%w: no more signatures available", pErr)
 					}
-					if !greedy {
-						return sigs, pErr
-					}
+					return sigs, pErr
 				}
 				gotResponses++
 				sigBlock.Write(sig)
 				// Don't allow failOpen here, or we'll break out of the collection loop prematurely.
 				sigs, err := checkPolicy(sigBlock.Bytes(), false)
-				// We can return with sigs early if either we've met policy (and we're not in greedy mode), or we've received a response from all configured witnesses.
-				if (err == nil && !greedy) || (gotResponses == maxExpectedResponses) {
+				// We can return with sigs early if we've met policy and either we're not in greedy mode or we've received a response from all configured witnesses.
+				if err == nil && (!greedy || gotResponses == maxExpectedResponses) {
 					return sigs, nil
 				}
 			}
