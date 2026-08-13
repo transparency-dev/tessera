@@ -66,7 +66,6 @@ func RecommendedLandmarkInterval(maxCertLifetime time.Duration) time.Duration {
 }
 
 const (
-
 	// SPEC: draft-ietf-plants-merkle-tree-certs section 5.3.1.
 	// "cosigner_name and log_origin are computed from the cosigner ID and the
 	// issuance log's ID (Section 5.1), respectively. They contain the concatenation of:
@@ -162,15 +161,11 @@ type MTCLog struct {
 	maxCertLifetime   time.Duration
 }
 
-// MTCProof represents an MTC inclusion proof as per
-// draft-ietf-plants-merkle-tree-certs section 6.2.
-type MTCProof struct{}
-
 // AddTBSRsp contains enough information from the log
 // to build a standalone certificate.
 type AddTBSRsp struct {
-	Index    uint64   `json:"index"`
-	MTCProof MTCProof `json:"mtcProof"`
+	Index    uint64 `json:"index"`
+	MTCProof []byte `json:"mtcProof"`
 }
 
 // TBSCertificateLogEntry represents a log entry as per
@@ -413,18 +408,18 @@ func (l *MTCLog) AddTBS(ctx context.Context, tbs TBSCertificateLogEntry) (*AddTB
 
 	return &AddTBSRsp{
 		Index:    idx.Index,
-		MTCProof: MTCProof{},
+		MTCProof: nil,
 	}, nil
 }
 
 // ProofToLandmark builds an MTCProof for the entry at idx to a
 // published landmark.
 // TODO: better arg
-func (l *MTCLog) ProofToLandmark(ctx context.Context, idx uint64) (MTCProof, error) {
+func (l *MTCLog) ProofToLandmark(ctx context.Context, idx uint64) ([]byte, error) {
 	// TODO check if landmark is available
 	//   If available, build and return an MTCProof
 	//   If not, return a clever error
-	return MTCProof{}, nil
+	return nil, nil
 }
 
 // formatOriginAndSigner generates valid MTC origin and signerName.
