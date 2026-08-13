@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"sync"
 
-	flog "github.com/transparency-dev/formats/log"
+	"github.com/transparency-dev/tessera/internal/parse"
 )
 
 // Reader wraps a ReadCheckpoint function to cache the latest checkpoint size observed from storage.
@@ -53,15 +53,13 @@ func (r *Reader) Checkpoint(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 
-	var cp flog.Checkpoint
-	if _, err := cp.Unmarshal(rawCp); err != nil {
+	_, size, _, err := parse.CheckpointUnsafe(rawCp)
+	if err != nil {
 		return nil, fmt.Errorf("parse checkpoint: %v", err)
 	}
 
 	r.mu.Lock()
-	if cp.Size > r.latestSize {
-		r.latestSize = cp.Size
-	}
+	r.latestSize = max(r.latestSize, size)
 	r.mu.Unlock()
 
 	return rawCp, nil

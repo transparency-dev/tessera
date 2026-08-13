@@ -657,7 +657,8 @@ func TestPublisher_GetSubtreeFor(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		published      *published
+		active         *ActiveLandmarks
+		pubAt          time.Time
 		index          uint64
 		wantStart      uint64
 		wantEnd        uint64
@@ -667,32 +668,36 @@ func TestPublisher_GetSubtreeFor(t *testing.T) {
 	}{
 		{
 			name:           "uninitialized published state returns retryAfter",
-			published:      nil,
+			active:         nil,
 			index:          10,
 			wantRetryAfter: true,
 		},
 		{
 			name:      "covered index in active landmark returns subtree range",
-			published: &published{active: mustNew(t, 2, 2, []uint64{100, 50, 0}), pubAt: time.Now()},
+			active:    mustNew(t, 2, 2, []uint64{100, 50, 0}),
+			pubAt:     time.Now(),
 			index:     75,
 			wantStart: 64,
 			wantEnd:   100,
 		},
 		{
 			name:           "in-flight index within tree size returns retryAfter",
-			published:      &published{active: mustNew(t, 2, 2, []uint64{100, 50, 0}), pubAt: time.Now()},
+			active:         mustNew(t, 2, 2, []uint64{100, 50, 0}),
+			pubAt:          time.Now(),
 			index:          120,
 			wantRetryAfter: true,
 		},
 		{
-			name:      "index beyond tree size returns error",
-			published: &published{active: mustNew(t, 2, 2, []uint64{100, 50, 0}), pubAt: time.Now()},
-			index:     160,
-			wantErr:   true,
+			name:    "index beyond tree size returns error",
+			active:  mustNew(t, 2, 2, []uint64{100, 50, 0}),
+			pubAt:   time.Now(),
+			index:   160,
+			wantErr: true,
 		},
 		{
 			name:          "pruned index older than oldest active landmark returns ErrTooOld",
-			published:     &published{active: mustNew(t, 3, 2, []uint64{150, 100, 50}), pubAt: time.Now()},
+			active:        mustNew(t, 3, 2, []uint64{150, 100, 50}),
+			pubAt:         time.Now(),
 			index:         25,
 			wantErrTooOld: true,
 		},
@@ -700,7 +705,14 @@ func TestPublisher_GetSubtreeFor(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			pub.published.Store(tc.published)
+			pub.mu.Lock()
+			if tc.active != nil {
+				pub.active = *tc.active
+			} else {
+				pub.active = ActiveLandmarks{}
+			}
+			pub.pubAt = tc.pubAt
+			pub.mu.Unlock()
 
 			s, e, retry, err := pub.GetSubtreeFor(ctx, tc.index)
 			if tc.wantErrTooOld {

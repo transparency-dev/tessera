@@ -23,7 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/transparency-dev/merkle/proof"
@@ -54,8 +54,8 @@ var (
 	// ErrTooOld indicates that an index precedes the earliest available active landmark.
 	ErrTooOld = errors.New("entry is older than earliest active landmark")
 
-	// ErrNotCovered indicates that an index is not yet covered by any published active landmark.
-	ErrNotCovered = errors.New("entry is not covered by active landmarks")
+	// ErrNotYetCovered indicates that an index is not yet covered by any published active landmark.
+	ErrNotYetCovered = errors.New("entry is not yet covered by active landmarks")
 )
 
 // ReadCheckpointSize returns the current log checkpoint size.
@@ -230,15 +230,15 @@ func (a *ActiveLandmarks) AddLandmark(treeSize, maxActive uint64) error {
 	return nil
 }
 
-// GetSubtreeFor returns the subtree range [start, end) of active landmarks covering index.
+// GetSubtreeFor returns the subtree range [start, end) of the active landmarks covering index.
 // It returns ErrTooOld if index precedes the earliest available active landmark.
-// It returns ErrNotCovered if index is not yet covered by any published active landmark.
+// It returns ErrNotYetCovered if index is not yet covered by any published active landmark.
 func (a *ActiveLandmarks) GetSubtreeFor(index uint64) (start, end uint64, err error) {
 	switch {
 	case len(a.treeSizes) == 0:
-		return 0, 0, errors.New("no landmarks available")
+		return 0, 0, errors.New("no landmarks available but expected at least one")
 	case index >= a.treeSizes[0]:
-		return 0, 0, ErrNotCovered
+		return 0, 0, ErrNotYetCovered
 	case index < a.treeSizes[len(a.treeSizes)-1]:
 		return 0, 0, ErrTooOld
 	}
@@ -265,11 +265,6 @@ func (a *ActiveLandmarks) GetSubtreeFor(index uint64) (start, end uint64, err er
 	return mid, e, nil
 }
 
-type published struct {
-	active *ActiveLandmarks
-	pubAt  time.Time
-}
-
 // Publisher manages publication of the landmarks resource at regular intervals.
 type Publisher struct {
 	storage            LandmarksStorage
@@ -277,7 +272,10 @@ type Publisher struct {
 	maxActive          uint64
 	pubInterval        time.Duration
 
-	published atomic.Pointer[published]
+	// mu protects active and pubAt during concurrent operations
+	mu     sync.RWMutex
+	active ActiveLandmarks // copy of published active landmarks
+	pubAt  time.Time       // time at which active landmarks were last published
 }
 
 // NewPublisher creates a new Publisher instance.
@@ -346,10 +344,10 @@ func (p *Publisher) initialise(ctx context.Context) error {
 		return fmt.Errorf("failed to initialise active landmarks: %w", err)
 	}
 
-	p.published.Store(&published{
-		active: activeLM,
-		pubAt:  modTime,
-	})
+	p.mu.Lock()
+	p.active = *activeLM
+	p.pubAt = modTime
+	p.mu.Unlock()
 	return nil
 }
 
@@ -423,10 +421,10 @@ func (p *Publisher) Update(ctx context.Context) (time.Duration, error) {
 		return 0, fmt.Errorf("failed to update landmarks resource: %v", err)
 	}
 
-	p.published.Store(&published{
-		active: active,
-		pubAt:  modTime,
-	})
+	p.mu.Lock()
+	p.active = *active
+	p.pubAt = modTime
+	p.mu.Unlock()
 
 	next := p.pubInterval
 	if grown {
@@ -445,12 +443,15 @@ func (p *Publisher) Update(ctx context.Context) (time.Duration, error) {
 //   - If index precedes the earliest available active landmark, returns ErrTooOld.
 //   - If index exceeds the current log tree size, it returns an error.
 func (p *Publisher) GetSubtreeFor(ctx context.Context, index uint64) (start, end uint64, retryAfter time.Duration, err error) {
-	pub := p.published.Load()
-	if pub == nil || pub.active == nil {
+	p.mu.RLock()
+	active := p.active
+	pubAt := p.pubAt
+	p.mu.RUnlock()
+	if len(active.treeSizes) == 0 {
 		return 0, 0, p.pubInterval, nil
 	}
 
-	start, end, err = pub.active.GetSubtreeFor(index)
+	start, end, err = active.GetSubtreeFor(index)
 	switch {
 	case err == nil:
 		return start, end, 0, nil
@@ -458,13 +459,13 @@ func (p *Publisher) GetSubtreeFor(ctx context.Context, index uint64) (start, end
 	case errors.Is(err, ErrTooOld):
 		return 0, 0, 0, ErrTooOld
 
-	case errors.Is(err, ErrNotCovered):
+	case errors.Is(err, ErrNotYetCovered):
 		cpSize, err := p.readCheckpointSize(ctx)
 		if err != nil {
 			return 0, 0, 0, fmt.Errorf("read checkpoint size: %w", err)
 		}
 		if index < cpSize {
-			retry := max(time.Millisecond, time.Until(pub.pubAt.Add(p.pubInterval)))
+			retry := max(time.Millisecond, time.Until(pubAt.Add(p.pubInterval)))
 			return 0, 0, retry, nil
 		}
 		return 0, 0, 0, fmt.Errorf("index %d exceeds current log tree size %d", index, cpSize)
