@@ -79,7 +79,9 @@ func main() {
 		WithAwaiterPollInterval(*awaiterPollInterval).
 		WithLandmarksStorage(lmp.NewStorage(*storageDir)).
 		WithLandmarkInterval(*landmarkInterval).
-		WithMaxCertLifetime(*maxCertLifetime)
+		WithMaxCertLifetime(*maxCertLifetime).
+		WithOrigin(origin).
+		WithSubtreeSigner(signer)
 	mtcLog, err := log.NewMTCLog(ctx, appender, opts)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to initialize MTC log", slog.Any("error", err))

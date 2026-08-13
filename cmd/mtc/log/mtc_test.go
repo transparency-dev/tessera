@@ -37,6 +37,10 @@ import (
 	snote "golang.org/x/mod/sumdb/note"
 )
 
+const (
+	testOrigin = "oid/1.3.6.1.4.1.32473.106"
+)
+
 // unmarshal decodes the contents octets of a TBSCertificateLogEntry
 // (i.e. WITHOUT the outer SEQUENCE tag and length prefix) into the struct.
 // This is kept in the test suite for verifying round-trip serialization of TBSCertificateLogEntry.
@@ -392,7 +396,9 @@ func (dummyLandmarksStorage) UpdateLandmarks(_ context.Context, fn func([]byte, 
 func newDummyOptions() *Options {
 	return NewOptions().
 		WithTesseraReader(&dummyLogReader{}).
-		WithLandmarksStorage(&dummyLandmarksStorage{})
+		WithLandmarksStorage(&dummyLandmarksStorage{}).
+		WithOrigin(testOrigin).
+		WithSubtreeSigner(mustTestSigner())
 }
 
 func TestMTCOptionsValid(t *testing.T) {
@@ -411,7 +417,7 @@ func TestMTCOptionsValid(t *testing.T) {
 			wantErr: false,
 		}, {
 			name:    "Valid: order independence (interval before storage)",
-			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithLandmarkInterval(2 * time.Hour).WithLandmarksStorage(&dummyLandmarksStorage{}),
+			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithLandmarkInterval(2 * time.Hour).WithLandmarksStorage(&dummyLandmarksStorage{}).WithOrigin(testOrigin).WithSubtreeSigner(mustTestSigner()),
 			wantErr: false,
 		}, {
 			name:    "Valid: custom poll period",
@@ -423,11 +429,19 @@ func TestMTCOptionsValid(t *testing.T) {
 			wantErr: true,
 		}, {
 			name:    "Error: No TesseraReader",
-			opts:    NewOptions().WithLandmarksStorage(&dummyLandmarksStorage{}),
+			opts:    NewOptions().WithLandmarksStorage(&dummyLandmarksStorage{}).WithOrigin(testOrigin).WithSubtreeSigner(mustTestSigner()),
 			wantErr: true,
 		}, {
 			name:    "Error: No LandmarksStorage",
-			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}),
+			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithOrigin(testOrigin).WithSubtreeSigner(mustTestSigner()),
+			wantErr: true,
+		}, {
+			name:    "Error: No Origin",
+			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithLandmarksStorage(&dummyLandmarksStorage{}).WithSubtreeSigner(mustTestSigner()),
+			wantErr: true,
+		}, {
+			name:    "Error: No SubtreeSigner",
+			opts:    NewOptions().WithTesseraReader(&dummyLogReader{}).WithLandmarksStorage(&dummyLandmarksStorage{}).WithOrigin(testOrigin),
 			wantErr: true,
 		}, {
 			name:    "Valid: Zero LandmarkInterval defaults to recommended",
@@ -646,33 +660,33 @@ func TestNewMTCLog(t *testing.T) {
 	})
 
 	t.Run("valid default options (47-day certs)", func(t *testing.T) {
-		logInst, err := NewMTCLog(ctx, &tessera.Appender{}, opts)
+		mtcLog, err := NewMTCLog(ctx, &tessera.Appender{}, opts)
 		if err != nil {
 			t.Fatalf("NewMTCLog unexpected error: %v", err)
 		}
-		if logInst == nil {
+		if mtcLog == nil {
 			t.Fatal("NewMTCLog returned nil instance")
 		}
 	})
 
 	t.Run("valid 7-day certs with default interval", func(t *testing.T) {
 		opts7d := newDummyOptions().WithMaxCertLifetime(7 * 24 * time.Hour)
-		logInst, err := NewMTCLog(ctx, &tessera.Appender{}, opts7d)
+		mtcLog, err := NewMTCLog(ctx, &tessera.Appender{}, opts7d)
 		if err != nil {
 			t.Fatalf("NewMTCLog unexpected error: %v", err)
 		}
-		if logInst == nil {
+		if mtcLog == nil {
 			t.Fatal("NewMTCLog returned nil instance")
 		}
 	})
 
 	t.Run("valid explicit 0 interval defaults to recommended", func(t *testing.T) {
 		opts0 := newDummyOptions().WithLandmarkInterval(0)
-		logInst, err := NewMTCLog(ctx, &tessera.Appender{}, opts0)
+		mtcLog, err := NewMTCLog(ctx, &tessera.Appender{}, opts0)
 		if err != nil {
 			t.Fatalf("NewMTCLog unexpected error: %v", err)
 		}
-		if logInst == nil {
+		if mtcLog == nil {
 			t.Fatal("NewMTCLog returned nil instance")
 		}
 	})
@@ -687,6 +701,21 @@ func TestNewMTCLog(t *testing.T) {
 		}
 		if mtcLog == nil {
 			t.Fatal("NewMTCLog returned nil instance")
+		}
+	})
+
+	t.Run("invalid subtree signer name", func(t *testing.T) {
+		k, _, err := note.GenerateMLDSAKey("example.com/invalid")
+		if err != nil {
+			t.Fatalf("GenerateMLDSAKey failed: %v", err)
+		}
+		badSigner, err := note.NewMLDSASigner(k)
+		if err != nil {
+			t.Fatalf("NewMLDSASigner failed: %v", err)
+		}
+		badOpts := newDummyOptions().WithSubtreeSigner(badSigner)
+		if _, err := NewMTCLog(ctx, &tessera.Appender{}, badOpts); err == nil {
+			t.Error("NewMTCLog with non-OID subtree signer name expected error, got nil")
 		}
 	})
 }
@@ -769,6 +798,18 @@ func unmarshalMTCProof(data []byte) (*parsedMTCProof, error) {
 	return &p, nil
 }
 
+func mustTestSigner() note.SubtreeSigner {
+	validKey, _, err := note.GenerateMLDSAKey(testOrigin)
+	if err != nil {
+		panic(err)
+	}
+	s, err := note.NewMLDSASigner(validKey)
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
+
 func setupTestMTCLog(t *testing.T) *MTCLog {
 	t.Helper()
 	ctx := t.Context()
@@ -780,13 +821,15 @@ func setupTestMTCLog(t *testing.T) *MTCLog {
 	}
 
 	sk := "PRIVATE+KEY+example.com/log/testdata+33d7b496+AeymY/SZAX0jZcJ8enZ5FY1Dz+wTML2yWSkK+9DSF3eg"
-	signer, err := snote.NewSigner(sk)
+	cpSigner, err := snote.NewSigner(sk)
 	if err != nil {
 		t.Fatalf("Failed to create test signer: %v", err)
 	}
 
+	signer := mustTestSigner()
+
 	opts := tessera.NewAppendOptions().
-		WithCheckpointSigner(signer).
+		WithCheckpointSigner(cpSigner).
 		WithBatching(4, 500*time.Millisecond).
 		WithCheckpointInterval(500*time.Millisecond)
 	appender, _, reader, err := tessera.NewAppender(ctx, driver, opts)
@@ -798,7 +841,9 @@ func setupTestMTCLog(t *testing.T) *MTCLog {
 		WithTesseraReader(reader).
 		WithAwaiterPollInterval(20*time.Millisecond).
 		WithLandmarksStorage(dummyLandmarksStorage{}).
-		WithMaxCertLifetime(7*24*time.Hour))
+		WithMaxCertLifetime(7*24*time.Hour).
+		WithOrigin(testOrigin).
+		WithSubtreeSigner(signer))
 	if err != nil {
 		t.Fatalf("Failed to initialize MTC log: %v", err)
 	}
@@ -899,6 +944,9 @@ func TestMTCLog_AddTBS(t *testing.T) {
 			if len(proofData.InclusionProof) != tc.wantProofLen {
 				t.Errorf("InclusionProof length = %d, want %d", len(proofData.InclusionProof), tc.wantProofLen)
 			}
+			if len(proofData.Signatures) != 1 {
+				t.Fatalf("Signatures length = %d, want 1", len(proofData.Signatures))
+			}
 			m, err := entriesByIndex[tc.entryIdx].Marshal()
 			if err != nil {
 				t.Fatalf("entries[%d].Marshal error: %v", tc.entryIdx, err)
@@ -915,9 +963,18 @@ func TestMTCLog_AddTBS(t *testing.T) {
 			if err != nil {
 				t.Fatalf("RootFromInclusionProof(entry%d): %v", tc.entryIdx, err)
 			}
-			if len(subRoot) != 32 {
-				t.Fatalf("subRoot length = %d, want 32", len(subRoot))
+			if !mtcLog.subtreeSigner.Verifier().VerifySubtree(0, mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, proofData.Signatures[0].Signature) {
+				t.Errorf("VerifySubtree failed for entry%d signature", tc.entryIdx)
+			}
+			wantCosignerID, err := mtcproof.ParseCosignerID(mtcLog.subtreeSigner.Name())
+			if err != nil {
+				t.Fatalf("ParseCosignerID: %v", err)
+			}
+			if !bytes.Equal(proofData.Signatures[0].CosignerID, wantCosignerID) {
+				t.Errorf("CosignerID = %x, want %x", proofData.Signatures[0].CosignerID, wantCosignerID)
 			}
 		})
 	}
 }
+
+

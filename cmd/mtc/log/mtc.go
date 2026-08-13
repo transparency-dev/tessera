@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/merkle/proof"
+	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/client"
@@ -101,6 +103,8 @@ type Options struct {
 	landmarkStorage  landmark.LandmarksStorage
 	landmarkInterval time.Duration
 	maxCertLifetime  time.Duration
+	origin           string
+	subtreeSigner    note.SubtreeSigner
 }
 
 // NewOptions creates a new options struct for configuring MTCLog instances.
@@ -118,6 +122,12 @@ func (o *Options) valid() error {
 	}
 	if o.landmarkStorage == nil {
 		return errors.New("invalid Options: WithLandmarksStorage must be set")
+	}
+	if o.origin == "" {
+		return errors.New("invalid Options: WithOrigin must be set")
+	}
+	if o.subtreeSigner == nil {
+		return errors.New("invalid Options: WithSubtreeSigner must be set")
 	}
 	if o.landmarkInterval < 0 {
 		return errors.New("invalid Options: WithLandmarkInterval must be >= 0")
@@ -174,6 +184,24 @@ func (o *Options) WithMaxCertLifetime(duration time.Duration) *Options {
 	return o
 }
 
+// WithOrigin configures the log origin string used for subtree signatures.
+// origin MUST not be empty, otherwise valid() will fail.
+// The same origin MUST be used with Tessera's WithOrigin() option.
+// TODO: think of whether we could enforce this matching, and good formatting
+// of the origin.
+func (o *Options) WithOrigin(origin string) *Options {
+	o.origin = origin
+	return o
+}
+
+// WithSubtreeSigner configures the signer used to produce subtree signatures for MTC proofs.
+// signer MUST not be nil, otherwise valid() will fail.
+// The same signer MUST be used with Tessera's WithCheckpointSigner() option.
+func (o *Options) WithSubtreeSigner(signer note.SubtreeSigner) *Options {
+	o.subtreeSigner = signer
+	return o
+}
+
 type MTCLog struct {
 	a                 *tessera.Appender
 	reader            tessera.LogReader
@@ -181,6 +209,9 @@ type MTCLog struct {
 	awaiter           *tessera.PublicationAwaiter
 	landmarkPublisher *landmark.Publisher
 	maxCertLifetime   time.Duration
+	origin            string
+	subtreeSigner     note.SubtreeSigner
+	logCosignerID     []byte
 }
 
 // AddTBSRsp contains enough information from the log
@@ -398,6 +429,11 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 		return nil, fmt.Errorf("failed to initialise landmark publisher: %v", err)
 	}
 
+	logCosignerID, err := mtcproof.ParseCosignerID(opts.subtreeSigner.Name())
+	if err != nil {
+		return nil, fmt.Errorf("invalid subtree signer name %q: %w", opts.subtreeSigner.Name(), err)
+	}
+
 	return &MTCLog{
 		a:                 a,
 		reader:            opts.reader,
@@ -405,6 +441,9 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 		awaiter:           tessera.NewPublicationAwaiter(ctx, cpReader.Checkpoint, opts.pollPeriod),
 		landmarkPublisher: pub,
 		maxCertLifetime:   opts.maxCertLifetime,
+		origin:            opts.origin,
+		subtreeSigner:     opts.subtreeSigner,
+		logCosignerID:     logCosignerID,
 	}, nil
 }
 
@@ -425,7 +464,8 @@ func (l *MTCLog) AddTBS(ctx context.Context, tbs TBSCertificateLogEntry) (*AddTB
 		return nil, fmt.Errorf("marshal: %v", err)
 	}
 
-	future := l.a.Add(ctx, tessera.NewEntry(eb))
+	tEntry := tessera.NewEntry(eb)
+	future := l.a.Add(ctx, tEntry)
 
 	idx, _, err := l.awaiter.Await(ctx, future)
 	if err != nil {
@@ -445,13 +485,24 @@ func (l *MTCLog) AddTBS(ctx context.Context, tbs TBSCertificateLogEntry) (*AddTB
 	if err != nil {
 		return nil, fmt.Errorf("cannot get subtree inclusion proof for index %d in subtree [%d, %d): %v", idx.Index, start, end, err)
 	}
+	subRoot, err := proof.RootFromInclusionProof(rfc6962.DefaultHasher, idx.Index-start, end-start, tEntry.LeafHash(), proofNodes)
+	if err != nil {
+		return nil, fmt.Errorf("cannot compute subtree root for index %d in subtree [%d, %d): %w", idx.Index, start, end, err)
+	}
+
+	selfSig, err := l.subtreeSigner.SignSubtree(0, l.origin, start, end, subRoot)
+	if err != nil {
+		return nil, fmt.Errorf("cannot sign subtree [%d, %d): %w", start, end, err)
+	}
 
 	extBytes, err := entry.ExtractExtensions(eb)
 	if err != nil {
 		return nil, fmt.Errorf("cannot extract extensions: %v", err)
 	}
 
-	proofBytes, err := mtcproof.Serialize(extBytes, start, end, proofNodes, nil)
+	proofBytes, err := mtcproof.Serialize(extBytes, start, end, proofNodes, []mtcproof.SubtreeSignature{
+		{CosignerID: l.logCosignerID, Signature: selfSig},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("cannot construct MTCProof: %v", err)
 	}

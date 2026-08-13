@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/log"
 	lmp "github.com/transparency-dev/tessera/cmd/mtc/log/internal/landmark/posix"
@@ -35,7 +36,10 @@ import (
 	tposix "github.com/transparency-dev/tessera/storage/posix"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
-	"golang.org/x/mod/sumdb/note"
+)
+
+const (
+	testOrigin = "oid/1.3.6.1.4.1.32473.106"
 )
 
 func setupTestLog(t *testing.T) *log.MTCLog {
@@ -48,8 +52,11 @@ func setupTestLog(t *testing.T) *log.MTCLog {
 		t.Fatalf("Failed to initialize POSIX storage: %v", err)
 	}
 
-	sk := "PRIVATE+KEY+example.com/log/testdata+33d7b496+AeymY/SZAX0jZcJ8enZ5FY1Dz+wTML2yWSkK+9DSF3eg"
-	signer, err := note.NewSigner(sk)
+	validKey, _, err := note.GenerateMLDSAKey(testOrigin)
+	if err != nil {
+		t.Fatalf("Failed to generate MLDSA key: %v", err)
+	}
+	signer, err := note.NewMLDSASigner(validKey)
 	if err != nil {
 		t.Fatalf("Failed to create test signer: %v", err)
 	}
@@ -66,7 +73,9 @@ func setupTestLog(t *testing.T) *log.MTCLog {
 		WithTesseraReader(reader).
 		WithAwaiterPollInterval(20*time.Millisecond).
 		WithLandmarksStorage(lmp.NewStorage(storageDir)).
-		WithMaxCertLifetime(7*24*time.Hour))
+		WithMaxCertLifetime(7*24*time.Hour).
+		WithOrigin(testOrigin).
+		WithSubtreeSigner(signer))
 	if err != nil {
 		t.Fatalf("Failed to initialize MTC log: %v", err)
 	}
