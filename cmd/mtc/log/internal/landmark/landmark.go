@@ -59,7 +59,7 @@ var (
 )
 
 // ReadCheckpointSize returns the current log checkpoint size.
-type ReadCheckpointSize func(ctx context.Context) (uint64, error)
+type ReadCheckpointSize func() uint64
 
 // LandmarksStorage abstracts reading and writing the published active landmarks resource.
 type LandmarksStorage interface {
@@ -231,12 +231,14 @@ func (a *ActiveLandmarks) AddLandmark(treeSize, maxActive uint64) error {
 }
 
 // GetSubtreeFor returns the subtree range [start, end) of the active landmarks covering index.
+//
 // It returns ErrTooOld if index precedes the earliest available active landmark.
 // It returns ErrNotYetCovered if index is not yet covered by any published active landmark.
+//
+// It assumes that ActiveLandmarks is well-constructed, i.e. treeSizes contains
+// at least one entry, and it is ordered in decreasing order.
 func (a *ActiveLandmarks) GetSubtreeFor(index uint64) (start, end uint64, err error) {
 	switch {
-	case len(a.treeSizes) == 0:
-		return 0, 0, errors.New("no landmarks available but expected at least one")
 	case index >= a.treeSizes[0]:
 		return 0, 0, ErrNotYetCovered
 	case index < a.treeSizes[len(a.treeSizes)-1]:
@@ -382,10 +384,7 @@ func (p *Publisher) start(ctx context.Context) {
 // pubInterval and the checkpoint size has increased.
 // It returns how long to wait before calling Update again.
 func (p *Publisher) Update(ctx context.Context) (time.Duration, error) {
-	cpSize, err := p.readCheckpointSize(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to read current checkpoint size: %w", err)
-	}
+	cpSize := p.readCheckpointSize()
 
 	grown := true
 	active := &ActiveLandmarks{}
@@ -460,10 +459,7 @@ func (p *Publisher) GetSubtreeFor(ctx context.Context, index uint64) (start, end
 		return 0, 0, 0, ErrTooOld
 
 	case errors.Is(err, ErrNotYetCovered):
-		cpSize, err := p.readCheckpointSize(ctx)
-		if err != nil {
-			return 0, 0, 0, fmt.Errorf("read checkpoint size: %w", err)
-		}
+		cpSize := p.readCheckpointSize()
 		if index < cpSize {
 			retry := max(time.Millisecond, time.Until(pubAt.Add(p.pubInterval)))
 			return 0, 0, retry, nil

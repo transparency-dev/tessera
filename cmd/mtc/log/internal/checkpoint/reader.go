@@ -66,8 +66,8 @@ func (r *Reader) Checkpoint(ctx context.Context) ([]byte, error) {
 }
 
 // LatestSize returns the most recently observed checkpoint size.
-func (r *Reader) LatestSize(_ context.Context) (uint64, error) {
+func (r *Reader) LatestSize() uint64 {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.latestSize, nil
+	return r.latestSize
 }

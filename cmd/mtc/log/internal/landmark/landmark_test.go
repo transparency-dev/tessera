@@ -264,12 +264,6 @@ func TestActiveLandmarks_GetSubtreeFor(t *testing.T) {
 		wantErr   bool
 	}{
 		{
-			name:      "uninitialized landmarks",
-			landmarks: &ActiveLandmarks{},
-			index:     10,
-			wantErr:   true,
-		},
-		{
 			name:      "index too old (pruned)",
 			landmarks: mustNew(t, 3, 2, []uint64{150, 100, 50}),
 			index:     25,
@@ -390,7 +384,7 @@ func TestPublisher_Initialise(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			loopCtx, cancelLoop := context.WithCancel(ctx)
 			memStorage := &mockStorage{data: tc.initialData}
-			_, err := NewPublisher(loopCtx, func(ctx context.Context) (uint64, error) { return 0, nil }, memStorage, 24*time.Hour, 1*time.Hour)
+			_, err := NewPublisher(loopCtx, func() uint64 { return 0 }, memStorage, 24*time.Hour, 1*time.Hour)
 			if err != nil {
 				t.Fatalf("NewPublisher() error: %v", err)
 			}
@@ -415,8 +409,8 @@ func TestPublisher_Update(t *testing.T) {
 	ctx := context.Background()
 	loopCtx, cancelLoop := context.WithCancel(ctx)
 	currentSize := uint64(0)
-	readCheckpointSize := func(ctx context.Context) (uint64, error) {
-		return currentSize, nil
+	readCheckpointSize := func() uint64 {
+		return currentSize
 	}
 
 	memStorage := &mockStorage{}
@@ -521,7 +515,7 @@ func TestNewPublisher(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	dummyReader := func(ctx context.Context) (uint64, error) { return 0, nil }
+	dummyReader := func() uint64 { return 0 }
 	dummyStorage := &mockStorage{}
 
 	tests := []struct {
@@ -650,7 +644,7 @@ func TestPublisher_GetSubtreeFor(t *testing.T) {
 	pubInterval := 1 * time.Hour
 	memStorage := &mockStorage{}
 
-	pub, err := NewPublisher(ctx, func(ctx context.Context) (uint64, error) { return treeSize, nil }, memStorage, 24*time.Hour, pubInterval)
+	pub, err := NewPublisher(ctx, func() uint64 { return treeSize }, memStorage, 24*time.Hour, pubInterval)
 	if err != nil {
 		t.Fatalf("NewPublisher() error: %v", err)
 	}
@@ -747,4 +741,3 @@ func TestPublisher_GetSubtreeFor(t *testing.T) {
 		})
 	}
 }
-

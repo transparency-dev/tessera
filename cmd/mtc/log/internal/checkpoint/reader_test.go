@@ -79,10 +79,7 @@ func TestNewReader(t *testing.T) {
 			if tc.wantErr {
 				return
 			}
-			size, err := r.LatestSize(ctx)
-			if err != nil {
-				t.Fatalf("LatestSize() error = %v", err)
-			}
+			size := r.LatestSize()
 			if size != tc.wantSize {
 				t.Errorf("LatestSize() = %d, want %d", size, tc.wantSize)
 			}
@@ -147,10 +144,7 @@ func TestReader_Checkpoint(t *testing.T) {
 				t.Errorf("Checkpoint() = %q, want %q", cp, tc.wantCP)
 			}
 
-			size, err := r.LatestSize(ctx)
-			if err != nil {
-				t.Fatalf("LatestSize() error = %v", err)
-			}
+			size := r.LatestSize()
 			if size != tc.wantSize {
 				t.Errorf("LatestSize() = %d, want %d", size, tc.wantSize)
 			}
@@ -210,19 +204,13 @@ func TestReader_LatestSize(t *testing.T) {
 				}
 			}
 
-			size, err := r.LatestSize(ctx)
-			if err != nil {
-				t.Fatalf("LatestSize() unexpected error: %v", err)
-			}
+			size := r.LatestSize()
 			if size != tc.wantSize {
 				t.Errorf("LatestSize() = %d, want %d", size, tc.wantSize)
 			}
 
 			// Subsequent LatestSize call returns cached size without triggering additional storage reads
-			size, err = r.LatestSize(ctx)
-			if err != nil {
-				t.Fatalf("subsequent LatestSize() unexpected error: %v", err)
-			}
+			size = r.LatestSize()
 			if size != tc.wantSize {
 				t.Errorf("subsequent LatestSize() = %d, want %d", size, tc.wantSize)
 			}
