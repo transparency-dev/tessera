@@ -42,6 +42,7 @@ func New(m *MirrorMux, w *witness.Witness) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /add-checkpoint", witness.NewHTTPHandler(w).AddCheckpoint)
 	mux.HandleFunc("POST /add-entries", addEntries(m))
+	mux.HandleFunc("POST /sign-subtree", witness.NewSignSubtreeHandler(m.SignSubtree))
 	return mux
 }
 

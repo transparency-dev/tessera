@@ -16,17 +16,18 @@ package handler
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 
 	"github.com/transparency-dev/tessera"
+	"github.com/transparency-dev/tessera/internal/parse"
+	"github.com/transparency-dev/witness/witness"
 )
 
 var (
 	// ErrUnknownLog is returned when a requested log is unknown to the mirror
-	ErrUnknownLog = errors.New("unknown log origin")
+	ErrUnknownLog = witness.ErrUnknownLog
 )
 
 // NewMirrorMux creates a new MirrorMux from the provided map of origins to mirror targets.
@@ -65,6 +66,24 @@ func (m *MirrorMux) AddEntries(ctx context.Context, origin string, uploadStart, 
 	return t.AddEntries(ctx, uploadStart, uploadEnd, ticket, next)
 }
 
+func (m *MirrorMux) SignSubtree(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, cp []byte) ([]byte, error) {
+	// Need to crack open the checkpoint to figure out the origin so we know which mux target to send it to.
+	// This is safe, though, because the target's SignSubtree will open the checkpoint properly, verifying its
+	// signature and asserting the origin is correct.
+	cpOrigin, _, _, err := parse.CheckpointUnsafe(cp)
+	if err != nil {
+		return nil, err
+	}
+
+	t, err := m.target(cpOrigin)
+	if err != nil {
+		return nil, ErrUnknownLog
+	}
+
+	slog.InfoContext(ctx, "SignSubtree", slog.String("origin", cpOrigin))
+	return t.SignSubtree(ctx, start, end, subRoot, proof, cp)
+}
+
 // target returns the target for the given origin, or ErrUnknownLog if it doesn't exist.
 func (m *MirrorMux) target(origin string) (MirrorTarget, error) {
 	m.mu.RLock()
@@ -80,4 +99,9 @@ func (m *MirrorMux) target(origin string) (MirrorTarget, error) {
 type MirrorTarget interface {
 	// AddEntries adds verified consistent entries to the mirror.
 	AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (nextIdx uint64, curSize uint64, newTicket []byte, cosigs []byte, err error)
+	// SignSubtree should verify that:
+	// - The provided checkpoint originates from a known log, is valid, and is counter-signed by the same key which will cosign the subtree.
+	// - The provided subtree and proof are valid for the provided checkpoint.
+	// If all checks pass, it should return a cosignature for the subtree, or an error.
+	SignSubtree(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, cp []byte) ([]byte, error)
 }

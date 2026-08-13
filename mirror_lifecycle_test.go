@@ -22,12 +22,17 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"strings"
 	"testing"
 
 	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/merkle"
+	"github.com/transparency-dev/merkle/compact"
+	"github.com/transparency-dev/merkle/proof"
+	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
+	"github.com/transparency-dev/witness/witness"
 	"golang.org/x/mod/sumdb/note"
 )
 
@@ -67,9 +72,9 @@ const (
 )
 
 var (
-	testLogSigner, testLogVerifier = mustGenerateKey(testPendingCPOrigin)
-	testMirrorSigner, _            = mustGenerateKey(testMirrorOrigin)
-	testPendingCP                  = mustSignCP(testPendingCPOrigin, testPendingCPSize, testPendingCPRoot, testLogSigner)
+	testLogSigner, testLogVerifier       = mustGenerateKey(testPendingCPOrigin)
+	testMirrorSigner, testMirrorVerifier = mustGenerateKey(testMirrorOrigin)
+	testPendingCP                        = mustSignCP(testPendingCPOrigin, testPendingCPSize, testPendingCPRoot, testLogSigner)
 )
 
 func TestTicketRoundTrip(t *testing.T) {
@@ -378,16 +383,16 @@ func TestMirrorTarget_AddEntries_ZeroCheckpoint(t *testing.T) {
 	}
 }
 
-func mustGenerateKey(origin string) (note.Signer, note.Verifier) {
+func mustGenerateKey(origin string) (fnote.SubtreeSigner, fnote.SubtreeVerifier) {
 	sk, vk, err := fnote.GenerateMLDSAKey(origin)
 	if err != nil {
 		panic(fmt.Errorf("Failed to generate key for %q: %v", origin, err))
 	}
-	s, err := fnote.NewSignerForCosignatureV1(sk)
+	s, err := fnote.NewMLDSASigner(sk)
 	if err != nil {
 		panic(fmt.Errorf("Failed to instantiate signer: %v", err))
 	}
-	v, err := fnote.NewVerifierForCosignatureV1(vk)
+	v, err := fnote.NewMLDSAVerifier(vk)
 	if err != nil {
 		panic(fmt.Errorf("Failed to instantiate verifier: %v", err))
 	}
@@ -794,4 +799,210 @@ type fakeDriver struct{}
 
 func (f *fakeDriver) MirrorWriter(ctx context.Context, opts *MirrorOptions) (MirrorWriter, LogReader, error) {
 	return &fakeMirrorWriter{}, &fakeLogReader{}, nil
+}
+
+func TestMirrorTarget_SignSubtree(t *testing.T) {
+	const treeSize = uint64(8)
+	ctx := t.Context()
+
+	// Build a small Merkle tree with 8 leaves.
+	rf := &compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}
+	nodes := make(map[compact.NodeID][]byte)
+	cr := rf.NewEmptyRange(0)
+	for i := range treeSize {
+		leafHash := rfc6962.DefaultHasher.HashLeaf(fmt.Appendf(nil, "entry-%d", i))
+		if err := cr.Append(leafHash, func(id compact.NodeID, hash []byte) {
+			nodes[id] = hash
+		}); err != nil {
+			t.Fatalf("cr.Append: %v", err)
+		}
+	}
+	rootHash, err := cr.GetRootHash(nil)
+	if err != nil {
+		t.Fatalf("GetRootHash: %v", err)
+	}
+
+	// Build subtree [0, 4) root.
+	subCR := rf.NewEmptyRange(0)
+	for i := range uint64(4) {
+		leafHash := rfc6962.DefaultHasher.HashLeaf(fmt.Appendf(nil, "entry-%d", i))
+		if err := subCR.Append(leafHash, nil); err != nil {
+			t.Fatalf("subCR.Append: %v", err)
+		}
+	}
+	validSubRoot, err := subCR.GetRootHash(nil)
+	if err != nil {
+		t.Fatalf("subCR.GetRootHash: %v", err)
+	}
+
+	// Consistency proof for [0, 4) in tree of size 8.
+	proofNodes, err := proof.SubtreeConsistency(0, 4, treeSize)
+	if err != nil {
+		t.Fatalf("proof.SubtreeConsistency: %v", err)
+	}
+	validProof := make([][]byte, len(proofNodes.IDs))
+	for i, id := range proofNodes.IDs {
+		validProof[i] = nodes[id]
+	}
+
+	otherMirrorSigner, _ := mustGenerateKey("other-mirror-signer")
+	otherOriginSigner, _ := mustGenerateKey("other-origin")
+
+	opts := NewMirrorOptions().
+		WithLogVerifier(testLogVerifier).
+		WithSigner(testMirrorSigner).
+		WithOrigin(testPendingCPOrigin).
+		WithCheckpointSource(func(ctx context.Context) ([]byte, error) {
+			return nil, nil
+		})
+
+	mt, err := NewMirrorTarget(ctx, &fakeDriver{}, opts)
+	if err != nil {
+		t.Fatalf("NewMirrorTarget failed: %v", err)
+	}
+
+	for _, test := range []struct {
+		name      string
+		start     uint64
+		end       uint64
+		subRoot   []byte
+		proof     [][]byte
+		cp        []byte
+		wantErr   error
+		wantCosig bool
+	}{
+		{
+			name:      "success",
+			start:     0,
+			end:       4,
+			subRoot:   validSubRoot,
+			proof:     validProof,
+			cp:        mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testLogSigner, testMirrorSigner),
+			wantCosig: true,
+		},
+		{
+			name:    "checkpoint missing mirror cosignature",
+			start:   0,
+			end:     4,
+			subRoot: validSubRoot,
+			proof:   validProof,
+			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testLogSigner),
+			wantErr: witness.ErrNoWitnessSignature,
+		},
+		{
+			name:    "checkpoint signed by wrong mirror key",
+			start:   0,
+			end:     4,
+			subRoot: validSubRoot,
+			proof:   validProof,
+			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testLogSigner, otherMirrorSigner),
+			wantErr: witness.ErrNoWitnessSignature,
+		},
+		{
+			name:    "origin mismatch",
+			start:   0,
+			end:     4,
+			subRoot: validSubRoot,
+			proof:   validProof,
+			cp:      mustCosignCP(t, "other-origin", treeSize, rootHash, otherOriginSigner, testMirrorSigner),
+			wantErr: witness.ErrUnknownLog,
+		},
+		{
+			name:    "invalid subtree range - end > cp.Size",
+			start:   0,
+			end:     16,
+			subRoot: validSubRoot,
+			proof:   validProof,
+			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testLogSigner, testMirrorSigner),
+			wantErr: witness.ErrSubtreeRangeInvalid,
+		},
+		{
+			name:    "invalid subtree range - unaligned",
+			start:   1,
+			end:     3,
+			subRoot: validSubRoot,
+			proof:   validProof,
+			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testLogSigner, testMirrorSigner),
+			wantErr: witness.ErrSubtreeRangeInvalid,
+		},
+		{
+			name:    "invalid proof - corrupted hash",
+			start:   0,
+			end:     4,
+			subRoot: validSubRoot,
+			proof:   [][]byte{[]byte("corrupted-proof-hash-of-32-bytes")},
+			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testLogSigner, testMirrorSigner),
+			wantErr: witness.ErrInvalidProof,
+		},
+		{
+			name:    "invalid proof - wrong subtree root",
+			start:   0,
+			end:     4,
+			subRoot: make([]byte, 32),
+			proof:   validProof,
+			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testLogSigner, testMirrorSigner),
+			wantErr: witness.ErrInvalidProof,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := mt.SignSubtree(ctx, test.start, test.end, test.subRoot, test.proof, test.cp)
+			if test.wantErr != nil {
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("got error %v, want %v", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if test.wantCosig {
+				if len(got) == 0 {
+					t.Fatalf("got empty cosig, want non-empty")
+				}
+				sigLine := strings.TrimSpace(string(got))
+				parts := strings.Split(sigLine, " ")
+				if len(parts) != 3 || parts[0] != "—" {
+					t.Fatalf("unexpected cosig format: %q", sigLine)
+				}
+				sigWithHash, err := base64.StdEncoding.DecodeString(parts[2])
+				if err != nil {
+					t.Fatalf("failed to decode sig base64: %v", err)
+				}
+				if len(sigWithHash) < 4 {
+					t.Fatalf("sig too short: %d bytes", len(sigWithHash))
+				}
+				sig := sigWithHash[4:]
+				if !testMirrorVerifier.VerifySubtree(0, testPendingCPOrigin, test.start, test.end, test.subRoot, sig) {
+					t.Errorf("VerifySubtree failed for generated cosignature")
+				}
+			} else {
+				if len(got) != 0 {
+					t.Fatalf("got non-empty cosig, want empty")
+				}
+			}
+		})
+	}
+}
+
+func TestMirrorTarget_SubtreeWitness_NilSigner(t *testing.T) {
+	opts := NewMirrorOptions().
+		WithLogVerifier(testLogVerifier).
+		WithOrigin(testPendingCPOrigin).
+		WithCheckpointSource(func(ctx context.Context) ([]byte, error) {
+			return nil, nil
+		})
+	_, err := NewMirrorTarget(t.Context(), &fakeDriver{}, opts)
+	if err == nil {
+		t.Fatalf("NewMirrorTarget with nil signer: got nil err, want error")
+	}
+}
+
+// mustCosignCP is a helper to sign checkpoints with multiple signers.
+func mustCosignCP(t *testing.T, origin string, size uint64, root []byte, signers ...note.Signer) []byte {
+	t.Helper()
+	raw, err := note.Sign(&note.Note{Text: fmt.Sprintf("%s\n%d\n%s\n", origin, size, base64.StdEncoding.EncodeToString(root))}, signers...)
+	if err != nil {
+		t.Fatalf("Failed to sign note: %v", err)
+	}
+	return raw
 }

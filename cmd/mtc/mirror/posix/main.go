@@ -126,7 +126,7 @@ func main() {
 //
 // The target directory for the driver is derived from the storage directory and the origin in accordance
 // with the `tlog-mirror` spec, allowing the root of the storage directory to be exported directly to read-only clients.
-func newMirrorTarget(ctx context.Context, w *witness.Witness, origin string, logVerifier note.Verifier, mirrorSigner note.Signer) (*tessera.MirrorTarget, error) {
+func newMirrorTarget(ctx context.Context, w *witness.Witness, origin string, logVerifier note.Verifier, mirrorSigner fnote.SubtreeSigner) (*tessera.MirrorTarget, error) {
 	if origin == "" {
 		return nil, fmt.Errorf("origin cannot be empty")
 	}
@@ -230,7 +230,7 @@ func witnessCosignerFromFlags(ctx context.Context) []note.Signer {
 	return []note.Signer{mustCreateCosigner(ctx, *witnessCosignerPath)}
 }
 
-func mustCreateCosigner(ctx context.Context, path string) note.Signer {
+func mustCreateCosigner(ctx context.Context, path string) fnote.SubtreeSigner {
 	if path == "" {
 		slog.ErrorContext(ctx, "Cosigner key path not specified")
 		os.Exit(1)
@@ -240,7 +240,7 @@ func mustCreateCosigner(ctx context.Context, path string) note.Signer {
 		slog.ErrorContext(ctx, "Failed to read cosigner key", slog.String("path", path), slog.Any("error", err))
 		os.Exit(1)
 	}
-	s, err := fnote.NewSignerForCosignatureV1(string(r))
+	s, err := fnote.NewMLDSASigner(string(r))
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create cosigner", slog.String("path", path), slog.Any("error", err))
 		os.Exit(1)
