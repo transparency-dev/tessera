@@ -367,7 +367,7 @@ func TestMTCLog_Accept(t *testing.T) {
 type dummyLogReader struct{ tessera.LogReader }
 
 func (dummyLogReader) ReadCheckpoint(context.Context) ([]byte, error) {
-	return nil, nil
+	return []byte("test.origin\n0\nAAAA\n"), nil
 }
 
 type dummyLandmarksStorage struct{}

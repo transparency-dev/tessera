@@ -17,6 +17,7 @@ package landmark
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"reflect"
 	"sync"
@@ -253,6 +254,75 @@ func TestAddLandmark(t *testing.T) {
 	}
 }
 
+func TestActiveLandmarks_GetSubtreeFor(t *testing.T) {
+	tests := []struct {
+		name      string
+		landmarks *ActiveLandmarks
+		index     uint64
+		wantStart uint64
+		wantEnd   uint64
+		wantErr   bool
+	}{
+		{
+			name:      "index too old (pruned)",
+			landmarks: mustNew(t, 3, 2, []uint64{150, 100, 50}),
+			index:     25,
+			wantErr:   true,
+		},
+		{
+			name:      "index not covered (exceeds latest landmark)",
+			landmarks: mustNew(t, 3, 3, []uint64{150, 100, 50, 0}),
+			index:     160,
+			wantErr:   true,
+		},
+		{
+			name:      "index 25 in landmark [0, 50)",
+			landmarks: mustNew(t, 3, 3, []uint64{150, 100, 50, 0}),
+			index:     25,
+			wantStart: 0,
+			wantEnd:   32,
+		},
+		{
+			name:      "index 40 in landmark [0, 50)",
+			landmarks: mustNew(t, 3, 3, []uint64{150, 100, 50, 0}),
+			index:     40,
+			wantStart: 32,
+			wantEnd:   50,
+		},
+		{
+			name:      "index 75 in landmark [50, 100)",
+			landmarks: mustNew(t, 3, 3, []uint64{150, 100, 50, 0}),
+			index:     75,
+			wantStart: 64,
+			wantEnd:   100,
+		},
+		{
+			name:      "index 130 in landmark [100, 150)",
+			landmarks: mustNew(t, 3, 3, []uint64{150, 100, 50, 0}),
+			index:     130,
+			wantStart: 128,
+			wantEnd:   150,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, e, err := tc.landmarks.GetSubtreeFor(tc.index)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("GetSubtreeFor(%d) error = %v, wantErr %v", tc.index, err, tc.wantErr)
+			}
+			if !tc.wantErr {
+				if s != tc.wantStart || e != tc.wantEnd {
+					t.Errorf("GetSubtreeFor(%d) = [%d, %d), want [%d, %d)", tc.index, s, e, tc.wantStart, tc.wantEnd)
+				}
+				if tc.index < s || tc.index >= e {
+					t.Errorf("GetSubtreeFor(%d) returned range [%d, %d) that does not contain index", tc.index, s, e)
+				}
+			}
+		})
+	}
+}
+
 type mockStorage struct {
 	mu      sync.Mutex
 	data    []byte
@@ -314,7 +384,7 @@ func TestPublisher_Initialise(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			loopCtx, cancelLoop := context.WithCancel(ctx)
 			memStorage := &mockStorage{data: tc.initialData}
-			_, err := NewPublisher(loopCtx, func(ctx context.Context) (uint64, error) { return 0, nil }, memStorage, 24*time.Hour, 1*time.Hour)
+			_, err := NewPublisher(loopCtx, func() uint64 { return 0 }, memStorage, 24*time.Hour, 1*time.Hour)
 			if err != nil {
 				t.Fatalf("NewPublisher() error: %v", err)
 			}
@@ -339,8 +409,8 @@ func TestPublisher_Update(t *testing.T) {
 	ctx := context.Background()
 	loopCtx, cancelLoop := context.WithCancel(ctx)
 	currentSize := uint64(0)
-	readCheckpointSize := func(ctx context.Context) (uint64, error) {
-		return currentSize, nil
+	readCheckpointSize := func() uint64 {
+		return currentSize
 	}
 
 	memStorage := &mockStorage{}
@@ -445,7 +515,7 @@ func TestNewPublisher(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	dummyReader := func(ctx context.Context) (uint64, error) { return 0, nil }
+	dummyReader := func() uint64 { return 0 }
 	dummyStorage := &mockStorage{}
 
 	tests := []struct {
@@ -568,5 +638,106 @@ func TestNewPublisher(t *testing.T) {
 	}
 }
 
+func TestPublisher_GetSubtreeFor(t *testing.T) {
+	ctx := context.Background()
+	treeSize := uint64(150)
+	pubInterval := 1 * time.Hour
+	memStorage := &mockStorage{}
 
+	pub, err := NewPublisher(ctx, func() uint64 { return treeSize }, memStorage, 24*time.Hour, pubInterval)
+	if err != nil {
+		t.Fatalf("NewPublisher() error: %v", err)
+	}
 
+	tests := []struct {
+		name           string
+		active         *ActiveLandmarks
+		pubAt          time.Time
+		index          uint64
+		wantStart      uint64
+		wantEnd        uint64
+		wantRetryAfter bool
+		wantErrTooOld  bool
+		wantErr        bool
+	}{
+		{
+			name:           "uninitialized published state returns retryAfter",
+			active:         nil,
+			index:          10,
+			wantRetryAfter: true,
+		},
+		{
+			name:      "covered index in active landmark returns subtree range",
+			active:    mustNew(t, 2, 2, []uint64{100, 50, 0}),
+			pubAt:     time.Now(),
+			index:     75,
+			wantStart: 64,
+			wantEnd:   100,
+		},
+		{
+			name:           "in-flight index within tree size returns retryAfter",
+			active:         mustNew(t, 2, 2, []uint64{100, 50, 0}),
+			pubAt:          time.Now(),
+			index:          120,
+			wantRetryAfter: true,
+		},
+		{
+			name:    "index beyond tree size returns error",
+			active:  mustNew(t, 2, 2, []uint64{100, 50, 0}),
+			pubAt:   time.Now(),
+			index:   160,
+			wantErr: true,
+		},
+		{
+			name:          "pruned index older than oldest active landmark returns ErrTooOld",
+			active:        mustNew(t, 3, 2, []uint64{150, 100, 50}),
+			pubAt:         time.Now(),
+			index:         25,
+			wantErrTooOld: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pub.mu.Lock()
+			if tc.active != nil {
+				pub.active = *tc.active
+			} else {
+				pub.active = ActiveLandmarks{}
+			}
+			pub.pubAt = tc.pubAt
+			pub.mu.Unlock()
+
+			s, e, retry, err := pub.GetSubtreeFor(ctx, tc.index)
+			if tc.wantErrTooOld {
+				if !errors.Is(err, ErrTooOld) {
+					t.Fatalf("GetSubtreeFor(%d) error = %v, want %v", tc.index, err, ErrTooOld)
+				}
+				return
+			}
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("GetSubtreeFor(%d) expected error, got nil", tc.index)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GetSubtreeFor(%d) unexpected error: %v", tc.index, err)
+			}
+
+			if tc.wantRetryAfter {
+				if retry <= 0 {
+					t.Errorf("GetSubtreeFor(%d) retry = %v, want > 0", tc.index, retry)
+				}
+				return
+			}
+
+			if retry != 0 {
+				t.Errorf("GetSubtreeFor(%d) retry = %v, want 0", tc.index, retry)
+			}
+			if s != tc.wantStart || e != tc.wantEnd {
+				t.Errorf("GetSubtreeFor(%d) = [%d, %d), want [%d, %d)", tc.index, s, e, tc.wantStart, tc.wantEnd)
+			}
+		})
+	}
+}

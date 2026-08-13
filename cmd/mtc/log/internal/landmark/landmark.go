@@ -23,7 +23,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/transparency-dev/merkle/proof"
 )
 
 const (
@@ -47,8 +50,16 @@ const (
 	MaxActiveLandmarks = 370
 )
 
+var (
+	// ErrTooOld indicates that an index precedes the earliest available active landmark.
+	ErrTooOld = errors.New("entry is older than earliest active landmark")
+
+	// ErrNotYetCovered indicates that an index is not yet covered by any published active landmark.
+	ErrNotYetCovered = errors.New("entry is not yet covered by active landmarks")
+)
+
 // ReadCheckpointSize returns the current log checkpoint size.
-type ReadCheckpointSize func(ctx context.Context) (uint64, error)
+type ReadCheckpointSize func() uint64
 
 // LandmarksStorage abstracts reading and writing the published active landmarks resource.
 type LandmarksStorage interface {
@@ -219,12 +230,54 @@ func (a *ActiveLandmarks) AddLandmark(treeSize, maxActive uint64) error {
 	return nil
 }
 
+// GetSubtreeFor returns the subtree range [start, end) of the active landmarks covering index.
+//
+// It returns ErrTooOld if index precedes the earliest available active landmark.
+// It returns ErrNotYetCovered if index is not yet covered by any published active landmark.
+//
+// It assumes that ActiveLandmarks is well-constructed, i.e. treeSizes contains
+// at least one entry, and it is ordered in decreasing order.
+func (a *ActiveLandmarks) GetSubtreeFor(index uint64) (start, end uint64, err error) {
+	switch {
+	case index >= a.treeSizes[0]:
+		return 0, 0, ErrNotYetCovered
+	case index < a.treeSizes[len(a.treeSizes)-1]:
+		return 0, 0, ErrTooOld
+	}
+
+	// Search forward from the most recent landmark (index 0) so recently issued
+	// entries are found immediately in the first iteration.
+	var startLM, endLM uint64
+	for i := 0; i < len(a.treeSizes)-1; i++ {
+		if index >= a.treeSizes[i+1] {
+			endLM = a.treeSizes[i]
+			startLM = a.treeSizes[i+1]
+			break
+		}
+	}
+
+	s, mid, e, err := proof.FindSubtrees(startLM, endLM)
+	if err != nil {
+		return 0, 0, fmt.Errorf("FindSubtrees(%d, %d): %v", startLM, endLM, err)
+	}
+
+	if index < mid {
+		return s, mid, nil
+	}
+	return mid, e, nil
+}
+
 // Publisher manages publication of the landmarks resource at regular intervals.
 type Publisher struct {
 	storage            LandmarksStorage
 	readCheckpointSize ReadCheckpointSize
 	maxActive          uint64
 	pubInterval        time.Duration
+
+	// mu protects active and pubAt during concurrent operations
+	mu     sync.RWMutex
+	active ActiveLandmarks // copy of published active landmarks
+	pubAt  time.Time       // time at which active landmarks were last published
 }
 
 // NewPublisher creates a new Publisher instance.
@@ -279,7 +332,7 @@ func (p *Publisher) initialise(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create initial landmark 0: %w", err)
 	}
-	_, err = p.storage.UpdateLandmarks(ctx, func(old []byte, _ time.Time) ([]byte, error) {
+	modTime, err := p.storage.UpdateLandmarks(ctx, func(old []byte, _ time.Time) ([]byte, error) {
 		if len(old) == 0 {
 			return activeLM.MarshalText()
 		}
@@ -293,6 +346,10 @@ func (p *Publisher) initialise(ctx context.Context) error {
 		return fmt.Errorf("failed to initialise active landmarks: %w", err)
 	}
 
+	p.mu.Lock()
+	p.active = *activeLM
+	p.pubAt = modTime
+	p.mu.Unlock()
 	return nil
 }
 
@@ -327,10 +384,7 @@ func (p *Publisher) start(ctx context.Context) {
 // pubInterval and the checkpoint size has increased.
 // It returns how long to wait before calling Update again.
 func (p *Publisher) Update(ctx context.Context) (time.Duration, error) {
-	cpSize, err := p.readCheckpointSize(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to read current checkpoint size: %w", err)
-	}
+	cpSize := p.readCheckpointSize()
 
 	grown := true
 	active := &ActiveLandmarks{}
@@ -366,6 +420,11 @@ func (p *Publisher) Update(ctx context.Context) (time.Duration, error) {
 		return 0, fmt.Errorf("failed to update landmarks resource: %v", err)
 	}
 
+	p.mu.Lock()
+	p.active = *active
+	p.pubAt = modTime
+	p.mu.Unlock()
+
 	next := p.pubInterval
 	if grown {
 		next = max(time.Millisecond, time.Until(modTime.Add(p.pubInterval)))
@@ -373,4 +432,41 @@ func (p *Publisher) Update(ctx context.Context) (time.Duration, error) {
 
 	slog.DebugContext(ctx, "landmarks update: success", slog.Duration("next-in", next))
 	return next, nil
+}
+
+// GetSubtreeFor returns the subtree range [start, end) of active landmarks covering index.
+//
+//   - If index is not yet in published landmarks but is within the current log
+//     tree size, returns retryAfter > 0 indicating estimated time until the
+//     next landmark publication. This is a best effort estimate.
+//   - If index precedes the earliest available active landmark, returns ErrTooOld.
+//   - If index exceeds the current log tree size, it returns an error.
+func (p *Publisher) GetSubtreeFor(ctx context.Context, index uint64) (start, end uint64, retryAfter time.Duration, err error) {
+	p.mu.RLock()
+	active := p.active
+	pubAt := p.pubAt
+	p.mu.RUnlock()
+	if len(active.treeSizes) == 0 {
+		return 0, 0, p.pubInterval, nil
+	}
+
+	start, end, err = active.GetSubtreeFor(index)
+	switch {
+	case err == nil:
+		return start, end, 0, nil
+
+	case errors.Is(err, ErrTooOld):
+		return 0, 0, 0, ErrTooOld
+
+	case errors.Is(err, ErrNotYetCovered):
+		cpSize := p.readCheckpointSize()
+		if index < cpSize {
+			retry := max(time.Millisecond, time.Until(pubAt.Add(p.pubInterval)))
+			return 0, 0, retry, nil
+		}
+		return 0, 0, 0, fmt.Errorf("index %d exceeds current log tree size %d", index, cpSize)
+
+	default:
+		return 0, 0, 0, err
+	}
 }
