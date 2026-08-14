@@ -860,7 +860,6 @@ func (o AppendOptions) mirrorGateway(ctx context.Context, lr LogReader, httpClie
 	mirrorGateway, err := m_gateway.NewGateway(ctx, m_gateway.Options{
 		Mirrors:    mirrorURLs,
 		LogReader:  lr,
-		LogOrigin:  o.primarySigner.Name(),
 		HTTPClient: httpClient,
 	})
 	if err != nil {

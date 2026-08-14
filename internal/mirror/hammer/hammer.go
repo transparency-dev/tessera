@@ -149,7 +149,6 @@ func main() {
 		mOpts := mirror.NewOptions().
 			WithMirrorURL(mURL).
 			WithHTTPClient(hc).
-			WithLogOrigin(origin).
 			WithTileFetcher(logReader.ReadTile).
 			WithBundleFetcher(logReader.ReadEntryBundle).
 			WithMirrorCheckpointFetcher(func(ctx context.Context) ([]byte, error) {

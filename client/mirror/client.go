@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -46,7 +47,6 @@ type PackageProverFunc func(ctx context.Context, start, end, size uint64) ([][]b
 type Options struct {
 	mirrorURL               *url.URL
 	httpClient              *http.Client
-	logOrigin               string
 	tileFetcher             client.TileFetcherFunc
 	bundleFetcher           client.EntryBundleFetcherFunc
 	mirrorCheckpointFetcher client.CheckpointFetcherFunc
@@ -69,12 +69,6 @@ func (o *Options) WithMirrorURL(mirrorURL *url.URL) *Options {
 // WithHTTPClient sets the HTTP client.
 func (o *Options) WithHTTPClient(httpClient *http.Client) *Options {
 	o.httpClient = httpClient
-	return o
-}
-
-// WithLogOrigin sets the log origin.
-func (o *Options) WithLogOrigin(logOrigin string) *Options {
-	o.logOrigin = logOrigin
 	return o
 }
 
@@ -109,9 +103,6 @@ func (o *Options) validate() error {
 	}
 	if o.httpClient == nil {
 		return errors.New("HTTP client is required")
-	}
-	if o.logOrigin == "" {
-		return errors.New("log origin is required")
 	}
 	if o.tileFetcher == nil {
 		return errors.New("tile fetcher is required")
@@ -218,7 +209,7 @@ func parseConflict(r io.Reader) error {
 
 // pushEntries streams entry packages and their proofs to the mirror's /add-entries endpoint.
 // It returns the mirror's cosignatures on success.
-func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte) ([]byte, error) {
+func (c *Client) pushEntries(ctx context.Context, origin string, uploadStart, uploadEnd uint64, ticket []byte) ([]byte, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -227,7 +218,7 @@ func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64,
 		_ = pr.Close()
 	}()
 
-	go c.streamEntries(ctx, uploadStart, uploadEnd, ticket, pw)
+	go c.streamEntries(ctx, origin, uploadStart, uploadEnd, ticket, pw)
 
 	u, err := c.opts.mirrorURL.Parse("add-entries")
 	if err != nil {
@@ -271,7 +262,7 @@ func (c *Client) pushEntries(ctx context.Context, uploadStart, uploadEnd uint64,
 // streamEntries serializes, compresses, and writes the log origin, upload range, ticket,
 // and the corresponding entry packages with their proofs to the pipe writer.
 // It closes the pipe writer with an error if any operation fails, or nil on success.
-func (c *Client) streamEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, pw *io.PipeWriter) {
+func (c *Client) streamEntries(ctx context.Context, origin string, uploadStart, uploadEnd uint64, ticket []byte, pw *io.PipeWriter) {
 	gw := gzip.NewWriter(pw)
 	defer func() {
 		_ = gw.Close()
@@ -279,12 +270,12 @@ func (c *Client) streamEntries(ctx context.Context, uploadStart, uploadEnd uint6
 	}()
 
 	// 2 bytes, encoding a big-endian uint16: log_origin_size
-	if err := binary.Write(gw, binary.BigEndian, uint16(len(c.opts.logOrigin))); err != nil {
+	if err := binary.Write(gw, binary.BigEndian, uint16(len(origin))); err != nil {
 		_ = pw.CloseWithError(err)
 		return
 	}
 	// log_origin_size bytes, containing the log origin: log_origin
-	if _, err := gw.Write([]byte(c.opts.logOrigin)); err != nil {
+	if _, err := gw.Write([]byte(origin)); err != nil {
 		_ = pw.CloseWithError(err)
 		return
 	}
@@ -454,9 +445,30 @@ func (c *Client) buildCheckpointRequestBody(oldSize uint64, proof [][]byte, chec
 	return &b
 }
 
+// parseOrigin extracts and validates the log origin from the first line of a raw checkpoint.
+func parseOrigin(cp []byte) (string, error) {
+	originBytes, _, ok := bytes.Cut(cp, []byte("\n"))
+	if !ok || len(originBytes) == 0 {
+		return "", errors.New("invalid checkpoint: missing origin line")
+	}
+
+	// 2 bytes, encoding a big-endian uint16: log_origin_size
+	if len(originBytes) > math.MaxUint16 {
+		return "", fmt.Errorf("invalid checkpoint: origin length %d exceeds max uint16 (%d)", len(originBytes), math.MaxUint16)
+	}
+
+	return string(originBytes), nil
+}
+
 // Sync synchronizes all entries and the checkpoint from the source log to the mirror
-// up to the specified targetSize. It returns the mirror's cosignatures on success.
+// up to the specified targetSize. targetCheckpointRaw must be a valid checkpoint starting
+// with the log origin on the first line. It returns the mirror's cosignatures on success.
 func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSize uint64) ([]byte, error) {
+	origin, err := parseOrigin(targetCheckpointRaw)
+	if err != nil {
+		return nil, err
+	}
+
 	// Push the checkpoint with the old size (0 if not provided).
 	// Keep trying for as long as we get conflict errors (until the context expires).
 	// Ensure we send the checkpoint at least once, this serves two purposes:
@@ -494,7 +506,7 @@ func (c *Client) Sync(ctx context.Context, targetCheckpointRaw []byte, targetSiz
 	var cosigs []byte
 	for {
 		var err error
-		cosigs, err = c.pushEntries(ctx, uploadStart, uploadEnd, c.ticket)
+		cosigs, err = c.pushEntries(ctx, origin, uploadStart, uploadEnd, c.ticket)
 		if err != nil {
 			var conflict ErrConflict
 			if !errors.As(err, &conflict) {
