@@ -17,7 +17,7 @@ jobs:
       - name: Start Docker services (tessera-conformance-posix)
         run: docker compose -f ./cmd/conformance/posix/docker/compose.yaml up --build --detach
       - name: Run integration test 
-        run: go test -v -race ./integration/. --run_integration_test=true --log_url="file:///tmp/tessera-posix-log" --write_log_url="http://localhost:2025" --log_public_key="example.com/log/testdata+33d7b496+AeHTu4Q3hEIMHNqc6fASMsq3rKNx280NI+oO5xCFkkSx"
+        run: go test -v -race ./integration/log --run_integration_test=true --log_url="file:///tmp/tessera-posix-log" --write_log_url="http://localhost:2025" --log_public_key="example.com/log/testdata+33d7b496+AeHTu4Q3hEIMHNqc6fASMsq3rKNx280NI+oO5xCFkkSx"
       - name: What's in the box?
         if: ${{ always() }}
         run: tree /tmp/tessera-posix-log
