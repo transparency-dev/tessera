@@ -137,7 +137,7 @@ func TestAddTBSHandler(t *testing.T) {
 			name:       "success",
 			body:       func() io.Reader { return bytes.NewReader(validJSON) },
 			wantStatus: http.StatusCreated,
-			wantBody:   `{"index":0,"mtcProof":{}}`,
+			wantBody:   `{"index":0,"mtcProof":null}`,
 		},
 		{
 			name:       "malformed json",
