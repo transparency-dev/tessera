@@ -28,7 +28,7 @@ import (
 
 const (
 	oidPrefix           = "oid/1.3.6.1.4.1."
-	penPrefixDERLen     = 5
+	oidPrefixDERLen     = 5
 	maxTrustAnchorIDLen = (1 << 8) - 1
 	maxUint48           = (1 << 48) - 1
 )
@@ -77,16 +77,16 @@ func ParseCosignerID(name string) ([]byte, error) {
 	// representation consists of the contents octets of the relative object
 	// identifier's DER encoding, as described in Section 8.20 of [X690]. Note
 	// this omits the tag and length portion of the encoding."
-	res := der[penPrefixDERLen:]
+	res := der[oidPrefixDERLen:]
 	if l := len(res); l == 0 || l > maxTrustAnchorIDLen {
 		return nil, fmt.Errorf("cosigner ID binary length must be 1..%d bytes, got %d", maxTrustAnchorIDLen, l)
 	}
 	return res, nil
 }
 
-// New validates MTC proof parameters, orders signatures canonically, and returns
+// Serialize validates MTC proof parameters, orders signatures canonically, and returns
 // the TLS-encoded MTCProof binary bytes.
-func New(extensions []byte, start, end uint64, inclusionProof [][]byte, signatures []SubtreeSignature) ([]byte, error) {
+func Serialize(extensions []byte, start, end uint64, inclusionProof [][]byte, signatures []SubtreeSignature) ([]byte, error) {
 	p, err := new(extensions, start, end, inclusionProof, signatures)
 	if err != nil {
 		return nil, err
@@ -98,24 +98,21 @@ func New(extensions []byte, start, end uint64, inclusionProof [][]byte, signatur
 func new(extensions []byte, start, end uint64, inclusionProof [][]byte, signatures []SubtreeSignature) (*mtcProof, error) {
 	// SPEC: draft-ietf-plants-merkle-tree-certs section 6.2.
 	// "uint48 start; uint48 end;"
-	if start > maxUint48 {
-		return nil, fmt.Errorf("start index %d exceeds uint48 maximum (%d)", start, maxUint48)
+	if start >= end {
+		return nil, fmt.Errorf("start (%d) must be strictly less than end (%d)", start, end)
 	}
 	if end > maxUint48 {
 		return nil, fmt.Errorf("end index %d exceeds uint48 maximum (%d)", end, maxUint48)
 	}
-	if start >= end {
-		return nil, fmt.Errorf("start (%d) must be strictly less than end (%d)", start, end)
-	}
 	// SPEC: draft-ietf-plants-merkle-tree-certs section 5.2.1.
 	// "opaque extension_data<0..2^16-1>; "
-	if l := len(extensions); l >= 1<<16 {
-		return nil, fmt.Errorf("extensions too large (%d bytes, max %d)", l, (1<<16)-1)
+	if limit, l := 1<<16, len(extensions); l >= limit {
+		return nil, fmt.Errorf("extensions too large (%d bytes, max %d)", l, limit-1)
 	}
 	// SPEC: draft-ietf-plants-merkle-tree-certs section 6.2.
 	// "HashValue inclusion_proof<0..2^16-1>;"
-	if l := len(inclusionProof) * sha256.Size; l >= 1<<16 {
-		return nil, fmt.Errorf("inclusion proof too large (%d bytes, max %d)", l, (1<<16)-1)
+	if limit, l := 1<<16, len(inclusionProof)*sha256.Size; l >= limit {
+		return nil, fmt.Errorf("inclusion proof too large (%d bytes, max %d)", l, limit-1)
 	}
 
 	hashes := make([]hashValue, len(inclusionProof))
@@ -144,16 +141,16 @@ func new(extensions []byte, start, end uint64, inclusionProof [][]byte, signatur
 		}
 		// SPEC: draft-ietf-plants-merkle-tree-certs section 6.2.
 		// "opaque signature<0..2^16-1>;"
-		if l := len(sig.Signature); l >= 1<<16 {
-			return nil, fmt.Errorf("signature too large (%d bytes, max %d)", l, (1<<16)-1)
+		if limit, l := 1<<16, len(sig.Signature); l >= limit {
+			return nil, fmt.Errorf("signature too large (%d bytes, max %d)", l, limit-1)
 		}
 		// SPEC: draft-ietf-plants-merkle-tree-certs section 6.2.
 		// "SubtreeSignature signatures<0..2^16-1>;"
 		// In TLS presentation syntax, each SubtreeSignature consists of:
 		// 1 byte (length of TrustAnchorID) + len(CosignerID) + 2 bytes (length of signature) + len(Signature).
 		totalSigsLen += 1 + len(sig.CosignerID) + 2 + len(sig.Signature)
-		if totalSigsLen >= 1<<16 {
-			return nil, fmt.Errorf("signatures vector too large (%d bytes, max %d)", totalSigsLen, (1<<16)-1)
+		if limit, l := 1<<16, totalSigsLen; l >= limit {
+			return nil, fmt.Errorf("signatures vector too large (%d bytes, max %d)", totalSigsLen, limit-1)
 		}
 		// SPEC: draft-ietf-plants-merkle-tree-certs section 6.2.
 		// "An MTCProof parser MUST reject the input if there are duplicate cosigner_id values,

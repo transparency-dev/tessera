@@ -179,7 +179,7 @@ func TestCompareCosignerIDs(t *testing.T) {
 	}
 }
 
-func TestNew(t *testing.T) {
+func TestSerialize(t *testing.T) {
 	node1 := bytes.Repeat([]byte{0xaa}, sha256.Size)
 	node2 := bytes.Repeat([]byte{0xbb}, sha256.Size)
 
@@ -317,15 +317,15 @@ func TestNew(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			rawBytes, err := New(tc.extensions, tc.start, tc.end, tc.inclusionProof, tc.signatures)
+			rawBytes, err := Serialize(tc.extensions, tc.start, tc.end, tc.inclusionProof, tc.signatures)
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("New() error = %v, wantErr %v", err, tc.wantErr)
+				t.Fatalf("Serialize() error = %v, wantErr %v", err, tc.wantErr)
 			}
 			if tc.wantErr {
 				return
 			}
 			if len(rawBytes) == 0 {
-				t.Error("New() returned empty byte slice")
+				t.Error("Serialize() returned empty byte slice")
 			}
 
 			p, err := new(tc.extensions, tc.start, tc.end, tc.inclusionProof, tc.signatures)
