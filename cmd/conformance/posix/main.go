@@ -32,6 +32,7 @@ import (
 
 	"log/slog"
 
+	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/storage/posix"
 	badger_as "github.com/transparency-dev/tessera/storage/posix/antispam"
@@ -181,7 +182,7 @@ func getSignersOrDie() (note.Signer, []note.Signer) {
 			slog.ErrorContext(context.Background(), "Unable to get additional private key", slog.String("file", p), slog.Any("error", err))
 			os.Exit(1)
 		}
-		k, err := note.NewSigner(kr)
+		k, err := fnote.NewSigner(kr)
 		if err != nil {
 			slog.ErrorContext(context.Background(), "Failed to instantiate signer", slog.String("file", p), slog.Any("error", err))
 			os.Exit(1)
@@ -209,7 +210,7 @@ func getSignerOrDie() note.Signer {
 		}
 	}
 	var s note.Signer
-	if s, err = note.NewSigner(privKey); err != nil {
+	if s, err = fnote.NewSigner(privKey); err != nil {
 		slog.ErrorContext(context.Background(), "Failed to instantiate signer", slog.Any("error", err))
 		os.Exit(1)
 	}

@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"os"
 
+	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/internal/logger"
 	"github.com/transparency-dev/tessera/storage/gcp"
@@ -168,7 +169,7 @@ func storageConfigFromFlags() gcp.Config {
 }
 
 func signerFromFlags() (note.Signer, []note.Signer) {
-	s, err := note.NewSigner(*signer)
+	s, err := fnote.NewSigner(*signer)
 	if err != nil {
 		slog.ErrorContext(context.Background(), "Failed to create new signer", slog.Any("error", err))
 		os.Exit(1)
@@ -176,7 +177,7 @@ func signerFromFlags() (note.Signer, []note.Signer) {
 
 	var a []note.Signer
 	for _, as := range additionalSigners {
-		s, err := note.NewSigner(as)
+		s, err := fnote.NewSigner(as)
 		if err != nil {
 			slog.ErrorContext(context.Background(), "Failed to create additional signer", slog.Any("error", err))
 			os.Exit(1)
