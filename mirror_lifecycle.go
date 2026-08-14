@@ -21,17 +21,13 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"log/slog"
-	"strings"
-	"unicode"
-	"unicode/utf8"
+	"sync/atomic"
 
 	"github.com/transparency-dev/formats/log"
 	fnote "github.com/transparency-dev/formats/note"
@@ -41,7 +37,7 @@ import (
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
-	"github.com/transparency-dev/witness/persistence/inmemory"
+	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/witness/witness"
 	"golang.org/x/mod/sumdb/note"
 )
@@ -154,7 +150,8 @@ type MirrorTarget struct {
 	signer             fnote.SubtreeSigner
 	logVerifier        note.Verifier
 	verifySubtreeProof func(hasher merkle.LogHasher, start, end, size uint64, proof [][]byte, subRoot []byte, root []byte) error
-	signSubtree        signSubtreeFunc
+	mirrorWitness      *witness.Witness
+	oldSize            *atomic.Uint64
 	ticketKey          []byte
 }
 
@@ -184,7 +181,7 @@ func NewMirrorTarget(ctx context.Context, d Driver, opts *MirrorOptions) (*Mirro
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive ticket key: %v", err)
 	}
-	signSubtree, err := subtreeWitness(ctx, opts)
+	mirrorWitness, err := subtreeWitness(ctx, r, mw, opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create subtree witness: %v", err)
 	}
@@ -196,7 +193,8 @@ func NewMirrorTarget(ctx context.Context, d Driver, opts *MirrorOptions) (*Mirro
 		logVerifier:        opts.logVerifier,
 		origin:             opts.origin,
 		verifySubtreeProof: proof.VerifySubtreeConsistency,
-		signSubtree:        signSubtree,
+		mirrorWitness:      mirrorWitness,
+		oldSize:            &atomic.Uint64{},
 		ticketKey:          tK,
 	}, nil
 }
@@ -238,7 +236,7 @@ type MirrorPackage struct {
 // - an opaque ticket for future invocation,
 // - optionally, a cosignature over a pending checkpoint whose size matches uploadEnd if one exists.
 func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd uint64, ticketBytes []byte, next func() (*MirrorPackage, error)) (uint64, uint64, []byte, []byte, error) {
-	nextEntry, pendingSize, userTicketValid, ticketBytes, pendingCP, pendingNote, err := mt.openOrCreateTicket(ctx, ticketBytes, uploadEnd)
+	nextEntry, pendingSize, userTicketValid, ticketBytes, pendingCP, pendingRaw, err := mt.openOrCreateTicket(ctx, ticketBytes, uploadEnd)
 	if err != nil {
 		return nextEntry, pendingSize, ticketBytes, nil, err
 	}
@@ -266,12 +264,12 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 		return 0, 0, nil, nil, err
 	case nextEntry == pendingSize:
 		if !bytes.Equal(pendingCP.Hash, newRoot) {
-			slog.ErrorContext(ctx, "CORRUPTION DETECTED - pending root != calculated root", slog.String("calculated_root", hex.EncodeToString(newRoot)), slog.String("pending_checkpoint", string(pendingNote.Text)))
+			slog.ErrorContext(ctx, "CORRUPTION DETECTED - pending root != calculated root", slog.String("calculated_root", hex.EncodeToString(newRoot)), slog.String("pending_checkpoint", string(pendingRaw)))
 			return 0, 0, nil, nil, errors.New("internal error")
 		}
 
 		// This is a complete upload.
-		sigs, pubSize, err := mt.publishCheckpoint(ctx, pendingCP, pendingNote)
+		sigs, pubSize, err := mt.publishCheckpoint(ctx, pendingRaw, pendingCP.Size)
 		if err != nil {
 			return nextEntry, pubSize, nil, nil, fmt.Errorf("publishCheckpoint %w", err) // %w as we may need to signal ErrConflict.
 		}
@@ -371,47 +369,48 @@ func (mt *MirrorTarget) bundleIterator(ctx context.Context, next func() (*Mirror
 }
 
 // publishCheckpoint attempts to sign and atomically publish the provided checkpoint.
-func (mt *MirrorTarget) publishCheckpoint(ctx context.Context, newCP *log.Checkpoint, cpNote *note.Note) ([]byte, uint64, error) {
-	var retSigs []byte
-	retSize := newCP.Size
-
-	if err := mt.writer.UpdateCheckpoint(ctx, func(oldCP []byte) ([]byte, error) {
-		// SPEC: Finally, the mirror performs the following steps atomically. Note the mirror
-		// 			checkpoint may have changed since the start of this process.
-		//  			- Check if upload_end is still greater than or equal to the mirror checkpoint's tree size.
-		// 				- If so, update the mirror checkpoint to the pending checkpoint of size upload_end.
-		// 			If upload_end was too small, the mirror MUST respond with a "409 Conflict" HTTP status
-		//    	code, [with approriate response body].
-		// 			Otherwise, if the mirror checkpoint was updated, the mirror MUST respond with a "200 Success"
-		// 			HTTP status code. The response body MUST be formatted as in a witness's successful add-checkpoint
-		// 			response: a sequence of one or more note signature lines.
-		if len(oldCP) > 0 {
-			publishedCP, _, _, err := log.ParseCheckpoint(oldCP, mt.origin, mt.logVerifier)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse published checkpoint: %v", err)
-			}
-			if publishedCP.Origin != newCP.Origin {
-				return nil, fmt.Errorf("published CP origin %q != new CP origin %q", publishedCP.Origin, newCP.Origin)
-			}
-			if publishedCP.Size > newCP.Size {
-				// Return the larger size so that the caller re-syncs.
-				retSize = publishedCP.Size
-				return nil, ErrConflict
-			}
-		}
-		signedNewCPRaw, sigs, err := signNote(cpNote, mt.signer)
-		if err != nil {
-			return nil, fmt.Errorf("failed to cosign pending checkpoint: %v", err)
-		}
-
-		retSigs = sigs
-
-		return signedNewCPRaw, nil
-	}); err != nil {
-		return nil, retSize, fmt.Errorf("failed to update checkpoint: %w", err)
+func (mt *MirrorTarget) publishCheckpoint(ctx context.Context, newCP []byte, newCPSize uint64) ([]byte, uint64, error) {
+	pb, err := client.NewProofBuilder(ctx, newCPSize, mt.reader.ReadTile)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to create proof builder: %w", err)
 	}
 
-	return retSigs, retSize, nil
+	// SPEC: Finally, the mirror performs the following steps atomically. Note the mirror
+	// 			checkpoint may have changed since the start of this process.
+	//  			- Check if upload_end is still greater than or equal to the mirror checkpoint's tree size.
+	// 				- If so, update the mirror checkpoint to the pending checkpoint of size upload_end.
+	// 			If upload_end was too small, the mirror MUST respond with a "409 Conflict" HTTP status
+	//    	code, [with approriate response body].
+	// 			Otherwise, if the mirror checkpoint was updated, the mirror MUST respond with a "200 Success"
+	// 			HTTP status code. The response body MUST be formatted as in a witness's successful add-checkpoint
+	// 			response: a sequence of one or more note signature lines.
+	var wSigs []byte
+	for done := false; !done; {
+		oldSize := mt.oldSize.Load()
+		var wSize uint64
+		var cProof [][]byte
+		if oldSize > 0 {
+			cProof, err = pb.ConsistencyProof(ctx, oldSize, newCPSize)
+			if err != nil {
+				return nil, 0, fmt.Errorf("failed to get consistency proof: %w", err)
+			}
+		}
+		wSigs, wSize, err = mt.mirrorWitness.Update(ctx, oldSize, newCP, cProof)
+		if err != nil {
+			if errors.Is(err, witness.ErrCheckpointStale) {
+				slog.DebugContext(ctx, "Retrying stale checkpoint on mirror witness", slog.Uint64("oldSize", oldSize), slog.Uint64("wSize", wSize))
+				mt.oldSize.CompareAndSwap(oldSize, wSize)
+				continue
+			}
+			slog.WarnContext(ctx, "Permanent failure updating checkpoint on mirror witness", slog.Uint64("oldSize", oldSize), slog.Uint64("newCPSize", newCPSize), slog.Uint64("wSize", wSize), slog.String("error", err.Error()))
+			return nil, wSize, fmt.Errorf("failed to update checkpoint: %w", err)
+		}
+		done = true
+		mt.oldSize.CompareAndSwap(oldSize, newCPSize)
+		slog.InfoContext(ctx, "Completed upload", slog.Uint64("oldSize", oldSize), slog.Uint64("newSize", newCPSize))
+	}
+
+	return wSigs, newCPSize, nil
 }
 
 // IntegratedSize returns the size of the current integrated log.
@@ -422,25 +421,26 @@ func (mt *MirrorTarget) IntegratedSize(ctx context.Context) (uint64, error) {
 // openOrCreateTicket handles ticket logic, returning a new ticket if the provided one is invalid/missing.
 //
 // Returns next entry index to upload, size of the pending checkpoint, a bool indicating whether the provided ticket was valid, the ticket to return to the caller (may be the same as the provided one), pending checkpoint structure, pending note, and error.
-func (mt *MirrorTarget) openOrCreateTicket(ctx context.Context, ticketBytes []byte, expectedSize uint64) (uint64, uint64, bool, []byte, *log.Checkpoint, *note.Note, error) {
+func (mt *MirrorTarget) openOrCreateTicket(ctx context.Context, ticketBytes []byte, expectedSize uint64) (uint64, uint64, bool, []byte, *log.Checkpoint, []byte, error) {
 	nextEntry, err := mt.reader.IntegratedSize(ctx)
 	if err != nil {
 		return 0, 0, false, nil, nil, nil, fmt.Errorf("failed to read integrated size: %v", err)
 	}
 
-	var pendingCP *log.Checkpoint
-	var pendingNote *note.Note
-	userTicketValid := false
+	var (
+		pendingCP       *log.Checkpoint
+		pendingCPRaw    []byte
+		userTicketValid bool
+	)
 
-	var ticketCP []byte
 	if len(ticketBytes) > 0 {
-		ticketCP, err = mt.open(ticketBytes)
+		pendingCPRaw, err = mt.open(ticketBytes)
 		if err != nil {
-			slog.DebugContext(ctx, "Failed to open ticket", slog.Any("error", err))
+			slog.WarnContext(ctx, "Failed to open ticket", slog.Any("error", err))
 		} else {
-			pendingCP, _, pendingNote, err = log.ParseCheckpoint(ticketCP, mt.origin, mt.logVerifier)
+			pendingCP, _, _, err = log.ParseCheckpoint(pendingCPRaw, mt.origin, mt.logVerifier)
 			if err != nil {
-				slog.DebugContext(ctx, "Failed to parse ticket", slog.Any("error", err))
+				slog.DebugContext(ctx, "Failed to parse ticket checkpoint", slog.Any("error", err))
 			} else {
 				slog.DebugContext(ctx, "Valid ticket", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingCP.Size))
 				userTicketValid = true
@@ -449,22 +449,22 @@ func (mt *MirrorTarget) openOrCreateTicket(ctx context.Context, ticketBytes []by
 	}
 
 	if pendingCP == nil || pendingCP.Size != expectedSize {
-		slog.DebugContext(ctx, "Invalid or incorrect ticket, returning new ticket", slog.Uint64("next_entry", nextEntry), slog.String("ticketCP", string(ticketCP)), slog.Uint64("expectedSize", expectedSize))
-		ticketBytes, pendingCP, pendingNote, err = mt.createNewTicket(ctx)
+		slog.DebugContext(ctx, "Invalid or incorrect ticket, returning new ticket", slog.Uint64("next_entry", nextEntry), slog.String("ticketCP", string(pendingCPRaw)), slog.Uint64("expectedSize", expectedSize))
+		ticketBytes, pendingCP, pendingCPRaw, err = mt.createNewTicket(ctx)
 		if err != nil {
 			return 0, 0, userTicketValid, nil, nil, nil, fmt.Errorf("failed to create new ticket: %w", err)
 		}
 		// If the new pending checkpoint still doesn't match expectedSize, return 409 Conflict with the fresh ticket.
 		if pendingCP.Size != expectedSize {
-			return nextEntry, pendingCP.Size, userTicketValid, ticketBytes, pendingCP, pendingNote, ErrConflict
+			return nextEntry, pendingCP.Size, userTicketValid, ticketBytes, pendingCP, pendingCPRaw, ErrConflict
 		}
 		// Otherwise, allow the request to continue (because their uploadEnd == pendingCP.Size).
 	}
 
-	return nextEntry, pendingCP.Size, userTicketValid, ticketBytes, pendingCP, pendingNote, nil
+	return nextEntry, pendingCP.Size, userTicketValid, ticketBytes, pendingCP, pendingCPRaw, nil
 }
 
-func (mt *MirrorTarget) createNewTicket(ctx context.Context) (ticket []byte, pendingCP *log.Checkpoint, pendingNote *note.Note, err error) {
+func (mt *MirrorTarget) createNewTicket(ctx context.Context) (ticket []byte, pendingCP *log.Checkpoint, pendingRaw []byte, err error) {
 	pendingCPRaw, err := mt.cpSource(ctx)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to get pending checkpoint: %v", err)
@@ -472,7 +472,7 @@ func (mt *MirrorTarget) createNewTicket(ctx context.Context) (ticket []byte, pen
 	if len(pendingCPRaw) == 0 {
 		return nil, nil, nil, ErrNoPendingCheckpoint
 	}
-	pendingCP, _, pendingNote, err = log.ParseCheckpoint(pendingCPRaw, mt.origin, mt.logVerifier)
+	pendingCP, _, _, err = log.ParseCheckpoint(pendingCPRaw, mt.origin, mt.logVerifier)
 	if err != nil {
 		slog.ErrorContext(ctx, "Invalid pending checkpoint from source", slog.String("pending_checkpoint", string(pendingCPRaw)), slog.String("error", err.Error()))
 		return nil, nil, nil, fmt.Errorf("failed to parse pending checkpoint while creating ticket: %v", err)
@@ -481,7 +481,7 @@ func (mt *MirrorTarget) createNewTicket(ctx context.Context) (ticket []byte, pen
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create ticket: %v", err)
 	}
-	return ticket, pendingCP, pendingNote, nil
+	return ticket, pendingCP, pendingCPRaw, nil
 }
 
 func (mt *MirrorTarget) seal(b []byte) ([]byte, error) {
@@ -508,80 +508,18 @@ func (mt *MirrorTarget) open(sealed []byte) ([]byte, error) {
 
 // SignSubtree returns a cosignature for a subtree of the mirrored log.
 func (mt *MirrorTarget) SignSubtree(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, cp []byte) ([]byte, error) {
-	return mt.signSubtree(ctx, start, end, subRoot, proof, cp)
+	return mt.mirrorWitness.SignSubtree(ctx, start, end, subRoot, proof, cp)
 }
 
-func signNote(n *note.Note, signers ...note.Signer) ([]byte, []byte, error) {
-	// Code below is a lightly tweaked snippet from sumdb/note/note.go
-	// https://cs.opensource.google/go/x/mod/+/refs/tags/v0.24.0:sumdb/note/note.go;l=625-649
-
-	// Prepare signatures.
-	//
-	// We need to return both a full serialised signed note, as well as the just the
-	// signature lines we're adding - this is because we want to _store_ the full note, but
-	// the tlog-witness API requires that we only return the signature lines.
-	//
-	// Rather than using note.Sign, then running note.Open in order to get access to our
-	// signatures, we'll instead use our note.Signer(s) directly to sign the note message
-	// and then use the returned signature bytes to create both the serialised signed note
-	// as well as the serialised signature lines.
-
-	var sigs = bytes.Buffer{}
-	for _, s := range signers {
-		name := s.Name()
-		hash := s.KeyHash()
-		if !isValidSignerName(name) {
-			return nil, nil, errors.New("invalid signer")
-		}
-
-		sig, err := s.Sign([]byte(n.Text))
-		if err != nil {
-			return nil, nil, err
-		}
-
-		// Create serialised signature line and append it to our sigs buffer:
-		var hbuf [4]byte
-		binary.BigEndian.PutUint32(hbuf[:], hash)
-		b64 := base64.StdEncoding.EncodeToString(append(hbuf[:], sig...))
-		sigs.WriteString("— ")
-		sigs.WriteString(name)
-		sigs.WriteString(" ")
-		sigs.WriteString(b64)
-		sigs.WriteString("\n")
-
-		// Also create a new note.Signature and pop it into the note's Sigs list (this will cause
-		// the signature to be present in the output when we call note.Sign below.
-		n.Sigs = append(n.Sigs, note.Signature{Name: name, Hash: hash, Base64: b64})
-	}
-	// Serialise the full signed note by calling Sign.
-	// Note that we're not passing any signers here because we've already added signatures in the loop above, so
-	// this call becomes just a serialisation function.
-	signed, err := note.Sign(n)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return signed, sigs.Bytes(), nil
-}
-
-// isValiSignerdName reports whether name is valid.
-// It must be non-empty and not have any Unicode spaces or pluses.
-func isValidSignerName(name string) bool {
-	return name != "" && utf8.ValidString(name) && strings.IndexFunc(name, unicode.IsSpace) < 0 && !strings.Contains(name, "+")
-}
-
-type signSubtreeFunc func(context.Context, uint64, uint64, []byte, [][]byte, []byte) ([]byte, error)
-
-// subtreeWitness returns a function which implements the witness sign-subtree operation for the configured log.
-//
-// The returned function will only sign subtrees where the provided checkpoint has already been signed by the mirror.
-func subtreeWitness(ctx context.Context, opts *MirrorOptions) (signSubtreeFunc, error) {
-	// Instantiate a witness for the configured log, but we'll only use its SignSubtree method.
-	// SignSubtree doesn't persist any state since everything required is provided by the request.
+// subtreeWitness returns a witness for underpinning the Mirror signing operations.
+func subtreeWitness(ctx context.Context, lr LogReader, mw MirrorWriter, opts *MirrorOptions) (*witness.Witness, error) {
 	subW, err := witness.New(ctx, witness.Opts{
-		// Use in-memory persistence as we don't need to persist any state for the SignSubtree operation.
-		Persistence: inmemory.New(),
-		Signers:     []note.Signer{opts.signer},
+		Persistence: &witnessPersistenceAdaptor{
+			origin: opts.origin,
+			lr:     lr,
+			mw:     mw,
+		},
+		Signers: []note.Signer{opts.signer},
 		VerifierForLog: func(_ context.Context, origin string) (note.Verifier, bool, error) {
 			// Only accept the log we're configured to mirror.
 			if origin != opts.origin {
@@ -595,5 +533,33 @@ func subtreeWitness(ctx context.Context, opts *MirrorOptions) (signSubtreeFunc, 
 		return nil, fmt.Errorf("witness.New: %v", err)
 	}
 
-	return subW.SignSubtree, nil
+	return subW, nil
+}
+
+// witnessPersistenceAdaptor adapts the Mirror's LogReader and MirrorWriter to satisfy
+// the requirements of the witness.Persistence interface.
+type witnessPersistenceAdaptor struct {
+	origin string
+	lr     LogReader
+	mw     MirrorWriter
+}
+
+func (p *witnessPersistenceAdaptor) Init(ctx context.Context) error {
+	return nil
+}
+
+func (p *witnessPersistenceAdaptor) Latest(ctx context.Context, origin string) ([]byte, error) {
+	if origin != p.origin {
+		return nil, witness.ErrUnknownLog
+	}
+
+	return p.lr.ReadCheckpoint(ctx)
+}
+
+func (p *witnessPersistenceAdaptor) Update(ctx context.Context, origin string, f func([]byte) ([]byte, error)) error {
+	if origin != p.origin {
+		return witness.ErrUnknownLog
+	}
+
+	return p.mw.UpdateCheckpoint(ctx, f)
 }
