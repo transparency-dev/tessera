@@ -29,7 +29,7 @@ require (
 	github.com/rivo/tview v0.42.0
 	github.com/transparency-dev/formats v0.1.2-0.20260805102052-38e6e69c4152
 	github.com/transparency-dev/merkle v0.0.3-0.20260727102338-4491f478b7dc
-	github.com/transparency-dev/witness v0.0.0-20260813093658-47c5c1d9be75
+	github.com/transparency-dev/witness v0.0.0-20260814155820-ed55fd2d54a0
 	go.opentelemetry.io/contrib/detectors/aws/ec2/v2 v2.5.2
 	go.opentelemetry.io/contrib/detectors/aws/ecs v1.45.0
 	go.opentelemetry.io/contrib/detectors/gcp v1.45.0

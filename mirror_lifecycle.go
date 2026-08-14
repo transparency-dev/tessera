@@ -27,6 +27,7 @@ import (
 	"io"
 	"iter"
 	"log/slog"
+	"os"
 	"sync/atomic"
 
 	"github.com/transparency-dev/formats/log"
@@ -553,7 +554,14 @@ func (p *witnessPersistenceAdaptor) Latest(ctx context.Context, origin string) (
 		return nil, witness.ErrUnknownLog
 	}
 
-	return p.lr.ReadCheckpoint(ctx)
+	cp, err := p.lr.ReadCheckpoint(ctx)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read checkpoint: %v", err)
+	}
+	return cp, nil
 }
 
 func (p *witnessPersistenceAdaptor) Update(ctx context.Context, origin string, f func([]byte) ([]byte, error)) error {
