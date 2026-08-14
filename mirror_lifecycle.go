@@ -375,15 +375,6 @@ func (mt *MirrorTarget) publishCheckpoint(ctx context.Context, newCP []byte, new
 		return nil, 0, fmt.Errorf("failed to create proof builder: %w", err)
 	}
 
-	oldSize := mt.oldSize.Load()
-	var cProof [][]byte
-	if oldSize > 0 {
-		cProof, err = pb.ConsistencyProof(ctx, oldSize, newCPSize)
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to get consistency proof: %w", err)
-		}
-	}
-
 	// SPEC: Finally, the mirror performs the following steps atomically. Note the mirror
 	// 			checkpoint may have changed since the start of this process.
 	//  			- Check if upload_end is still greater than or equal to the mirror checkpoint's tree size.
@@ -395,22 +386,29 @@ func (mt *MirrorTarget) publishCheckpoint(ctx context.Context, newCP []byte, new
 	// 			response: a sequence of one or more note signature lines.
 	var wSigs []byte
 	for done := false; !done; {
+		oldSize := mt.oldSize.Load()
 		var wSize uint64
+		var cProof [][]byte
+		if oldSize > 0 {
+			cProof, err = pb.ConsistencyProof(ctx, oldSize, newCPSize)
+			if err != nil {
+				return nil, 0, fmt.Errorf("failed to get consistency proof: %w", err)
+			}
+		}
 		wSigs, wSize, err = mt.mirrorWitness.Update(ctx, oldSize, newCP, cProof)
 		if err != nil {
 			if errors.Is(err, witness.ErrCheckpointStale) {
-				slog.WarnContext(ctx, "Retrying stale checkpoint on mirror witness", slog.Uint64("oldSize", oldSize), slog.Uint64("newSize", wSize))
-				oldSize = wSize
+				slog.DebugContext(ctx, "Retrying stale checkpoint on mirror witness", slog.Uint64("oldSize", oldSize), slog.Uint64("wSize", wSize))
+				mt.oldSize.CompareAndSwap(oldSize, wSize)
 				continue
 			}
-			slog.WarnContext(ctx, "Permanent failure updating checkpoint on mirror witness", slog.Uint64("oldSize", oldSize), slog.Uint64("newSize", wSize), slog.Any("error", err))
+			slog.WarnContext(ctx, "Permanent failure updating checkpoint on mirror witness", slog.Uint64("oldSize", oldSize), slog.Uint64("newCPSize", newCPSize), slog.Uint64("wSize", wSize), slog.String("error", err.Error()))
 			return nil, wSize, fmt.Errorf("failed to update checkpoint: %w", err)
 		}
 		done = true
+		mt.oldSize.CompareAndSwap(oldSize, newCPSize)
+		slog.InfoContext(ctx, "Completed upload", slog.Uint64("oldSize", oldSize), slog.Uint64("newSize", newCPSize))
 	}
-	mt.oldSize.CompareAndSwap(oldSize, newCPSize)
-
-	slog.WarnContext(ctx, "Completed upload", slog.Uint64("oldSize", oldSize), slog.Uint64("newSize", newCPSize))
 
 	return wSigs, newCPSize, nil
 }
@@ -429,18 +427,20 @@ func (mt *MirrorTarget) openOrCreateTicket(ctx context.Context, ticketBytes []by
 		return 0, 0, false, nil, nil, nil, fmt.Errorf("failed to read integrated size: %v", err)
 	}
 
-	var pendingCP *log.Checkpoint
-	userTicketValid := false
+	var (
+		pendingCP       *log.Checkpoint
+		pendingCPRaw    []byte
+		userTicketValid bool
+	)
 
-	var ticketCP []byte
 	if len(ticketBytes) > 0 {
-		ticketCP, err = mt.open(ticketBytes)
+		pendingCPRaw, err = mt.open(ticketBytes)
 		if err != nil {
-			slog.DebugContext(ctx, "Failed to open ticket", slog.Any("error", err))
+			slog.WarnContext(ctx, "Failed to open ticket", slog.Any("error", err))
 		} else {
-			pendingCP, _, _, err = log.ParseCheckpoint(ticketCP, mt.origin, mt.logVerifier)
+			pendingCP, _, _, err = log.ParseCheckpoint(pendingCPRaw, mt.origin, mt.logVerifier)
 			if err != nil {
-				slog.DebugContext(ctx, "Failed to parse ticket", slog.Any("error", err))
+				slog.DebugContext(ctx, "Failed to parse ticket checkpoint", slog.Any("error", err))
 			} else {
 				slog.DebugContext(ctx, "Valid ticket", slog.Uint64("nextEntry", nextEntry), slog.Uint64("pendingSize", pendingCP.Size))
 				userTicketValid = true
@@ -449,19 +449,19 @@ func (mt *MirrorTarget) openOrCreateTicket(ctx context.Context, ticketBytes []by
 	}
 
 	if pendingCP == nil || pendingCP.Size != expectedSize {
-		slog.DebugContext(ctx, "Invalid or incorrect ticket, returning new ticket", slog.Uint64("next_entry", nextEntry), slog.String("ticketCP", string(ticketCP)), slog.Uint64("expectedSize", expectedSize))
-		ticketBytes, pendingCP, ticketCP, err = mt.createNewTicket(ctx)
+		slog.DebugContext(ctx, "Invalid or incorrect ticket, returning new ticket", slog.Uint64("next_entry", nextEntry), slog.String("ticketCP", string(pendingCPRaw)), slog.Uint64("expectedSize", expectedSize))
+		ticketBytes, pendingCP, pendingCPRaw, err = mt.createNewTicket(ctx)
 		if err != nil {
 			return 0, 0, userTicketValid, nil, nil, nil, fmt.Errorf("failed to create new ticket: %w", err)
 		}
 		// If the new pending checkpoint still doesn't match expectedSize, return 409 Conflict with the fresh ticket.
 		if pendingCP.Size != expectedSize {
-			return nextEntry, pendingCP.Size, userTicketValid, ticketBytes, pendingCP, ticketCP, ErrConflict
+			return nextEntry, pendingCP.Size, userTicketValid, ticketBytes, pendingCP, pendingCPRaw, ErrConflict
 		}
 		// Otherwise, allow the request to continue (because their uploadEnd == pendingCP.Size).
 	}
 
-	return nextEntry, pendingCP.Size, userTicketValid, ticketBytes, pendingCP, ticketCP, nil
+	return nextEntry, pendingCP.Size, userTicketValid, ticketBytes, pendingCP, pendingCPRaw, nil
 }
 
 func (mt *MirrorTarget) createNewTicket(ctx context.Context) (ticket []byte, pendingCP *log.Checkpoint, pendingRaw []byte, err error) {
