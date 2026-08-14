@@ -1045,6 +1045,263 @@ func TestMirrorTarget_SubtreeWitness_NilSigner(t *testing.T) {
 	}
 }
 
+func buildTestTiles(t *testing.T) (cp256Raw []byte, cp512Raw []byte, root256 []byte, root512 []byte, fetcher func(ctx context.Context, level, index uint64, p uint8) ([]byte, error)) {
+	t.Helper()
+	hasher := rfc6962.DefaultHasher
+	crf := &compact.RangeFactory{Hash: hasher.HashChildren}
+
+	cr0 := crf.NewEmptyRange(0)
+	tile0Nodes := make([][]byte, 256)
+	for i := range 256 {
+		h := hasher.HashLeaf(fmt.Appendf(nil, "entry-%d", i))
+		tile0Nodes[i] = h
+		if err := cr0.Append(h, nil); err != nil {
+			t.Fatalf("cr0.Append: %v", err)
+		}
+	}
+	r0, err := cr0.GetRootHash(nil)
+	if err != nil {
+		t.Fatalf("cr0.GetRootHash: %v", err)
+	}
+
+	cr1 := crf.NewEmptyRange(0)
+	tile1Nodes := make([][]byte, 256)
+	for i := range 256 {
+		h := hasher.HashLeaf(fmt.Appendf(nil, "entry-%d", 256+i))
+		tile1Nodes[i] = h
+		if err := cr1.Append(h, nil); err != nil {
+			t.Fatalf("cr1.Append: %v", err)
+		}
+	}
+	r1, err := cr1.GetRootHash(nil)
+	if err != nil {
+		t.Fatalf("cr1.GetRootHash: %v", err)
+	}
+
+	r512 := hasher.HashChildren(r0, r1)
+
+	tile0Raw, err := (&api.HashTile{Nodes: tile0Nodes}).MarshalText()
+	if err != nil {
+		t.Fatalf("tile0.MarshalText: %v", err)
+	}
+	tile1Raw, err := (&api.HashTile{Nodes: tile1Nodes}).MarshalText()
+	if err != nil {
+		t.Fatalf("tile1.MarshalText: %v", err)
+	}
+	tileL1Raw, err := (&api.HashTile{Nodes: [][]byte{r0, r1}}).MarshalText()
+	if err != nil {
+		t.Fatalf("tileL1.MarshalText: %v", err)
+	}
+
+	cp256 := mustSignCP(testPendingCPOrigin, 256, base64.StdEncoding.EncodeToString(r0), testLogSigner)
+	cp512 := mustSignCP(testPendingCPOrigin, 512, base64.StdEncoding.EncodeToString(r512), testLogSigner)
+
+	fetcher = func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
+		if level == 0 && index == 0 {
+			return tile0Raw, nil
+		}
+		if level == 0 && index == 1 {
+			return tile1Raw, nil
+		}
+		if level == 1 && index == 0 {
+			return tileL1Raw, nil
+		}
+		return nil, fmt.Errorf("tile not found: level %d, index %d, p %d", level, index, p)
+	}
+
+	return cp256, cp512, r0, r512, fetcher
+}
+
+func TestMirrorTarget_PublishCheckpoint_RetryStale(t *testing.T) {
+	ctx := t.Context()
+	_, cp512, root256, _, tileFetcher := buildTestTiles(t)
+
+	for _, test := range []struct {
+		desc           string
+		initialOldSize uint64
+		storedCP       []byte
+	}{
+		{
+			desc:           "oldSize 0 but storage has size 256 checkpoint",
+			initialOldSize: 0,
+			storedCP:       mustCosignCP(t, testPendingCPOrigin, 256, root256, testLogSigner, testMirrorSigner),
+		},
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			currentPublishedCP := test.storedCP
+
+			drv := &fakeDriver{
+				writer: &fakeMirrorWriter{
+					updateCheckpointFunc: func(ctx context.Context, f func(oldCP []byte) (newCP []byte, err error)) error {
+						newCP, err := f(currentPublishedCP)
+						if err != nil {
+							return err
+						}
+						currentPublishedCP = newCP
+						return nil
+					},
+				},
+				reader: &fakeLogReader{
+					readCheckpoint: func(ctx context.Context) ([]byte, error) {
+						return currentPublishedCP, nil
+					},
+					readTile: tileFetcher,
+				},
+			}
+
+			mt, err := NewMirrorTarget(ctx, drv, &MirrorOptions{
+				origin:      testPendingCPOrigin,
+				logVerifier: testLogVerifier,
+				signer:      testMirrorSigner,
+				cpSource: func(ctx context.Context) ([]byte, error) {
+					return cp512, nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewMirrorTarget failed: %v", err)
+			}
+
+			mt.oldSize.Store(test.initialOldSize)
+
+			sigs, pubSize, err := mt.publishCheckpoint(ctx, cp512, 512)
+			if err != nil {
+				t.Fatalf("publishCheckpoint failed: %v", err)
+			}
+			if pubSize != 512 {
+				t.Errorf("pubSize = %d, want 512", pubSize)
+			}
+			if len(sigs) == 0 {
+				t.Errorf("got empty signatures, want cosignature")
+			}
+			if mt.oldSize.Load() != 512 {
+				t.Errorf("mt.oldSize = %d, want 512", mt.oldSize.Load())
+			}
+
+			if wantCP := append([]byte(cp512), sigs...); !bytes.Equal(currentPublishedCP, wantCP) {
+				t.Errorf("currentPublishedCP = %s, want %s", currentPublishedCP, wantCP)
+			}
+		})
+	}
+}
+
+func TestMirrorTarget_PublishCheckpoint_Errors(t *testing.T) {
+	ctx := t.Context()
+	cp256, cp512, root256, root512, tileFetcher := buildTestTiles(t)
+
+	errTileFetch := errors.New("tile fetch error")
+	errStorageWrite := errors.New("storage write error")
+
+	for _, test := range []struct {
+		desc           string
+		initialOldSize uint64
+		storedCP       []byte
+		newCP          []byte
+		newCPSize      uint64
+		readTile       func(ctx context.Context, level, index uint64, p uint8) ([]byte, error)
+		updateCP       func(ctx context.Context, f func(oldCP []byte) (newCP []byte, err error)) error
+		wantErr        error
+		wantErrSubstr  string
+	}{
+		{
+			desc:           "consistency proof fetch error",
+			initialOldSize: 256,
+			storedCP:       mustCosignCP(t, testPendingCPOrigin, 256, root256, testLogSigner, testMirrorSigner),
+			newCP:          cp512,
+			newCPSize:      512,
+			readTile: func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
+				return nil, errTileFetch
+			},
+			wantErrSubstr: "failed to get consistency proof",
+		},
+		{
+			desc:           "invalid consistency proof from corrupt tile",
+			initialOldSize: 256,
+			storedCP:       mustCosignCP(t, testPendingCPOrigin, 256, root256, testLogSigner, testMirrorSigner),
+			newCP:          cp512,
+			newCPSize:      512,
+			readTile: func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
+				if level == 1 && index == 0 {
+					corruptTile := &api.HashTile{Nodes: [][]byte{root256, bytes.Repeat([]byte{0xff}, 32)}}
+					return corruptTile.MarshalText()
+				}
+				return tileFetcher(ctx, level, index, p)
+			},
+			wantErr: witness.ErrInvalidProof,
+		},
+		{
+			desc:           "storage UpdateCheckpoint error",
+			initialOldSize: 0,
+			storedCP:       nil,
+			newCP:          cp256,
+			newCPSize:      256,
+			readTile:       tileFetcher,
+			updateCP: func(ctx context.Context, f func(oldCP []byte) (newCP []byte, err error)) error {
+				return errStorageWrite
+			},
+			wantErr: errStorageWrite,
+		},
+		{
+			desc:           "tree size regression - newCP smaller than storage CP",
+			initialOldSize: 0,
+			storedCP:       mustCosignCP(t, testPendingCPOrigin, 512, root512, testLogSigner, testMirrorSigner),
+			newCP:          cp256,
+			newCPSize:      256,
+			readTile:       tileFetcher,
+			wantErrSubstr:  "failed to get consistency proof",
+		},
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			currentPublishedCP := test.storedCP
+
+			drv := &fakeDriver{
+				writer: &fakeMirrorWriter{
+					updateCheckpointFunc: func(ctx context.Context, f func(oldCP []byte) (newCP []byte, err error)) error {
+						if test.updateCP != nil {
+							return test.updateCP(ctx, f)
+						}
+						newCP, err := f(currentPublishedCP)
+						if err != nil {
+							return err
+						}
+						currentPublishedCP = newCP
+						return nil
+					},
+				},
+				reader: &fakeLogReader{
+					readCheckpoint: func(ctx context.Context) ([]byte, error) {
+						return currentPublishedCP, nil
+					},
+					readTile: test.readTile,
+				},
+			}
+
+			mt, err := NewMirrorTarget(ctx, drv, &MirrorOptions{
+				origin:      testPendingCPOrigin,
+				logVerifier: testLogVerifier,
+				signer:      testMirrorSigner,
+				cpSource: func(ctx context.Context) ([]byte, error) {
+					return test.newCP, nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewMirrorTarget failed: %v", err)
+			}
+
+			mt.oldSize.Store(test.initialOldSize)
+
+			_, _, err = mt.publishCheckpoint(ctx, test.newCP, test.newCPSize)
+			if err == nil {
+				t.Fatalf("publishCheckpoint succeeded, want error")
+			}
+			if test.wantErr != nil && !errors.Is(err, test.wantErr) {
+				t.Errorf("publishCheckpoint error = %v, want error wrapping %v", err, test.wantErr)
+			}
+			if test.wantErrSubstr != "" && !strings.Contains(err.Error(), test.wantErrSubstr) {
+				t.Errorf("publishCheckpoint error = %v, want substring %q", err, test.wantErrSubstr)
+			}
+		})
+	}
+}
 // mustCosignCP is a helper to sign checkpoints with multiple signers.
 func mustCosignCP(t *testing.T, origin string, size uint64, root []byte, signers ...note.Signer) []byte {
 	t.Helper()
