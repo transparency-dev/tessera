@@ -797,7 +797,7 @@ func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogRea
 					defer cancel()
 
 					var err error
-					ws, err = witnessCheckpoint(ctx, witnessGateway.CosignCheckpoint, &o.witnesses, cp, cpSize, o.witnessOpts.FailOpen)
+					ws, err = witnessCheckpoint(ctx, witnessGateway.CosignCheckpoint, &o.witnesses, cp, cpSize, o.witnessOpts.FailOpen, o.witnessOpts.Greedy)
 					return err
 				})
 			}
@@ -808,7 +808,7 @@ func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogRea
 					defer cancel()
 
 					var err error
-					ms, err = mirrorCheckpoint(ctx, mirrorGateway.CosignCheckpoint, &o.mirrors, cp, cpSize, o.mirrorOpts.FailOpen)
+					ms, err = mirrorCheckpoint(ctx, mirrorGateway.CosignCheckpoint, &o.mirrors, cp, cpSize, o.mirrorOpts.FailOpen, false)
 					return err
 				})
 			}
@@ -871,12 +871,12 @@ func (o AppendOptions) mirrorGateway(ctx context.Context, lr LogReader, httpClie
 
 // witnessCheckpoint takes care of witnessing the given checkpoint with the provided witness policy.
 // Returns signatures from witnesses, ready to append to the checkpoint, or an error.
-func witnessCheckpoint(ctx context.Context, cosign cosigSource, policy *WitnessGroup, cp []byte, cpSize uint64, failOpen bool) ([]byte, error) {
+func witnessCheckpoint(ctx context.Context, cosign cosigSource, policy *WitnessGroup, cp []byte, cpSize uint64, failOpen bool, greedy bool) ([]byte, error) {
 	return otel.Trace(ctx, "tessera.CheckpointPublisher.Witness", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
 		start := time.Now()
 		witAttr := []attribute.KeyValue{}
 
-		sigs, err := gatherCosignatures(ctx, "witness", cosign, policy, cp, cpSize, failOpen)
+		sigs, err := gatherCosignatures(ctx, "witness", cosign, policy, cp, cpSize, failOpen, greedy)
 		if err != nil {
 			if !errors.Is(err, errFailedOpen) {
 				appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(attribute.String("error.type", "failed")))
@@ -895,9 +895,9 @@ func witnessCheckpoint(ctx context.Context, cosign cosigSource, policy *WitnessG
 
 // mirrorCheckpoint takes care of mirroring the given checkpoint with the provided mirror policy.
 // Returns signatures from mirrors, ready to append to the checkpoint, or an error.
-func mirrorCheckpoint(ctx context.Context, cosign cosigSource, policy *WitnessGroup, cp []byte, cpSize uint64, failOpen bool) ([]byte, error) {
+func mirrorCheckpoint(ctx context.Context, cosign cosigSource, policy *WitnessGroup, cp []byte, cpSize uint64, failOpen bool, greedy bool) ([]byte, error) {
 	return otel.Trace(ctx, "tessera.CheckpointPublisher.Mirror", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
-		sigs, err := gatherCosignatures(ctx, "mirror", cosign, policy, cp, cpSize, failOpen)
+		sigs, err := gatherCosignatures(ctx, "mirror", cosign, policy, cp, cpSize, failOpen, greedy)
 		if err != nil {
 			if !errors.Is(err, errFailedOpen) {
 				slog.WarnContext(ctx, "Failed to collect mirror signatures", slog.Any("error", err))
@@ -916,8 +916,10 @@ type cosigSource func(ctx context.Context, cp []byte, cpSize uint64) <-chan []by
 var errFailedOpen = errors.New("failed-open")
 
 // gatherCosignatures gathers signatures from a source, applying a policy to determine if the signatures are sufficient.
-// It returns the first set of signatures which satisfy the policy, or an error if the policy is not met and failOpen is false.
-func gatherCosignatures(ctx context.Context, name string, fetcher cosigSource, policy *WitnessGroup, cp []byte, cpSize uint64, failOpen bool) ([]byte, error) {
+// It returns a set of signatures which satisfy the policy (potentially more than required if greedy is true), or an error if the policy is not met and failOpen is false.
+func gatherCosignatures(ctx context.Context, name string, fetcher cosigSource, policy *WitnessGroup, cp []byte, cpSize uint64, failOpen bool, greedy bool) ([]byte, error) {
+	maxExpectedResponses := len(policy.WitnessEndpoints())
+
 	// checkPolicy checks if the provided signatures satisfy the given policy.
 	checkPolicy := func(sigs []byte, failOpen bool) ([]byte, error) {
 		newCP := append(slices.Clone(cp), sigs...)
@@ -936,6 +938,7 @@ func gatherCosignatures(ctx context.Context, name string, fetcher cosigSource, p
 	// or the context is done.
 	collectSigs := func(ctx context.Context, sigCh <-chan []byte) ([]byte, error) {
 		var sigBlock bytes.Buffer
+		gotResponses := 0
 		for {
 			select {
 			case <-ctx.Done():
@@ -946,16 +949,24 @@ func gatherCosignatures(ctx context.Context, name string, fetcher cosigSource, p
 				return sigs, pErr
 			case sig, ok := <-sigCh:
 				if !ok {
+					// No more signatures are coming.
 					sigs, pErr := checkPolicy(sigBlock.Bytes(), failOpen)
 					if pErr != nil {
 						pErr = fmt.Errorf("%w: no more signatures available", pErr)
 					}
 					return sigs, pErr
 				}
+				gotResponses++
 				sigBlock.Write(sig)
-				// Don't allow failOpen here, or we'll break out of the collection loop prematurely.
-				if sigs, err := checkPolicy(sigBlock.Bytes(), false); err == nil {
-					return sigs, nil
+				// If we're greedy, we need to keep collecting until we've got all the responses
+				// (or the context is cancelled).
+				// Otherwise we can return as soon as we've met the policy.
+				if !greedy || gotResponses == maxExpectedResponses {
+					// Don't allow failOpen here, or we'll break out of the collection loop prematurely.
+					sigs, err := checkPolicy(sigBlock.Bytes(), false)
+					if err == nil {
+						return sigs, nil
+					}
 				}
 			}
 		}
@@ -1172,6 +1183,10 @@ type WitnessOptions struct {
 	// This setting is intended only for facilitating early "non-blocking" adoption of witnessing,
 	// and will be disabled and/or removed in the future.
 	FailOpen bool
+
+	// Greedy indicates that Tessera should attempt to collect as many cosignatures as possible within the time available.
+	// If unset, Tessera will stop waiting for more responses as soon as the policy has been met.
+	Greedy bool
 }
 
 // MirroringOptions contains extra optional configuration for how Tessera should use/interact with
