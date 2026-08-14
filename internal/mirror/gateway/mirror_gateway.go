@@ -68,8 +68,6 @@ type Options struct {
 	Mirrors []*url.URL
 	// LogReader provides access to the main log.
 	LogReader LogReader
-	// LogOrigin is the origin ID of the log.
-	LogOrigin string
 }
 
 // NewGateway creates a new Gateway that will keep mirrors up-to-date.
@@ -80,9 +78,6 @@ func NewGateway(ctx context.Context, opts Options) (*Gateway, error) {
 	if opts.HTTPClient == nil {
 		slog.WarnContext(ctx, "MirrorGateway: No HTTP client configured, using DefaultHTTPClient")
 		opts.HTTPClient = http.DefaultClient
-	}
-	if opts.LogOrigin == "" {
-		return nil, fmt.Errorf("log origin is required")
 	}
 	if opts.LogReader == nil {
 		return nil, fmt.Errorf("log reader is required")
@@ -103,7 +98,6 @@ func NewGateway(ctx context.Context, opts Options) (*Gateway, error) {
 		mOpts := mirror.NewOptions().
 			WithMirrorURL(u).
 			WithHTTPClient(opts.HTTPClient).
-			WithLogOrigin(opts.LogOrigin).
 			WithTileFetcher(opts.LogReader.ReadTile).
 			WithBundleFetcher(opts.LogReader.ReadEntryBundle).
 			WithMirrorCheckpointFetcher(mirrorFetcher.ReadCheckpoint)

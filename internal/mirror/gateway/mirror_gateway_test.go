@@ -101,7 +101,6 @@ func TestGateway(t *testing.T) {
 				HTTPClient: http.DefaultClient,
 				Mirrors:    mirrorURLs,
 				LogReader:  testLog.LogReader,
-				LogOrigin:  "test",
 			})
 			if err != nil {
 				t.Fatalf("failed to create gateway: %v", err)

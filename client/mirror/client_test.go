@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -188,9 +189,6 @@ func TestNewOptions(t *testing.T) {
 	if opts.mirrorURL != nil {
 		t.Errorf("NewOptions().mirrorURL = %v, want nil", opts.mirrorURL)
 	}
-	if opts.logOrigin != "" {
-		t.Errorf("NewOptions().logOrigin = %q, want empty", opts.logOrigin)
-	}
 	if opts.tileFetcher != nil {
 		t.Errorf("NewOptions().tileFetcher = %v, want nil", opts.tileFetcher)
 	}
@@ -212,7 +210,6 @@ func TestOptionsBuilders(t *testing.T) {
 		t.Fatalf("failed to parse test URL: %v", err)
 	}
 	httpClient := &http.Client{}
-	logOrigin := "test-origin"
 	var tileFetcher client.TileFetcherFunc = func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
 		return nil, nil
 	}
@@ -229,7 +226,6 @@ func TestOptionsBuilders(t *testing.T) {
 	opts := NewOptions().
 		WithMirrorURL(u).
 		WithHTTPClient(httpClient).
-		WithLogOrigin(logOrigin).
 		WithTileFetcher(tileFetcher).
 		WithBundleFetcher(bundleFetcher).
 		WithMirrorCheckpointFetcher(mirrorCheckpointFetcher).
@@ -240,9 +236,6 @@ func TestOptionsBuilders(t *testing.T) {
 	}
 	if opts.httpClient != httpClient {
 		t.Errorf("WithHTTPClient() = %v, want %v", opts.httpClient, httpClient)
-	}
-	if opts.logOrigin != logOrigin {
-		t.Errorf("WithLogOrigin() = %q, want %q", opts.logOrigin, logOrigin)
 	}
 	if opts.tileFetcher == nil {
 		t.Errorf("WithTileFetcher() tileFetcher is nil")
@@ -262,7 +255,6 @@ func TestOptionsBuilders(t *testing.T) {
 func TestNewClientValidation(t *testing.T) {
 	u, _ := url.Parse("https://example.com")
 	httpClient := &http.Client{}
-	logOrigin := "test-origin"
 	var tileFetcher client.TileFetcherFunc = func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) { return nil, nil }
 	var bundleFetcher client.EntryBundleFetcherFunc = func(ctx context.Context, index uint64, size uint8) ([]byte, error) { return nil, nil }
 	var mirrorCheckpointFetcher client.CheckpointFetcherFunc = func(ctx context.Context) ([]byte, error) { return nil, nil }
@@ -278,7 +270,6 @@ func TestNewClientValidation(t *testing.T) {
 				return NewOptions().
 					WithMirrorURL(u).
 					WithHTTPClient(httpClient).
-					WithLogOrigin(logOrigin).
 					WithTileFetcher(tileFetcher).
 					WithBundleFetcher(bundleFetcher).
 					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher)
@@ -289,7 +280,6 @@ func TestNewClientValidation(t *testing.T) {
 			setup: func() *Options {
 				return NewOptions().
 					WithHTTPClient(httpClient).
-					WithLogOrigin(logOrigin).
 					WithTileFetcher(tileFetcher).
 					WithBundleFetcher(bundleFetcher).
 					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher)
@@ -301,7 +291,6 @@ func TestNewClientValidation(t *testing.T) {
 			setup: func() *Options {
 				opts := NewOptions().
 					WithMirrorURL(u).
-					WithLogOrigin(logOrigin).
 					WithTileFetcher(tileFetcher).
 					WithBundleFetcher(bundleFetcher).
 					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher)
@@ -311,24 +300,11 @@ func TestNewClientValidation(t *testing.T) {
 			wantErr: "HTTP client is required",
 		},
 		{
-			desc: "missing log origin",
-			setup: func() *Options {
-				return NewOptions().
-					WithMirrorURL(u).
-					WithHTTPClient(httpClient).
-					WithTileFetcher(tileFetcher).
-					WithBundleFetcher(bundleFetcher).
-					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher)
-			},
-			wantErr: "log origin is required",
-		},
-		{
 			desc: "missing tile fetcher",
 			setup: func() *Options {
 				return NewOptions().
 					WithMirrorURL(u).
 					WithHTTPClient(httpClient).
-					WithLogOrigin(logOrigin).
 					WithBundleFetcher(bundleFetcher).
 					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher)
 			},
@@ -340,7 +316,6 @@ func TestNewClientValidation(t *testing.T) {
 				return NewOptions().
 					WithMirrorURL(u).
 					WithHTTPClient(httpClient).
-					WithLogOrigin(logOrigin).
 					WithTileFetcher(tileFetcher).
 					WithMirrorCheckpointFetcher(mirrorCheckpointFetcher)
 			},
@@ -352,7 +327,6 @@ func TestNewClientValidation(t *testing.T) {
 				return NewOptions().
 					WithMirrorURL(u).
 					WithHTTPClient(httpClient).
-					WithLogOrigin(logOrigin).
 					WithTileFetcher(tileFetcher).
 					WithBundleFetcher(bundleFetcher)
 			},
@@ -420,7 +394,7 @@ func newFakeMirror(t *testing.T, origin string) *fakeMirror {
 		t:                   t,
 		origin:              origin,
 		ticket:              []byte("ticket-value"),
-		targetCheckpoint:    []byte("checkpoint-raw-bytes"),
+		targetCheckpoint:    []byte(origin + "\ncheckpoint-raw-bytes\n"),
 		expectedCosigs:      []byte("mock-cosignatures"),
 		numEntries:          5,
 		proofHashes:         [][]byte{bytes.Repeat([]byte{1}, 32)},
@@ -695,7 +669,7 @@ func TestSync(t *testing.T) {
 			},
 			steps: []syncStep{
 				{
-					checkpoint:   []byte("checkpoint-raw-bytes"),
+					checkpoint:   []byte(origin + "\ncheckpoint-raw-bytes\n"),
 					targetSize:   5,
 					expectCosigs: []byte("mock-cosignatures"),
 				},
@@ -719,12 +693,12 @@ func TestSync(t *testing.T) {
 			},
 			steps: []syncStep{
 				{
-					checkpoint:   []byte("checkpoint-raw-bytes"),
+					checkpoint:   []byte(origin + "\ncheckpoint-raw-bytes\n"),
 					targetSize:   5,
 					expectCosigs: []byte("mock-cosignatures"),
 				},
 				{
-					checkpoint:   []byte("checkpoint-raw-bytes"),
+					checkpoint:   []byte(origin + "\ncheckpoint-raw-bytes\n"),
 					targetSize:   5,
 					expectCosigs: []byte("mock-cosignatures"),
 					beforeSync: func(fm *fakeMirror) {
@@ -770,7 +744,6 @@ func TestSync(t *testing.T) {
 
 			opts := NewOptions().
 				WithMirrorURL(u).
-				WithLogOrigin(origin).
 				WithTileFetcher(tileFetcher).
 				WithBundleFetcher(bundleFetcher).
 				WithMirrorCheckpointFetcher(mirrorCheckpointFetcher).
@@ -1044,7 +1017,6 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 
 			opts := NewOptions().
 				WithMirrorURL(u).
-				WithLogOrigin(origin).
 				WithTileFetcher(tf).
 				WithBundleFetcher(bundleFetcher).
 				WithMirrorCheckpointFetcher(mirrorCheckpointFetcher).
@@ -1072,6 +1044,97 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 
 			if !bytes.Equal(cosigs, fm.expectedCosigs) {
 				t.Errorf("Sync() = %q, want %q", string(cosigs), string(fm.expectedCosigs))
+			}
+		})
+	}
+}
+
+func TestParseOrigin(t *testing.T) {
+	tests := []struct {
+		name       string
+		checkpoint []byte
+		want       string
+		wantErr    bool
+	}{
+		{
+			name:       "valid origin",
+			checkpoint: []byte("example.com/log\n100\n"),
+			want:       "example.com/log",
+		},
+		{
+			name:       "empty checkpoint",
+			checkpoint: []byte(""),
+			wantErr:    true,
+		},
+		{
+			name:       "no newline",
+			checkpoint: []byte("invalid-checkpoint-no-newline"),
+			wantErr:    true,
+		},
+		{
+			name:       "empty origin line",
+			checkpoint: []byte("\n100\n"),
+			wantErr:    true,
+		},
+		{
+			name:       "origin exceeds max uint16",
+			checkpoint: append(bytes.Repeat([]byte("a"), math.MaxUint16+1), []byte("\n100\n")...),
+			wantErr:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseOrigin(tc.checkpoint)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("parseOrigin() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if got != tc.want {
+				t.Errorf("parseOrigin() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSyncInvalidCheckpoint(t *testing.T) {
+	u, _ := url.Parse("https://example.com")
+	opts := NewOptions().
+		WithMirrorURL(u).
+		WithTileFetcher(func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) { return nil, nil }).
+		WithBundleFetcher(func(ctx context.Context, index uint64, size uint8) ([]byte, error) { return nil, nil }).
+		WithMirrorCheckpointFetcher(func(ctx context.Context) ([]byte, error) { return nil, nil })
+	c, err := NewClient(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("NewClient() = _, %v, want _, nil", err)
+	}
+
+	tests := []struct {
+		desc       string
+		checkpoint []byte
+	}{
+		{
+			desc:       "empty checkpoint",
+			checkpoint: []byte(""),
+		},
+		{
+			desc:       "no newline",
+			checkpoint: []byte("invalid-checkpoint-with-no-newline"),
+		},
+		{
+			desc:       "empty origin line",
+			checkpoint: []byte("\n100\n"),
+		},
+		{
+			desc:       "origin line exceeds max uint16",
+			checkpoint: append(bytes.Repeat([]byte("a"), math.MaxUint16+1), []byte("\n100\n")...),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.desc, func(t *testing.T) {
+			_, err := c.Sync(context.Background(), tc.checkpoint, 0)
+			if err == nil {
+				t.Errorf("Sync() with %s succeeded, want error", tc.desc)
 			}
 		})
 	}
