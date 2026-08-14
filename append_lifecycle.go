@@ -916,7 +916,7 @@ type cosigSource func(ctx context.Context, cp []byte, cpSize uint64) <-chan []by
 var errFailedOpen = errors.New("failed-open")
 
 // gatherCosignatures gathers signatures from a source, applying a policy to determine if the signatures are sufficient.
-// It returns the first set of signatures which satisfy the policy, or an error if the policy is not met and failOpen is false.
+// It returns a set of signatures which satisfy the policy (potentially more than required if greedy is true), or an error if the policy is not met and failOpen is false.
 func gatherCosignatures(ctx context.Context, name string, fetcher cosigSource, policy *WitnessGroup, cp []byte, cpSize uint64, failOpen bool, greedy bool) ([]byte, error) {
 	maxExpectedResponses := len(policy.WitnessEndpoints())
 
@@ -958,11 +958,15 @@ func gatherCosignatures(ctx context.Context, name string, fetcher cosigSource, p
 				}
 				gotResponses++
 				sigBlock.Write(sig)
-				// Don't allow failOpen here, or we'll break out of the collection loop prematurely.
-				sigs, err := checkPolicy(sigBlock.Bytes(), false)
-				// We can return with sigs early if we've met policy and either we're not in greedy mode or we've received a response from all configured witnesses.
-				if err == nil && (!greedy || gotResponses == maxExpectedResponses) {
-					return sigs, nil
+				// If we're greedy, we need to keep collecting until we've got all the responses
+				// (or the context is cancelled).
+				// Otherwise we can return as soon as we've met the policy.
+				if !greedy || gotResponses == maxExpectedResponses {
+					// Don't allow failOpen here, or we'll break out of the collection loop prematurely.
+					sigs, err := checkPolicy(sigBlock.Bytes(), false)
+					if err == nil {
+						return sigs, nil
+					}
 				}
 			}
 		}

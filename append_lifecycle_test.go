@@ -893,12 +893,12 @@ func newMirrorHandler(t *testing.T, mirrorSKey string) http.HandlerFunc {
 		}
 	}
 }
-func mustNewWitness(t *testing.T, skey, urlStr string) Witness {
+func mustNewWitness(t *testing.T, vkey, urlStr string) Witness {
 	url, err := url.Parse(urlStr)
 	if err != nil {
 		t.Fatalf("Failed to parse URL %s: %v", urlStr, err)
 	}
-	wit, err := NewWitness(skey, url)
+	wit, err := NewWitness(vkey, url)
 	if err != nil {
 		t.Fatalf("failed to create witness: %v", err)
 	}
