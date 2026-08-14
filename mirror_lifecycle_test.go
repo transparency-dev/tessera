@@ -1112,6 +1112,109 @@ func buildTestTiles(t *testing.T) (cp256Raw []byte, cp512Raw []byte, root256 []b
 	return cp256, cp512, r0, r512, fetcher
 }
 
+func TestMirrorTarget_AddEntries_SubsequentUpload_WithConsistencyProof(t *testing.T) {
+	ctx := t.Context()
+	cp256, cp512, root256, r512, tileFetcher := buildTestTiles(t)
+
+	var currentPublishedCP []byte
+	pendingCPToReturn := cp256
+
+	drv := &fakeDriver{
+		writer: &fakeMirrorWriter{
+			integrateFunc: func(ctx context.Context, fromBundleIdx uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
+				for _, err := range bundles {
+					if err != nil {
+						return 0, nil, err
+					}
+				}
+				if fromBundleIdx == 0 {
+					return 256, root256, nil
+				}
+				return 512, r512, nil
+			},
+			updateCheckpointFunc: func(ctx context.Context, f func(oldCP []byte) (newCP []byte, err error)) error {
+				newCP, err := f(currentPublishedCP)
+				if err != nil {
+					return err
+				}
+				currentPublishedCP = newCP
+				return nil
+			},
+		},
+		reader: &fakeLogReader{
+			readCheckpoint: func(ctx context.Context) ([]byte, error) {
+				return currentPublishedCP, nil
+			},
+			readTile: tileFetcher,
+			sizeFunc: func(ctx context.Context) (uint64, error) {
+				if currentPublishedCP == nil {
+					return 0, nil
+				}
+				return 256, nil
+			},
+		},
+	}
+
+	mt, err := NewMirrorTarget(ctx, drv, &MirrorOptions{
+		origin:      testPendingCPOrigin,
+		logVerifier: testLogVerifier,
+		signer:      testMirrorSigner,
+		cpSource: func(ctx context.Context) ([]byte, error) {
+			return pendingCPToReturn, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewMirrorTarget failed: %v", err)
+	}
+
+	// 1. Initial upload: 0 -> 256
+	ticket256, err := mt.seal(cp256)
+	if err != nil {
+		t.Fatalf("seal failed: %v", err)
+	}
+	nextEntry, pendingSize, _, cosigs1, err := mt.AddEntries(ctx, 0, 256, ticket256, func() (*MirrorPackage, error) {
+		return nil, io.EOF
+	})
+	if err != nil {
+		t.Fatalf("AddEntries (0->256) failed: %v", err)
+	}
+	if nextEntry != 256 || pendingSize != 256 {
+		t.Errorf("AddEntries (0->256) got nextEntry=%d, pendingSize=%d; want 256, 256", nextEntry, pendingSize)
+	}
+	if len(cosigs1) == 0 {
+		t.Fatalf("AddEntries (0->256) got empty cosigs")
+	}
+	if mt.oldSize.Load() != 256 {
+		t.Errorf("mt.oldSize = %d, want 256", mt.oldSize.Load())
+	}
+
+	// 2. Subsequent upload: 256 -> 512
+	pendingCPToReturn = cp512
+	ticket512, err := mt.seal(cp512)
+	if err != nil {
+		t.Fatalf("seal failed: %v", err)
+	}
+	nextEntry, pendingSize, _, cosigs2, err := mt.AddEntries(ctx, 256, 512, ticket512, func() (*MirrorPackage, error) {
+		return nil, io.EOF
+	})
+	if err != nil {
+		t.Fatalf("AddEntries (256->512) failed: %v", err)
+	}
+	if nextEntry != 512 || pendingSize != 512 {
+		t.Errorf("AddEntries (256->512) got nextEntry=%d, pendingSize=%d; want 512, 512", nextEntry, pendingSize)
+	}
+	if len(cosigs2) == 0 {
+		t.Fatalf("AddEntries (256->512) got empty cosigs")
+	}
+	if mt.oldSize.Load() != 512 {
+		t.Errorf("mt.oldSize = %d, want 512", mt.oldSize.Load())
+	}
+
+	if wantCP := append([]byte(cp512), cosigs2...); !bytes.Equal(currentPublishedCP, wantCP) {
+		t.Errorf("currentPublishedCP = %s, want %s", currentPublishedCP, wantCP)
+	}
+}
+
 func TestMirrorTarget_PublishCheckpoint_RetryStale(t *testing.T) {
 	ctx := t.Context()
 	_, cp512, root256, _, tileFetcher := buildTestTiles(t)
@@ -1302,6 +1405,53 @@ func TestMirrorTarget_PublishCheckpoint_Errors(t *testing.T) {
 		})
 	}
 }
+
+func TestNewMirrorTarget_OptionsValidation(t *testing.T) {
+	ctx := t.Context()
+
+	for _, test := range []struct {
+		desc        string
+		driver      Driver
+		opts        *MirrorOptions
+		wantErrText string
+	}{
+		{
+			desc:        "nil options",
+			driver:      &fakeDriver{},
+			opts:        nil,
+			wantErrText: "opts cannot be nil",
+		},
+		{
+			desc:        "missing log verifier",
+			driver:      &fakeDriver{},
+			opts:        NewMirrorOptions().WithSigner(testMirrorSigner).WithCheckpointSource(func(ctx context.Context) ([]byte, error) { return nil, nil }),
+			wantErrText: "WithLogVerifier must be set",
+		},
+		{
+			desc:        "missing signer",
+			driver:      &fakeDriver{},
+			opts:        NewMirrorOptions().WithLogVerifier(testLogVerifier).WithCheckpointSource(func(ctx context.Context) ([]byte, error) { return nil, nil }),
+			wantErrText: "WithSigner must be set",
+		},
+		{
+			desc:        "missing checkpoint source",
+			driver:      &fakeDriver{},
+			opts:        NewMirrorOptions().WithLogVerifier(testLogVerifier).WithSigner(testMirrorSigner),
+			wantErrText: "WithCheckpointSource must be set",
+		},
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			_, err := NewMirrorTarget(ctx, test.driver, test.opts)
+			if err == nil {
+				t.Fatalf("NewMirrorTarget succeeded, want error")
+			}
+			if !strings.Contains(err.Error(), test.wantErrText) {
+				t.Errorf("NewMirrorTarget error = %v, want substring %q", err, test.wantErrText)
+			}
+		})
+	}
+}
+
 // mustCosignCP is a helper to sign checkpoints with multiple signers.
 func mustCosignCP(t *testing.T, origin string, size uint64, root []byte, signers ...note.Signer) []byte {
 	t.Helper()
