@@ -48,6 +48,7 @@ const (
 
 	// landmarkPublicationBuffer is an additional buffer added to RetryAfter in ProofToLandmark
 	// responses to account for landmark publication latency (integrating entries, signing, and storage writes).
+	// TODO: Tune this for each storage implementation and Tessera config if need be.
 	landmarkPublicationBuffer = 500 * time.Millisecond
 
 	// maxRetryAfterJitter is the upper bound of randomized jitter added to RetryAfter in ProofToLandmark
@@ -461,7 +462,7 @@ func (l *MTCLog) ProofToLandmark(ctx context.Context, index uint64) ([]byte, tim
 	// Construct the inclusion proof to the active landmark.
 	pb, err := client.NewProofBuilder(ctx, end, l.reader.ReadTile)
 	if err != nil {
-		return nil, 0, fmt.Errorf("cannot create proof builder")
+		return nil, 0, fmt.Errorf("cannot create proof builder: %v", err)
 	}
 	proofNodes, err := pb.SubtreeInclusionProof(ctx, index, start, end)
 	if err != nil {

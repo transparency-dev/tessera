@@ -130,7 +130,7 @@ func TestAddTBSHandler(t *testing.T) {
 	tests := []struct {
 		name       string
 		body       func() io.Reader
-		addFunc    addTBS
+		addFunc    addTBSFn
 		wantStatus int
 		wantBody   string
 	}{
@@ -263,7 +263,7 @@ func TestProofToLandmarkHandler(t *testing.T) {
 	tests := []struct {
 		name           string
 		path           string
-		proofFn        proofToLandmark
+		proofFn        proofToLandmarkFn
 		wantStatus     int
 		wantBody       string
 		wantRetryAfter string

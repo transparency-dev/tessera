@@ -35,8 +35,8 @@ const (
 	maxAddTBSRequestBodyBytes = 128 << 10
 )
 
-type addTBS func(context.Context, log.TBSCertificateLogEntry) (*log.AddTBSRsp, error)
-type proofToLandmark func(context.Context, uint64) ([]byte, time.Duration, error)
+type addTBSFn func(context.Context, log.TBSCertificateLogEntry) (*log.AddTBSRsp, error)
+type proofToLandmarkFn func(context.Context, uint64) ([]byte, time.Duration, error)
 
 // New returns a new http.Handler for the mtc-tlog service.
 func New(mtcLog *log.MTCLog) http.Handler {
@@ -54,11 +54,11 @@ func New(mtcLog *log.MTCLog) http.Handler {
 //     DER format, encapsulates it in a TLS encoded MTCLogEntry, and logs it
 //     using the argument add function.
 //   - Returns an AddTBSRsp JSON payload containing an index and an MTCProof.
-func addTBSHandler(add addTBS) http.Handler {
+func addTBSHandler(add addTBSFn) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := r.Body.Close(); err != nil {
-				slog.ErrorContext(r.Context(), "r.Body.Close()", slog.Any("error", err))
+				slog.DebugContext(r.Context(), "r.Body.Close()", slog.Any("error", err))
 			}
 		}()
 
@@ -89,7 +89,7 @@ func addTBSHandler(add addTBS) http.Handler {
 	})
 }
 
-func proofToLandmarkHandler(fn proofToLandmark) http.Handler {
+func proofToLandmarkHandler(fn proofToLandmarkFn) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		indexStr := r.URL.Query().Get("index")
 		if indexStr == "" {
