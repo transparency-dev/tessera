@@ -28,8 +28,7 @@ import (
 	"time"
 
 	fnote "github.com/transparency-dev/formats/note"
-	"github.com/transparency-dev/tessera"
-	"github.com/transparency-dev/tessera/cmd/mtc/mirror/internal/handler"
+	"github.com/transparency-dev/tessera/cmd/mtc/mirror"
 	"github.com/transparency-dev/tessera/storage/posix"
 	witnessConfig "github.com/transparency-dev/witness/config"
 	"github.com/transparency-dev/witness/persistence/sqlite"
@@ -71,34 +70,19 @@ func main() {
 
 	mirrorCosigner := mustCreateCosigner(ctx, *mirrorCosignerPath)
 
-	// Mirror cosigner MUST NOT use the same key as add-checkpoint cosigner.
-	assertDistinctSigners(ctx, w.Signers, []note.Signer{mirrorCosigner})
-
-	mux := handler.NewMirrorMux()
 	cfg := mirrorConfigFromFlags(ctx)
 	for _, l := range cfg {
-		origin := l.Origin
-		v := l.Verifier
-
-		// Create the mirror
-		t, err := newMirrorTarget(ctx, w, origin, v, mirrorCosigner)
-		if err != nil {
-			slog.ErrorContext(ctx, "Failed to create mirror target", slog.String("origin", origin), slog.Any("error", err))
-			os.Exit(1)
-		}
-		if err := mux.AddTarget(origin, t); err != nil {
-			slog.ErrorContext(ctx, "Failed to add target to mux", slog.String("origin", origin), slog.Any("error", err))
-			os.Exit(1)
-		}
-
 		// Ensure log is known by the witness
-		if err := wp.AddLogs(ctx, []witnessConfig.Log{l}); err != nil {
-			slog.ErrorContext(ctx, "Failed to add target log to witness", slog.String("origin", origin), slog.Any("error", err))
+		if err := wp.AddLogs(ctx, []witnessConfig.Log{l.Log}); err != nil {
+			slog.ErrorContext(ctx, "Failed to add target log to witness", slog.String("origin", l.Log.Origin), slog.Any("error", err))
 			os.Exit(1)
 		}
 	}
-
-	h := handler.New(mux, w)
+	m, err := mirror.New(ctx, w, mirrorCosigner, cfg)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to create mirror", slog.Any("error", err))
+		os.Exit(1)
+	}
 
 	var protocols http.Protocols
 	protocols.SetHTTP1(true)
@@ -106,7 +90,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              *listenAddr,
-		Handler:           h,
+		Handler:           m,
 		Protocols:         &protocols,
 		ReadHeaderTimeout: *readHeaderTimeout,
 		IdleTimeout:       *idleTimeout,
@@ -122,35 +106,9 @@ func main() {
 	}
 }
 
-// newMirrorTarget creates a new POSIX driver and MirrorTarget for the given origin.
-//
-// The target directory for the driver is derived from the storage directory and the origin in accordance
-// with the `tlog-mirror` spec, allowing the root of the storage directory to be exported directly to read-only clients.
-func newMirrorTarget(ctx context.Context, w *witness.Witness, origin string, logVerifier note.Verifier, mirrorSigner fnote.SubtreeSigner) (*tessera.MirrorTarget, error) {
-	if origin == "" {
-		return nil, fmt.Errorf("origin cannot be empty")
-	}
-	targetDir := filepath.Join(*storageDir, mirrorsDir, fmt.Sprintf("%0x", sha256.Sum256([]byte(origin))))
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir %q: %v", targetDir, err)
-	}
-	d, err := posix.New(ctx, posix.Config{Path: targetDir})
-	if err != nil {
-		return nil, fmt.Errorf("posix.New: %v", err)
-	}
-	mOpts := tessera.NewMirrorOptions().
-		WithCheckpointSource(func(ctx context.Context) ([]byte, error) {
-			return w.GetCheckpoint(ctx, origin)
-		}).
-		WithOrigin(origin).
-		WithLogVerifier(logVerifier).
-		WithSigner(mirrorSigner)
-	return tessera.NewMirrorTarget(ctx, d, mOpts)
-}
-
-// mirrorConfigFromFlags returns a mirror configuration loaded from the provided flags.
-// Exits if the mirror configuration could not be loaded.
-func mirrorConfigFromFlags(ctx context.Context) []witnessConfig.Log {
+// mirrorConfigFromFlags returns a slice of mirror.LogConfig structs, using flags as the source of information.
+// Exits if the mirror configuration could not be transformed into a slice of mirror.LogConfig structs.
+func mirrorConfigFromFlags(ctx context.Context) []mirror.LogConfig {
 	if *mirrorConfigPath == "" {
 		slog.ErrorContext(ctx, "Mirror config path not specified")
 		os.Exit(1)
@@ -166,6 +124,7 @@ func mirrorConfigFromFlags(ctx context.Context) []witnessConfig.Log {
 		os.Exit(1)
 	}
 	seenOrigins := make(map[string]struct{})
+	ret := make([]mirror.LogConfig, 0, len(cfg))
 	for _, c := range cfg {
 		o := c.Origin
 		if o == "" {
@@ -176,8 +135,22 @@ func mirrorConfigFromFlags(ctx context.Context) []witnessConfig.Log {
 			os.Exit(1)
 		}
 		seenOrigins[o] = struct{}{}
+		targetDir := filepath.Join(*storageDir, mirrorsDir, fmt.Sprintf("%0x", sha256.Sum256([]byte(o))))
+		if err := os.MkdirAll(targetDir, 0o755); err != nil {
+			slog.ErrorContext(ctx, "Failed to create mirror target", slog.String("origin", o), slog.Any("error", err))
+			os.Exit(1)
+		}
+		d, err := posix.New(ctx, posix.Config{Path: targetDir})
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to create mirror target", slog.String("origin", o), slog.Any("error", err))
+			os.Exit(1)
+		}
+		ret = append(ret, mirror.LogConfig{
+			Log:    c,
+			Driver: d,
+		})
 	}
-	return cfg
+	return ret
 }
 
 // witnessFromFlags returns a witness instance configured from the provided flags.
@@ -246,22 +219,4 @@ func mustCreateCosigner(ctx context.Context, path string) fnote.SubtreeSigner {
 		os.Exit(1)
 	}
 	return s
-}
-
-// assertDistinctSigners asserts that the two provided lists of cosigners have no signers in common.
-func assertDistinctSigners(ctx context.Context, w, m []note.Signer) {
-	type nhKey struct {
-		name string
-		hash uint32
-	}
-	aMap := make(map[nhKey]struct{}, len(w))
-	for _, s := range w {
-		aMap[nhKey{name: s.Name(), hash: s.KeyHash()}] = struct{}{}
-	}
-	for _, s := range m {
-		if _, ok := aMap[nhKey{name: s.Name(), hash: s.KeyHash()}]; ok {
-			slog.ErrorContext(ctx, "Cannot use same signing key for witness and mirror", slog.String("name", s.Name()), slog.String("hash", fmt.Sprintf("%08x", s.KeyHash())))
-			os.Exit(1)
-		}
-	}
 }
