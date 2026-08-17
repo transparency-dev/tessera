@@ -103,8 +103,6 @@ const (
 	defaultAssignEntriesTimeout = 2 * time.Second
 	// defaultIntegrationTimeout is the default context timeout applied when undertaking an integration task.
 	defaultIntegrationTimeout = 10 * time.Second
-	// defaultPublicationTimeout is the default context timeout applied when undertaking a checkpoint publication task.
-	defaultPublicationTimeout = 5 * time.Second
 	// defaultGCTimeout is the default context timeout applied when undertaking a garbage collection task.
 	defaultGCTimeout = 30 * time.Second
 )
@@ -322,7 +320,7 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoord
 	}
 
 	go a.integrateEntriesJob(ctx)
-	go a.publishCheckpointJob(ctx, opts.CheckpointInterval(), opts.CheckpointRepublishInterval())
+	go a.publishCheckpointJob(ctx, opts.CheckpointInterval(), opts.CheckpointRepublishInterval(), opts.CheckpointPublicationTimeout())
 	if i := opts.GarbageCollectionInterval(); i > 0 {
 		go a.garbageCollectorJob(ctx, i)
 	}
@@ -402,7 +400,7 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 // of the tree, once per interval.
 //
 // Blocks until ctx is done.
-func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republishInterval time.Duration) {
+func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republishInterval, publicationTimeout time.Duration) {
 	t := time.NewTicker(pubInterval)
 	defer t.Stop()
 	for {
@@ -414,7 +412,7 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 		}
 		if err := otel.TraceErr(ctx, "tessera.storage.gcp.publishCheckpointJob", tracer, func(ctx context.Context, span trace.Span) error {
 
-			ctx, cancel := context.WithTimeout(ctx, defaultPublicationTimeout)
+			ctx, cancel := context.WithTimeout(ctx, publicationTimeout)
 			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
 			nextPub, err := a.sequencer.publishCheckpoint(ctx, pubInterval, republishInterval, a.updateCheckpoint)

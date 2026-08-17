@@ -53,6 +53,8 @@ const (
 	DefaultCheckpointInterval = 10 * time.Second
 	// DefaultCheckpointRepublishInterval is used by storage implementations if no WithCheckpointRepublishInterval option is provided when instantiating it.
 	DefaultCheckpointRepublishInterval = 10 * time.Minute
+	// DefaultCheckpointPublicationTimeout is used by storage implementations if no WithCheckpointPublicationTimeout option is provided when instantiating it.
+	DefaultCheckpointPublicationTimeout = 5 * time.Second
 	// DefaultPushbackMaxOutstanding is used by storage implementations if no WithPushback option is provided when instantiating it.
 	DefaultPushbackMaxOutstanding = 4096
 	// DefaultGarbageCollectionInterval is the default value used if no WithGarbageCollectionInterval option is provided.
@@ -631,17 +633,18 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 // instance.
 func NewAppendOptions() *AppendOptions {
 	return &AppendOptions{
-		batchMaxSize:                DefaultBatchMaxSize,
-		batchMaxAge:                 DefaultBatchMaxAge,
-		entriesPath:                 layout.EntriesPath,
-		maxEntrySize:                DefaultEntrySizeLimit,
-		bundleIDHasher:              defaultIDHasher,
-		checkpointInterval:          DefaultCheckpointInterval,
-		checkpointRepublishInterval: DefaultCheckpointRepublishInterval,
-		addDecorators:               make([]func(AddFn) AddFn, 0),
-		pushbackMaxOutstanding:      DefaultPushbackMaxOutstanding,
-		garbageCollectionInterval:   DefaultGarbageCollectionInterval,
-		shutdownTimeout:             DefaultShutdownTimeout,
+		batchMaxSize:                 DefaultBatchMaxSize,
+		batchMaxAge:                  DefaultBatchMaxAge,
+		entriesPath:                  layout.EntriesPath,
+		maxEntrySize:                 DefaultEntrySizeLimit,
+		bundleIDHasher:               defaultIDHasher,
+		checkpointInterval:           DefaultCheckpointInterval,
+		checkpointRepublishInterval:  DefaultCheckpointRepublishInterval,
+		checkpointPublicationTimeout: DefaultCheckpointPublicationTimeout,
+		addDecorators:                make([]func(AddFn) AddFn, 0),
+		pushbackMaxOutstanding:       DefaultPushbackMaxOutstanding,
+		garbageCollectionInterval:    DefaultGarbageCollectionInterval,
+		shutdownTimeout:              DefaultShutdownTimeout,
 	}
 }
 
@@ -670,8 +673,9 @@ type AppendOptions struct {
 	// bundleIDHasher knows how to create antispam leaf identities for entries in a serialised bundle.
 	bundleIDHasher func([]byte) ([][]byte, error)
 
-	checkpointInterval          time.Duration
-	checkpointRepublishInterval time.Duration
+	checkpointInterval           time.Duration
+	checkpointRepublishInterval  time.Duration
+	checkpointPublicationTimeout time.Duration
 
 	witnesses   WitnessGroup
 	witnessOpts WitnessOptions
@@ -712,6 +716,9 @@ func (o AppendOptions) valid() error {
 	}
 	if o.checkpointRepublishInterval > 0 && o.checkpointRepublishInterval < o.checkpointInterval {
 		return fmt.Errorf("invalid AppendOptions: WithCheckpointRepublishInterval (%d) is smaller than WithCheckpointInterval (%d)", o.checkpointRepublishInterval, o.checkpointInterval)
+	}
+	if o.checkpointPublicationTimeout <= o.witnessOpts.Timeout {
+		return fmt.Errorf("invalid AppendOptions: WithCheckpointPublicationTimeout (%d) is smaller than or equal to WithWitnessTimeout (%d)", o.checkpointPublicationTimeout, o.witnessOpts.Timeout)
 	}
 	return nil
 }
@@ -1007,6 +1014,10 @@ func (o AppendOptions) CheckpointRepublishInterval() time.Duration {
 	return o.checkpointRepublishInterval
 }
 
+func (o AppendOptions) CheckpointPublicationTimeout() time.Duration {
+	return o.checkpointPublicationTimeout
+}
+
 func (o AppendOptions) GarbageCollectionInterval() time.Duration {
 	return o.garbageCollectionInterval
 }
@@ -1120,6 +1131,12 @@ func (o *AppendOptions) WithCheckpointInterval(interval time.Duration) *AppendOp
 // Setting this less than or equal to zero will disable republication of unchanged checkpoints.
 func (o *AppendOptions) WithCheckpointRepublishInterval(interval time.Duration) *AppendOptions {
 	o.checkpointRepublishInterval = interval
+	return o
+}
+
+// WithCheckpointPublicationTimeout configures the timeout used when creating and publishing checkpoints.
+func (o *AppendOptions) WithCheckpointPublicationTimeout(timeout time.Duration) *AppendOptions {
+	o.checkpointPublicationTimeout = timeout
 	return o
 }
 

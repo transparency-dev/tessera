@@ -252,10 +252,6 @@ github.com/transparency-dev/formats v0.1.2-0.20260805102052-38e6e69c4152 h1:jFaz
 github.com/transparency-dev/formats v0.1.2-0.20260805102052-38e6e69c4152/go.mod h1:P0kg1ftMVew4S2XrFP+u+CZsF50yFGSstDFBKgA6XYk=
 github.com/transparency-dev/merkle v0.0.3-0.20260727102338-4491f478b7dc h1:DaUOzC/KJOVtUqxKoFiEAQhoRu+TV8GaMKXQg94zRqs=
 github.com/transparency-dev/merkle v0.0.3-0.20260727102338-4491f478b7dc/go.mod h1:E+iHk6bS+tIgIJGD4TMeAjSjhQ9wPfL/ST4pXyITjdU=
-github.com/transparency-dev/witness v0.0.0-20260811161034-ce89de7de1be h1:gIpR+JFv5Y5iaH7tGsXN2roK+nn26wdUegVjf5luVqg=
-github.com/transparency-dev/witness v0.0.0-20260811161034-ce89de7de1be/go.mod h1:8kubNAzXuDgpH+SPlC+yQn+3GYeEBvOknjv5fpFWEMk=
-github.com/transparency-dev/witness v0.0.0-20260813093658-47c5c1d9be75 h1:+L3Q80ou3Yg9Q7klW5C+l07N5WSkFh647UMtQgptgeM=
-github.com/transparency-dev/witness v0.0.0-20260813093658-47c5c1d9be75/go.mod h1:PO4JoQYLy1w5xaSo5EYqhY996O+VnWdg3sMBuzeH1q0=
 github.com/transparency-dev/witness v0.0.0-20260814155820-ed55fd2d54a0 h1:DshcPJELtOa5NjPUsUwnzLsMTvFPu5VbgYBHL/LOKck=
 github.com/transparency-dev/witness v0.0.0-20260814155820-ed55fd2d54a0/go.mod h1:gJ5Vu6rZhFNEjQ7xTuMHSewS0M/VpxRMlFFXzc0hz7U=
 github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e h1:JVG44RsyaB9T2KIHavMF/ppJZNG9ZpyihvCd0w101no=
