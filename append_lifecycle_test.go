@@ -79,9 +79,10 @@ const testSignerKey = "PRIVATE+KEY+example.com/log/testdata+33d7b496+AeymY/SZAX0
 
 func TestAppendOptionsValid(t *testing.T) {
 	for _, test := range []struct {
-		name            string
-		opts            *AppendOptions
-		wantErrContains string
+		name                   string
+		opts                   *AppendOptions
+		wantErrContains        string
+		wantPublicationTimeout time.Duration
 	}{
 		{
 			name: "Valid",
@@ -92,6 +93,13 @@ func TestAppendOptionsValid(t *testing.T) {
 				WithCheckpointSigner(mustCreateSigner(t, testSignerKey)).
 				WithCheckpointInterval(10 * time.Second).
 				WithCheckpointRepublishInterval(10 * time.Second),
+		}, {
+			name: "Valid: CheckpointPublicationTimeout < WitnessTimeout adjusts publication timeout",
+			opts: NewAppendOptions().
+				WithCheckpointSigner(mustCreateSigner(t, testSignerKey)).
+				WithCheckpointPublicationTimeout(1 * time.Second).
+				WithWitnesses(NewWitnessGroup(0), &WitnessOptions{Timeout: 10 * time.Second}),
+			wantPublicationTimeout: 10 * time.Second,
 		}, {
 			name: "Error: CheckpointRepublishInterval < CheckpointInterval",
 			opts: NewAppendOptions().
@@ -106,7 +114,7 @@ func TestAppendOptionsValid(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := test.opts.valid()
+			err := test.opts.valid(t.Context())
 			switch gotErr, wantErr := err != nil, test.wantErrContains != ""; {
 			case gotErr && !wantErr:
 				t.Fatalf("Got unexpected error %q, want no error", err)
@@ -116,6 +124,9 @@ func TestAppendOptionsValid(t *testing.T) {
 				if !strings.Contains(err.Error(), test.wantErrContains) {
 					t.Fatalf("Got err %q, want error containing %q", err.Error(), test.wantErrContains)
 				}
+			}
+			if test.wantPublicationTimeout > 0 && test.opts.CheckpointPublicationTimeout() != test.wantPublicationTimeout {
+				t.Fatalf("Got CheckpointPublicationTimeout %v, want %v", test.opts.CheckpointPublicationTimeout(), test.wantPublicationTimeout)
 			}
 		})
 	}

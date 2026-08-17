@@ -291,7 +291,7 @@ func NewAppender(ctx context.Context, d Driver, opts *AppendOptions) (*Appender,
 		return nil, nil, nil, errors.New("opts cannot be nil")
 	}
 	slog.InfoContext(ctx, "Creating new appender", slog.Any("options", opts))
-	if err := opts.valid(); err != nil {
+	if err := opts.valid(ctx); err != nil {
 		return nil, nil, nil, err
 	}
 	a, r, err := lc.Appender(ctx, opts)
@@ -702,7 +702,7 @@ type AppendOptions struct {
 }
 
 // valid returns an error if an invalid combination of options has been set, or nil otherwise.
-func (o AppendOptions) valid() error {
+func (o *AppendOptions) valid(ctx context.Context) error {
 	if o.newCP == nil {
 		return errors.New("invalid AppendOptions: WithCheckpointSigner must be set")
 	}
@@ -718,9 +718,9 @@ func (o AppendOptions) valid() error {
 		return fmt.Errorf("invalid AppendOptions: WithCheckpointRepublishInterval (%d) is smaller than WithCheckpointInterval (%d)", o.checkpointRepublishInterval, o.checkpointInterval)
 	}
 	if o.checkpointPublicationTimeout < o.witnessOpts.Timeout {
-		slog.Warn("WithCheckpointPublicationTimeout is smaller than WithWitnessTimeout", slog.Duration("checkpointPublicationTimeout", o.checkpointPublicationTimeout), slog.Duration("witnessTimeout", o.witnessOpts.Timeout))
-		slog.Warn("Setting checkpointRepublishInterval to witness timeout value")
-		o.checkpointRepublishInterval = o.witnessOpts.Timeout
+		slog.WarnContext(ctx, "WithCheckpointPublicationTimeout is smaller than WithWitnessTimeout", slog.Duration("checkpointPublicationTimeout", o.checkpointPublicationTimeout), slog.Duration("witnessTimeout", o.witnessOpts.Timeout))
+		slog.WarnContext(ctx, "Setting checkpointPublicationTimeout to witness timeout value")
+		o.checkpointPublicationTimeout = o.witnessOpts.Timeout
 	}
 	return nil
 }
