@@ -357,9 +357,9 @@ func TestParseCosignerID(t *testing.T) {
 			want:  []byte{0x81, 0xfd, 0x59, 0x01},
 		},
 		{
-			name:  "valid PEN 44363.47",
-			input: "oid/1.3.6.1.4.1.44363.47",
-			want:  []byte{0x82, 0xda, 0x4b, 0x2f},
+			name:  "valid PEN 32473.106",
+			input: "oid/1.3.6.1.4.1.32473.106",
+			want:  []byte{0x81, 0xfd, 0x59, 0x6a},
 		},
 		{
 			name:  "valid PEN 0",
