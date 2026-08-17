@@ -49,6 +49,7 @@ var (
 	awaiterPollInterval       = flag.Duration("awaiter_poll_interval", 100*time.Millisecond, "Interval between checkpoint polls by the publication awaiter.")
 	pushbackMaxOutstanding    = flag.Uint("pushback_max_outstanding", tessera.DefaultPushbackMaxOutstanding, "Maximum number of in-flight add requests - i.e. the number of entries with sequence numbers assigned, but which are not yet integrated into the log.")
 	garbageCollectionInterval = flag.Duration("garbage_collection_interval", 10*time.Second, "Interval between scans to remove obsolete partial tiles and entry bundles. Set to 0 to disable.")
+	mirrorPolicyFile          = flag.String("mirror_policy", "", "File containing the mirror policy in tlog-policy format. If unset, no mirroring will be performed.")
 	// Tessera's HTTP client settings
 	clientHTTPTimeout        = flag.Duration("client_http_timeout", 5*time.Second, "Timeout for outgoing HTTP requests")
 	clientHTTPMaxIdle        = flag.Int("client_http_max_idle", 20, "Maximum number of idle HTTP connections for outgoing requests.")
@@ -151,6 +152,21 @@ func newAppenderFromFlags(ctx context.Context, origin string, signer note.Subtre
 		WithBatching(*batchMaxSize, *batchMaxAge).
 		WithPushback(*pushbackMaxOutstanding).
 		WithGarbageCollectionInterval(*garbageCollectionInterval)
+
+	if *mirrorPolicyFile != "" {
+		b, err := os.ReadFile(*mirrorPolicyFile)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to read mirror policy", slog.Any("error", err), slog.String("path", *mirrorPolicyFile))
+			os.Exit(1)
+		}
+		policy, err := tessera.NewWitnessGroupFromPolicy(b)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to parse mirror policy", slog.Any("error", err), slog.String("path", *mirrorPolicyFile))
+			os.Exit(1)
+		}
+		opts = opts.WithMirrors(policy, nil)
+		slog.InfoContext(ctx, "Mirroring enabled", slog.Any("policy", policy), slog.String("path", *mirrorPolicyFile))
+	}
 
 	cfg := posix.Config{
 		Path: *storageDir,
