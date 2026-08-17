@@ -717,8 +717,10 @@ func (o AppendOptions) valid() error {
 	if o.checkpointRepublishInterval > 0 && o.checkpointRepublishInterval < o.checkpointInterval {
 		return fmt.Errorf("invalid AppendOptions: WithCheckpointRepublishInterval (%d) is smaller than WithCheckpointInterval (%d)", o.checkpointRepublishInterval, o.checkpointInterval)
 	}
-	if o.checkpointPublicationTimeout <= o.witnessOpts.Timeout {
-		return fmt.Errorf("invalid AppendOptions: WithCheckpointPublicationTimeout (%d) is smaller than or equal to WithWitnessTimeout (%d)", o.checkpointPublicationTimeout, o.witnessOpts.Timeout)
+	if o.checkpointPublicationTimeout < o.witnessOpts.Timeout {
+		slog.Warn("WithCheckpointPublicationTimeout is smaller than WithWitnessTimeout", slog.Duration("checkpointPublicationTimeout", o.checkpointPublicationTimeout), slog.Duration("witnessTimeout", o.witnessOpts.Timeout))
+		slog.Warn("Setting checkpointRepublishInterval to witness timeout value")
+		o.checkpointRepublishInterval = o.witnessOpts.Timeout
 	}
 	return nil
 }
