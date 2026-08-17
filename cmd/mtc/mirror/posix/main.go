@@ -106,8 +106,8 @@ func main() {
 	}
 }
 
-// mirrorConfigFromFlags returns a mirror configuration loaded from the provided flags.
-// Exits if the mirror configuration could not be loaded.
+// mirrorConfigFromFlags returns a slice of mirror.LogConfig structs, using flags as the source of information.
+// Exits if the mirror configuration could not be transformed into a slice of mirror.LogConfig structs.
 func mirrorConfigFromFlags(ctx context.Context) []mirror.LogConfig {
 	if *mirrorConfigPath == "" {
 		slog.ErrorContext(ctx, "Mirror config path not specified")
