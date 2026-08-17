@@ -262,3 +262,84 @@ func TestMTCLogEntry_UnmarshalErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractExtensions(t *testing.T) {
+	entryWithExts := New(
+		[]byte("sample-data"),
+		MTCLogEntryExtension{Type: 1, Data: []byte("ext-1")},
+		MTCLogEntryExtension{Type: 3, Data: []byte("ext-3")},
+	)
+	entryWithExtsBytes, err := entryWithExts.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() unexpected error: %v", err)
+	}
+
+	entryNoExts := New([]byte("sample-data"))
+	entryNoExtsBytes, err := entryNoExts.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() unexpected error: %v", err)
+	}
+
+	nullEntry := New(nil)
+	nullEntryBytes, err := nullEntry.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() unexpected error: %v", err)
+	}
+
+	var wantExtsBuilder cryptobyte.Builder
+	wantExtsBuilder.AddUint16(1)
+	wantExtsBuilder.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) { b.AddBytes([]byte("ext-1")) })
+	wantExtsBuilder.AddUint16(3)
+	wantExtsBuilder.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) { b.AddBytes([]byte("ext-3")) })
+	wantExts := wantExtsBuilder.BytesOrPanic()
+
+	tests := []struct {
+		name         string
+		entryData    []byte
+		wantExtBytes []byte
+		wantErr      bool
+	}{
+		{
+			name:         "entry with multiple extensions",
+			entryData:    entryWithExtsBytes,
+			wantExtBytes: wantExts,
+		},
+		{
+			name:         "entry with no extensions",
+			entryData:    entryNoExtsBytes,
+			wantExtBytes: []byte{},
+		},
+		{
+			name:         "null entry with no extensions",
+			entryData:    nullEntryBytes,
+			wantExtBytes: []byte{},
+		},
+		{
+			name:      "empty input",
+			entryData: []byte{},
+			wantErr:   true,
+		},
+		{
+			name:      "truncated 1-byte length prefix",
+			entryData: []byte{0x00},
+			wantErr:   true,
+		},
+		{
+			name:      "length prefix exceeds available data",
+			entryData: []byte{0x00, 0x10, 0x01},
+			wantErr:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ExtractExtensions(tc.entryData)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ExtractExtensions() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if !tc.wantErr && !bytes.Equal(got, tc.wantExtBytes) {
+				t.Errorf("ExtractExtensions() = %x, want %x", got, tc.wantExtBytes)
+			}
+		})
+	}
+}

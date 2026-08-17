@@ -56,6 +56,9 @@ var (
 
 	// ErrNotYetCovered indicates that an index is not yet covered by any published active landmark.
 	ErrNotYetCovered = errors.New("entry is not yet covered by active landmarks")
+
+	// ErrExceedsTreeSize indicates that an index exceeds the current log tree size.
+	ErrExceedsTreeSize = errors.New("index exceeds current log tree size")
 )
 
 // ReadCheckpointSize returns the current log checkpoint size.
@@ -440,7 +443,7 @@ func (p *Publisher) Update(ctx context.Context) (time.Duration, error) {
 //     tree size, returns retryAfter > 0 indicating estimated time until the
 //     next landmark publication. This is a best effort estimate.
 //   - If index precedes the earliest available active landmark, returns ErrTooOld.
-//   - If index exceeds the current log tree size, it returns an error.
+//   - If index exceeds the current log tree size, returns ErrExceedsTreeSize.
 func (p *Publisher) GetSubtreeFor(ctx context.Context, index uint64) (start, end uint64, retryAfter time.Duration, err error) {
 	p.mu.RLock()
 	active := p.active
@@ -464,7 +467,8 @@ func (p *Publisher) GetSubtreeFor(ctx context.Context, index uint64) (start, end
 			retry := max(time.Millisecond, time.Until(pubAt.Add(p.pubInterval)))
 			return 0, 0, retry, nil
 		}
-		return 0, 0, 0, fmt.Errorf("index %d exceeds current log tree size %d", index, cpSize)
+		slog.DebugContext(ctx, "Requested index exceeds current log tree size", slog.Uint64("index", index), slog.Uint64("tree_size", cpSize))
+		return 0, 0, 0, ErrExceedsTreeSize
 
 	default:
 		return 0, 0, 0, err

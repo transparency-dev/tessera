@@ -17,9 +17,13 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/transparency-dev/tessera/cmd/mtc/log"
 )
@@ -31,20 +35,14 @@ const (
 	maxAddTBSRequestBodyBytes = 128 << 10
 )
 
-type addTBS func(context.Context, log.TBSCertificateLogEntry) (*log.AddTBSRsp, error)
+type addTBSFn func(context.Context, log.TBSCertificateLogEntry) (*log.AddTBSRsp, error)
+type proofToLandmarkFn func(context.Context, uint64) ([]byte, time.Duration, error)
 
 // New returns a new http.Handler for the mtc-tlog service.
 func New(mtcLog *log.MTCLog) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("POST /add-tbs", http.MaxBytesHandler(addTBSHandler(mtcLog.AddTBS), maxAddTBSRequestBodyBytes))
-	mux.HandleFunc("GET /proof-to-landmark", func(w http.ResponseWriter, r *http.Request) {
-		// TODO parse request
-		// TODO write response
-		if _, err := mtcLog.ProofToLandmark(r.Context(), 0); err != nil {
-			slog.ErrorContext(r.Context(), "Failed to fetch inclusion proof to landmark", slog.Any("error", err))
-		}
-		http.Error(w, "not implemented", http.StatusNotImplemented)
-	})
+	mux.Handle("GET /proof-to-landmark", proofToLandmarkHandler(mtcLog.ProofToLandmark))
 	return mux
 }
 
@@ -56,22 +54,22 @@ func New(mtcLog *log.MTCLog) http.Handler {
 //     DER format, encapsulates it in a TLS encoded MTCLogEntry, and logs it
 //     using the argument add function.
 //   - Returns an AddTBSRsp JSON payload containing an index and an MTCProof.
-func addTBSHandler(add addTBS) http.Handler {
+func addTBSHandler(add addTBSFn) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := r.Body.Close(); err != nil {
-				slog.ErrorContext(r.Context(), "resp.Body.Close()", slog.Any("error", err))
+				slog.DebugContext(r.Context(), "r.Body.Close()", slog.Any("error", err))
 			}
 		}()
 
 		var entry log.TBSCertificateLogEntry
 		if err := json.NewDecoder(r.Body).Decode(&entry); err != nil {
-			slog.WarnContext(r.Context(), "rejection: malformed JSON submission", slog.Any("error", err))
+			slog.DebugContext(r.Context(), "rejection: malformed JSON submission", slog.Any("error", err))
 			http.Error(w, "Invalid TBSCertificateLogEntry JSON payload", http.StatusBadRequest)
 			return
 		}
 		if err := entry.Validate(); err != nil {
-			slog.WarnContext(r.Context(), "rejection: invalid TBSCertificateLogEntry fields", slog.Any("error", err))
+			slog.DebugContext(r.Context(), "rejection: invalid TBSCertificateLogEntry fields", slog.Any("error", err))
 			http.Error(w, fmt.Sprintf("Invalid TBSCertificateLogEntry: %v", err.Error()), http.StatusBadRequest)
 			return
 		}
@@ -86,6 +84,54 @@ func addTBSHandler(add addTBS) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		if err := json.NewEncoder(w).Encode(rsp); err != nil {
+			slog.ErrorContext(r.Context(), "failed to write response", slog.Any("error", err))
+		}
+	})
+}
+
+func proofToLandmarkHandler(fn proofToLandmarkFn) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		indexStr := r.URL.Query().Get("index")
+		if indexStr == "" {
+			slog.DebugContext(r.Context(), "rejection: missing index query parameter")
+			http.Error(w, "missing 'index' query parameter", http.StatusBadRequest)
+			return
+		}
+		index, err := strconv.ParseUint(indexStr, 10, 64)
+		if err != nil {
+			slog.DebugContext(r.Context(), "rejection: invalid index query parameter", slog.Any("error", err))
+			http.Error(w, "invalid 'index' query parameter", http.StatusBadRequest)
+			return
+		}
+
+		proof, retryAfter, err := fn(r.Context(), index)
+		if err != nil {
+			switch {
+			case errors.Is(err, log.ErrTooOld):
+				slog.DebugContext(r.Context(), "rejection: requested index precedes active landmarks", slog.Uint64("index", index), slog.Any("error", err))
+				http.Error(w, err.Error(), http.StatusGone)
+				return
+			case errors.Is(err, log.ErrExceedsTreeSize):
+				slog.DebugContext(r.Context(), "rejection: requested index exceeds tree size", slog.Uint64("index", index), slog.Any("error", err))
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			default:
+				slog.ErrorContext(r.Context(), "failed to fetch inclusion proof to landmark", slog.Uint64("index", index), slog.Any("error", err))
+				http.Error(w, "Could not fetch inclusion proof to landmark", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		if retryAfter > 0 {
+			retrySeconds := max(1, int(math.Ceil(retryAfter.Seconds())))
+			w.Header().Set("Retry-After", strconv.Itoa(retrySeconds))
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(log.ProofToLandmarkRsp{MTCProof: proof}); err != nil {
 			slog.ErrorContext(r.Context(), "failed to write response", slog.Any("error", err))
 		}
 	})
