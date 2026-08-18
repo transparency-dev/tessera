@@ -31,6 +31,7 @@ import (
 
 	"log/slog"
 
+	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/storage/posix"
 )
@@ -105,8 +106,8 @@ func main() {
 			slog.ErrorContext(ctx, "Failed to read witness policy file", slog.String("witnesspolicyfile", *witnessPolicyFile), slog.Any("error", err))
 			os.Exit(1)
 		}
-		wg, err := tessera.NewWitnessGroupFromPolicy(f)
-		if err != nil {
+		var wPol policy.TLogPolicy
+		if err := wPol.Unmarshal(f); err != nil {
 			slog.ErrorContext(ctx, "Failed to create witness group from policy", slog.Any("error", err))
 			os.Exit(1)
 		}
@@ -115,7 +116,7 @@ func main() {
 			FailOpen: *witnessFailOpen,
 			Timeout:  *witnessTimeout,
 		}
-		opts.WithWitnesses(wg, wOpts)
+		opts.WithWitnessPolicy(wPol, wOpts)
 	}
 
 	slog.DebugContext(ctx, "Creating appender")
