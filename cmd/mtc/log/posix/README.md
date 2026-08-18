@@ -17,13 +17,13 @@ generate ML-DSA key pairs in the correct `vkey` format with the
 command from the [witness](https://github.com/transparency-dev/witness) repo.
 
 The command below will generate such a key pair, with an origin of
-"oid/1.3.6.1.4.1.44363.47", writing the public and private keys out to
+"oid/1.3.6.1.4.1.32473.106", writing the public and private keys out to
 `/tmp/mtc.pub` and `/tmp/mtc.sec` respectively:
 
 ```bash
 go run github.com/transparency-dev/witness/cmd/generate_keys@main \
   --mldsa \
-  --origin "oid/1.3.6.1.4.1.44363.47" \
+  --origin "oid/1.3.6.1.4.1.32473.106" \
   --out_priv /tmp/mtc.sec \
   --out_pub /tmp/mtc.pub
 ```
@@ -41,7 +41,7 @@ An example command for starting the server is given below:
 go run ./cmd/mtc/log/posix \
   --listen_addr="localhost:6962" \
   --storage_dir="/tmp/mtclog" \
-  --ca_id="44363.47" \
+  --ca_id="32473.106" \
   --log_number=1 \
   --private_key=/tmp/mtc.sec \
   --slog_level=-4
@@ -55,7 +55,7 @@ In a different terminal, start the hammer:
 go run ./cmd/mtc/log/hammer \
   --log_url=file:///tmp/mtclog \
   --write_log_url=http://localhost:6962/ \
-  --ca_id="44363.47" \
+  --ca_id="32473.106" \
   --log_number=1 \
   --log_public_key=$(cat /tmp/mtc.pub) \
   --max_read_ops=10 \

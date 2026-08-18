@@ -488,18 +488,18 @@ func TestFormatOriginAndSigner(t *testing.T) {
 	}{
 		{
 			name:           "valid single integer caID",
-			caID:           "44363",
+			caID:           "32473",
 			logNumber:      1,
-			wantOrigin:     "oid/1.3.6.1.4.1.44363.0.1",
-			wantSignerName: "oid/1.3.6.1.4.1.44363",
+			wantOrigin:     "oid/1.3.6.1.4.1.32473.0.1",
+			wantSignerName: "oid/1.3.6.1.4.1.32473",
 			wantErr:        false,
 		},
 		{
 			name:           "valid multi dot caID",
-			caID:           "44363.47",
+			caID:           "32473.106",
 			logNumber:      42,
-			wantOrigin:     "oid/1.3.6.1.4.1.44363.47.0.42",
-			wantSignerName: "oid/1.3.6.1.4.1.44363.47",
+			wantOrigin:     "oid/1.3.6.1.4.1.32473.106.0.42",
+			wantSignerName: "oid/1.3.6.1.4.1.32473.106",
 			wantErr:        false,
 		},
 		{
@@ -510,25 +510,25 @@ func TestFormatOriginAndSigner(t *testing.T) {
 		},
 		{
 			name:      "caID leading dot",
-			caID:      ".44363",
+			caID:      ".32473",
 			logNumber: 1,
 			wantErr:   true,
 		},
 		{
 			name:      "caID trailing dot",
-			caID:      "44363.",
+			caID:      "32473.",
 			logNumber: 1,
 			wantErr:   true,
 		},
 		{
 			name:      "caID invalid char",
-			caID:      "44363a",
+			caID:      "32473a",
 			logNumber: 1,
 			wantErr:   true,
 		},
 		{
 			name:      "logNumber zero",
-			caID:      "44363",
+			caID:      "32473",
 			logNumber: 0,
 			wantErr:   true,
 		},
@@ -551,7 +551,7 @@ func TestFormatOriginAndSigner(t *testing.T) {
 }
 
 func TestCreateSignerAndOrigin(t *testing.T) {
-	validKey, _, err := note.GenerateMLDSAKey("oid/1.3.6.1.4.1.44363.47")
+	validKey, _, err := note.GenerateMLDSAKey("oid/1.3.6.1.4.1.32473.106")
 	if err != nil {
 		t.Fatalf("GenerateMLDSAKey failed: %v", err)
 	}
@@ -567,11 +567,11 @@ func TestCreateSignerAndOrigin(t *testing.T) {
 	}{
 		{
 			name:           "valid matching key and caID",
-			caID:           "44363.47",
+			caID:           "32473.106",
 			logNumber:      1,
 			privKey:        validKey,
-			wantOrigin:     "oid/1.3.6.1.4.1.44363.47.0.1",
-			wantSignerName: "oid/1.3.6.1.4.1.44363.47",
+			wantOrigin:     "oid/1.3.6.1.4.1.32473.106.0.1",
+			wantSignerName: "oid/1.3.6.1.4.1.32473.106",
 			wantErr:        false,
 		},
 		{
@@ -583,14 +583,14 @@ func TestCreateSignerAndOrigin(t *testing.T) {
 		},
 		{
 			name:      "zero log number",
-			caID:      "44363.47",
+			caID:      "32473.106",
 			logNumber: 0,
 			privKey:   validKey,
 			wantErr:   true,
 		},
 		{
 			name:      "invalid private key string",
-			caID:      "44363.47",
+			caID:      "32473.106",
 			logNumber: 1,
 			privKey:   "not-a-valid-key",
 			wantErr:   true,

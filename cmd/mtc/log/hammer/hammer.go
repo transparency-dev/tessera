@@ -69,7 +69,7 @@ var (
 	maxWriteOpsPerSecond = flag.Int("max_write_ops", 0, "The maximum number of write operations per second")
 	numWriters           = flag.Int("num_writers", 0, "The number of independent write tasks to run")
 
-	caID         = flag.String("ca_id", "44363.47", "The CA ID (e.g. 44363.47)")
+	caID         = flag.String("ca_id", "32473.106", "The CA ID (e.g. 32473.106)")
 	logNumber    = flag.Uint64("log_number", 1, "The issuance log number (strictly positive)")
 	certLifetime = flag.Duration("cert_lifetime", 24*time.Hour, "Validity duration for generated certificates")
 

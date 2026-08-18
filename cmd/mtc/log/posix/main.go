@@ -56,7 +56,7 @@ var (
 	clientHTTPMaxIdlePerHost = flag.Int("client_http_max_idle_per_host", 10, "Maximum number of idle HTTP connections per host for outgoing requests.")
 
 	// CA settings
-	caID            = flag.String("ca_id", "44363.47", "The CA ID as per draft-ietf-plants-merkle-tree-certs section 5.1 (e.g. 44363.47)")
+	caID            = flag.String("ca_id", "32473.106", "The CA ID as per draft-ietf-plants-merkle-tree-certs section 5.1 (e.g. 32473.106)")
 	logNumber       = flag.Uint64("log_number", 1, "The issuance log number (strictly positive)")
 	privKeyFile     = flag.String("private_key", "", "Location of private key file. If unset, uses the contents of the LOG_PRIVATE_KEY environment variable.")
 	maxCertLifetime = flag.Duration("max_cert_lifetime", log.DefaultMaxCertLifetime, "Maximum validity duration allowed for submitted certificate entries.")
