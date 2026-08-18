@@ -139,9 +139,6 @@ func (r *Reader) SubtreeForIndex(index uint64) (start, end uint64, ok bool) {
 		}
 	}
 
-	if index < r.subtrees[0].start {
-		return 0, r.subtrees[0].start, true
-	}
-
-	return 0, 0, false
+	// If not found in retained subtrees, it must precede the earliest retained subtree.
+	return 0, r.subtrees[0].start, true
 }
