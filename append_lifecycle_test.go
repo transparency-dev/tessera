@@ -101,6 +101,21 @@ func TestAppendOptionsValid(t *testing.T) {
 				WithWitnesses(NewWitnessGroup(0), &WitnessOptions{Timeout: 10 * time.Second}),
 			wantPublicationTimeout: 10 * time.Second,
 		}, {
+			name: "Valid: CheckpointPublicationTimeout < MirrorTimeout adjusts publication timeout",
+			opts: NewAppendOptions().
+				WithCheckpointSigner(mustCreateSigner(t, testSignerKey)).
+				WithCheckpointPublicationTimeout(1 * time.Second).
+				WithMirrors(NewWitnessGroup(0), &MirroringOptions{Timeout: 15 * time.Second}),
+			wantPublicationTimeout: 15 * time.Second,
+		}, {
+			name: "Valid: CheckpointPublicationTimeout adjusts to max of WitnessTimeout and MirrorTimeout",
+			opts: NewAppendOptions().
+				WithCheckpointSigner(mustCreateSigner(t, testSignerKey)).
+				WithCheckpointPublicationTimeout(1 * time.Second).
+				WithWitnesses(NewWitnessGroup(0), &WitnessOptions{Timeout: 10 * time.Second}).
+				WithMirrors(NewWitnessGroup(0), &MirroringOptions{Timeout: 20 * time.Second}),
+			wantPublicationTimeout: 20 * time.Second,
+		}, {
 			name: "Error: CheckpointRepublishInterval < CheckpointInterval",
 			opts: NewAppendOptions().
 				WithCheckpointSigner(mustCreateSigner(t, testSignerKey)).

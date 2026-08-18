@@ -717,10 +717,25 @@ func (o *AppendOptions) valid(ctx context.Context) error {
 	if o.checkpointRepublishInterval > 0 && o.checkpointRepublishInterval < o.checkpointInterval {
 		return fmt.Errorf("invalid AppendOptions: WithCheckpointRepublishInterval (%d) is smaller than WithCheckpointInterval (%d)", o.checkpointRepublishInterval, o.checkpointInterval)
 	}
+	// Warning: The following warning log will be removed and replaced with returning an error.
 	if o.checkpointPublicationTimeout < o.witnessOpts.Timeout {
-		slog.WarnContext(ctx, "WithCheckpointPublicationTimeout is smaller than WithWitnessTimeout", slog.Duration("checkpointPublicationTimeout", o.checkpointPublicationTimeout), slog.Duration("witnessTimeout", o.witnessOpts.Timeout))
-		slog.WarnContext(ctx, "Setting checkpointPublicationTimeout to witness timeout value")
-		o.checkpointPublicationTimeout = o.witnessOpts.Timeout
+		slog.WarnContext(ctx, "WithCheckpointPublicationTimeout is smaller than WithWitnessTimeout. This will be updated to a fatal error in the future.",
+			slog.Duration("checkpointPublicationTimeout", o.checkpointPublicationTimeout),
+			slog.Duration("witnessTimeout", o.witnessOpts.Timeout),
+		)
+	}
+	if o.checkpointPublicationTimeout < o.mirrorOpts.Timeout {
+		slog.WarnContext(ctx, "WithCheckpointPublicationTimeout is smaller than WithMirrorTimeout. This will be updated to a fatal error in the future.",
+			slog.Duration("checkpointPublicationTimeout", o.checkpointPublicationTimeout),
+			slog.Duration("mirrorTimeout", o.mirrorOpts.Timeout),
+		)
+	}
+	if target := max(o.checkpointPublicationTimeout, o.witnessOpts.Timeout, o.mirrorOpts.Timeout); target != o.checkpointPublicationTimeout {
+		slog.WarnContext(ctx, "Setting checkpointPublicationTimeout to new value",
+			slog.Duration("from", o.checkpointPublicationTimeout),
+			slog.Duration("to", target),
+		)
+		o.checkpointPublicationTimeout = target
 	}
 	return nil
 }
