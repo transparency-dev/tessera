@@ -53,6 +53,8 @@ const (
 	DefaultCheckpointInterval = 10 * time.Second
 	// DefaultCheckpointRepublishInterval is used by storage implementations if no WithCheckpointRepublishInterval option is provided when instantiating it.
 	DefaultCheckpointRepublishInterval = 10 * time.Minute
+	// DefaultCheckpointPublicationTimeout is used by storage implementations if no WithCheckpointPublicationTimeout option is provided when instantiating it.
+	DefaultCheckpointPublicationTimeout = 5 * time.Second
 	// DefaultPushbackMaxOutstanding is used by storage implementations if no WithPushback option is provided when instantiating it.
 	DefaultPushbackMaxOutstanding = 4096
 	// DefaultGarbageCollectionInterval is the default value used if no WithGarbageCollectionInterval option is provided.
@@ -289,7 +291,7 @@ func NewAppender(ctx context.Context, d Driver, opts *AppendOptions) (*Appender,
 		return nil, nil, nil, errors.New("opts cannot be nil")
 	}
 	slog.InfoContext(ctx, "Creating new appender", slog.Any("options", opts))
-	if err := opts.valid(); err != nil {
+	if err := opts.valid(ctx); err != nil {
 		return nil, nil, nil, err
 	}
 	a, r, err := lc.Appender(ctx, opts)
@@ -631,17 +633,18 @@ func (t *terminator) Shutdown(ctx context.Context) error {
 // instance.
 func NewAppendOptions() *AppendOptions {
 	return &AppendOptions{
-		batchMaxSize:                DefaultBatchMaxSize,
-		batchMaxAge:                 DefaultBatchMaxAge,
-		entriesPath:                 layout.EntriesPath,
-		maxEntrySize:                DefaultEntrySizeLimit,
-		bundleIDHasher:              defaultIDHasher,
-		checkpointInterval:          DefaultCheckpointInterval,
-		checkpointRepublishInterval: DefaultCheckpointRepublishInterval,
-		addDecorators:               make([]func(AddFn) AddFn, 0),
-		pushbackMaxOutstanding:      DefaultPushbackMaxOutstanding,
-		garbageCollectionInterval:   DefaultGarbageCollectionInterval,
-		shutdownTimeout:             DefaultShutdownTimeout,
+		batchMaxSize:                 DefaultBatchMaxSize,
+		batchMaxAge:                  DefaultBatchMaxAge,
+		entriesPath:                  layout.EntriesPath,
+		maxEntrySize:                 DefaultEntrySizeLimit,
+		bundleIDHasher:               defaultIDHasher,
+		checkpointInterval:           DefaultCheckpointInterval,
+		checkpointRepublishInterval:  DefaultCheckpointRepublishInterval,
+		checkpointPublicationTimeout: DefaultCheckpointPublicationTimeout,
+		addDecorators:                make([]func(AddFn) AddFn, 0),
+		pushbackMaxOutstanding:       DefaultPushbackMaxOutstanding,
+		garbageCollectionInterval:    DefaultGarbageCollectionInterval,
+		shutdownTimeout:              DefaultShutdownTimeout,
 	}
 }
 
@@ -670,8 +673,9 @@ type AppendOptions struct {
 	// bundleIDHasher knows how to create antispam leaf identities for entries in a serialised bundle.
 	bundleIDHasher func([]byte) ([][]byte, error)
 
-	checkpointInterval          time.Duration
-	checkpointRepublishInterval time.Duration
+	checkpointInterval           time.Duration
+	checkpointRepublishInterval  time.Duration
+	checkpointPublicationTimeout time.Duration
 
 	witnesses   WitnessGroup
 	witnessOpts WitnessOptions
@@ -698,7 +702,7 @@ type AppendOptions struct {
 }
 
 // valid returns an error if an invalid combination of options has been set, or nil otherwise.
-func (o AppendOptions) valid() error {
+func (o *AppendOptions) valid(ctx context.Context) error {
 	if o.newCP == nil {
 		return errors.New("invalid AppendOptions: WithCheckpointSigner must be set")
 	}
@@ -712,6 +716,26 @@ func (o AppendOptions) valid() error {
 	}
 	if o.checkpointRepublishInterval > 0 && o.checkpointRepublishInterval < o.checkpointInterval {
 		return fmt.Errorf("invalid AppendOptions: WithCheckpointRepublishInterval (%d) is smaller than WithCheckpointInterval (%d)", o.checkpointRepublishInterval, o.checkpointInterval)
+	}
+	// Warning: The following warning log will be removed and replaced with returning an error.
+	if o.checkpointPublicationTimeout < o.witnessOpts.Timeout {
+		slog.WarnContext(ctx, "WithCheckpointPublicationTimeout is smaller than WithWitnessTimeout. This will be updated to a fatal error in the future.",
+			slog.Duration("checkpointPublicationTimeout", o.checkpointPublicationTimeout),
+			slog.Duration("witnessTimeout", o.witnessOpts.Timeout),
+		)
+	}
+	if o.checkpointPublicationTimeout < o.mirrorOpts.Timeout {
+		slog.WarnContext(ctx, "WithCheckpointPublicationTimeout is smaller than WithMirrorTimeout. This will be updated to a fatal error in the future.",
+			slog.Duration("checkpointPublicationTimeout", o.checkpointPublicationTimeout),
+			slog.Duration("mirrorTimeout", o.mirrorOpts.Timeout),
+		)
+	}
+	if target := max(o.checkpointPublicationTimeout, o.witnessOpts.Timeout, o.mirrorOpts.Timeout); target != o.checkpointPublicationTimeout {
+		slog.WarnContext(ctx, "Setting checkpointPublicationTimeout to new value",
+			slog.Duration("from", o.checkpointPublicationTimeout),
+			slog.Duration("to", target),
+		)
+		o.checkpointPublicationTimeout = target
 	}
 	return nil
 }
@@ -1007,6 +1031,10 @@ func (o AppendOptions) CheckpointRepublishInterval() time.Duration {
 	return o.checkpointRepublishInterval
 }
 
+func (o AppendOptions) CheckpointPublicationTimeout() time.Duration {
+	return o.checkpointPublicationTimeout
+}
+
 func (o AppendOptions) GarbageCollectionInterval() time.Duration {
 	return o.garbageCollectionInterval
 }
@@ -1120,6 +1148,12 @@ func (o *AppendOptions) WithCheckpointInterval(interval time.Duration) *AppendOp
 // Setting this less than or equal to zero will disable republication of unchanged checkpoints.
 func (o *AppendOptions) WithCheckpointRepublishInterval(interval time.Duration) *AppendOptions {
 	o.checkpointRepublishInterval = interval
+	return o
+}
+
+// WithCheckpointPublicationTimeout configures the timeout used when creating and publishing checkpoints.
+func (o *AppendOptions) WithCheckpointPublicationTimeout(timeout time.Duration) *AppendOptions {
+	o.checkpointPublicationTimeout = timeout
 	return o
 }
 

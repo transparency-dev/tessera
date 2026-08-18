@@ -72,8 +72,6 @@ const (
 
 	// defaultIntegrationTimeout is the default context timeout applied when undertaking an integration task.
 	defaultIntegrationTimeout = 10 * time.Second
-	// defaultPublicationTimeout is the default context timeout applied when undertaking a checkpoint publication task.
-	defaultPublicationTimeout = 5 * time.Second
 	// defaultGCTimeout is the default context timeout applied when undertaking a garbage collection task.
 	defaultGCTimeout = 30 * time.Second
 )
@@ -167,7 +165,7 @@ func (s *Storage) newAppender(ctx context.Context, o *logResourceStorage, opts *
 		return a.sequenceBatch(ctx, entries)
 	})
 
-	go a.publishCheckpointJob(ctx, opts.CheckpointInterval(), opts.CheckpointRepublishInterval())
+	go a.publishCheckpointJob(ctx, opts.CheckpointInterval(), opts.CheckpointRepublishInterval(), opts.CheckpointPublicationTimeout())
 	if i := opts.GarbageCollectionInterval(); i > 0 {
 		go a.garbageCollectorJob(ctx, i)
 	}
@@ -175,7 +173,7 @@ func (s *Storage) newAppender(ctx context.Context, o *logResourceStorage, opts *
 	return a, a.logStorage, nil
 }
 
-func (a *appender) publishCheckpointJob(ctx context.Context, pubInterval, republishInterval time.Duration) {
+func (a *appender) publishCheckpointJob(ctx context.Context, pubInterval, republishInterval, publicationTimeout time.Duration) {
 	t := time.NewTicker(pubInterval)
 	for {
 		select {
@@ -185,7 +183,7 @@ func (a *appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 		case <-t.C:
 		}
 		if err := otel.TraceErr(ctx, "tessera.storage.posix.publishCheckpointJob", tracer, func(ctx context.Context, span trace.Span) error {
-			ctx, cancel := context.WithTimeout(ctx, defaultPublicationTimeout)
+			ctx, cancel := context.WithTimeout(ctx, publicationTimeout)
 			defer cancel()
 			nextPub, err := a.publishCheckpoint(ctx, pubInterval, republishInterval)
 			if err != nil {
