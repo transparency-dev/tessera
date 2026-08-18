@@ -100,7 +100,7 @@ func TestPosixMirrorIntegration(t *testing.T) {
 	mirrorServer := httptest.NewServer(m)
 	t.Cleanup(mirrorServer.Close)
 
-	// 3. Create mirror policy for the log pointing to the mirror server.
+	// Create mirror policy for the log pointing to the mirror server.
 	mirrorPolicyStr := fmt.Sprintf(`
 		witness mirror1 %s %s
 		group g1 all mirror1
@@ -113,12 +113,7 @@ func TestPosixMirrorIntegration(t *testing.T) {
 		t.Fatalf("NewWitnessGroupFromPolicy: %v", err)
 	}
 
-	// 4. Programmatically instantiate the POSIX conformance log.
-	logDriver, err := posix.New(ctx, posix.Config{Path: logStorageDir})
-	if err != nil {
-		t.Fatalf("posix.New(log): %v", err)
-	}
-
+	logDriver := mustCreateDriver(t, logStorageDir)
 	logOpts := tessera.NewAppendOptions().
 		WithCheckpointSigner(logSigner).
 		WithCheckpointInterval(time.Second).
@@ -154,7 +149,7 @@ func TestPosixMirrorIntegration(t *testing.T) {
 	conformanceServer := httptest.NewServer(logMux)
 	t.Cleanup(conformanceServer.Close)
 
-	// 5. Use the LiveIntegrationTest in integration_test.go with write_log_url set to the log and log_url set to the mirror.
+	// Use the LiveIntegrationTest in integration_test.go with write_log_url set to the log and log_url set to the mirror.
 	iLog.LogIntegrationTest(t, iLog.LogIntegrationTestConfig{
 		LogReadTile:        lr.ReadTile,
 		LogReadCP:          lr.ReadCheckpoint,
@@ -164,7 +159,8 @@ func TestPosixMirrorIntegration(t *testing.T) {
 		EntrySize:          uint64(1024),
 	})
 
-	// 6. Run fsck on both the log and mirror, and assert that the checkpoint size and root hashes of both match.
+	// Run fsck on both the log and mirror, and assert that the checkpoint size and root hashes of both match, and that both checkpoints
+	// are signed by the log and the mirror.
 	logFsck := fsck.New(logOrigin, logSigner.Verifier(), client.FileFetcher{Root: logStorageDir}, defaultMerkleLeafHasher, fsck.Opts{N: 1})
 	if err := logFsck.Check(ctx); err != nil {
 		t.Fatalf("fsck on log failed: %v", err)
@@ -175,14 +171,20 @@ func TestPosixMirrorIntegration(t *testing.T) {
 		t.Fatalf("fsck on mirror failed: %v", err)
 	}
 
-	logCP, _, _, err := log.ParseCheckpoint(logFsck.Checkpoint(), logOrigin, logSigner.Verifier())
+	logCP, _, logN, err := log.ParseCheckpoint(logFsck.Checkpoint(), logOrigin, logSigner.Verifier(), mirrorSigner.Verifier())
 	if err != nil {
 		t.Fatalf("Failed to parse log checkpoint: %v", err)
 	}
+	if n := len(logN.Sigs); n != 2 {
+		t.Fatalf("Log checkpoint should have 2 signatures, got %d", n)
+	}
 
-	mirrorCP, _, _, err := log.ParseCheckpoint(mirrorFsck.Checkpoint(), logOrigin, logSigner.Verifier())
+	mirrorCP, _, mirrorN, err := log.ParseCheckpoint(mirrorFsck.Checkpoint(), logOrigin, logSigner.Verifier(), mirrorSigner.Verifier())
 	if err != nil {
 		t.Fatalf("Failed to parse mirror checkpoint: %v", err)
+	}
+	if n := len(mirrorN.Sigs); n != 2 {
+		t.Fatalf("Mirror checkpoint should have 2 signatures, got %d", n)
 	}
 
 	if logCP.Size != mirrorCP.Size {
