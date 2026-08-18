@@ -177,6 +177,7 @@ func (o *Options) WithMaxCertLifetime(duration time.Duration) *Options {
 type MTCLog struct {
 	a                 *tessera.Appender
 	reader            tessera.LogReader
+	cpReader          *checkpoint.Reader
 	awaiter           *tessera.PublicationAwaiter
 	landmarkPublisher *landmark.Publisher
 	maxCertLifetime   time.Duration
@@ -400,6 +401,7 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 	return &MTCLog{
 		a:                 a,
 		reader:            opts.reader,
+		cpReader:          cpReader,
 		awaiter:           tessera.NewPublicationAwaiter(ctx, cpReader.Checkpoint, opts.pollPeriod),
 		landmarkPublisher: pub,
 		maxCertLifetime:   opts.maxCertLifetime,
@@ -429,6 +431,13 @@ func (l *MTCLog) AddTBS(ctx context.Context, tbs TBSCertificateLogEntry) (*AddTB
 	if err != nil {
 		return nil, fmt.Errorf("error waiting for Tessera index future and its integration: %v", err)
 	}
+
+	start, end, ok := l.cpReader.SubtreeForIndex(idx.Index)
+	if !ok {
+		return nil, fmt.Errorf("subtree for index %d not found in recent checkpoint history", idx.Index)
+	}
+	_ = start
+	_ = end
 
 	// TODO: get subtree cosignatures
 	// TODO: build MTCProof
