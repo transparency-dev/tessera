@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/transparency-dev/formats/note"
@@ -101,6 +103,10 @@ type Options struct {
 	landmarkStorage  landmark.LandmarksStorage
 	landmarkInterval time.Duration
 	maxCertLifetime  time.Duration
+	origin           string
+	subtreeSigner    note.SubtreeSigner
+	subtreeWitnesses tessera.WitnessGroup
+	httpClient       *http.Client
 }
 
 // NewOptions creates a new options struct for configuring MTCLog instances.
@@ -118,6 +124,12 @@ func (o *Options) valid() error {
 	}
 	if o.landmarkStorage == nil {
 		return errors.New("invalid Options: WithLandmarksStorage must be set")
+	}
+	if o.origin == "" {
+		return errors.New("invalid Options: WithOrigin must be set")
+	}
+	if o.subtreeSigner == nil {
+		return errors.New("invalid Options: WithSubtreeSigner must be set")
 	}
 	if o.landmarkInterval < 0 {
 		return errors.New("invalid Options: WithLandmarkInterval must be >= 0")
@@ -174,6 +186,32 @@ func (o *Options) WithMaxCertLifetime(duration time.Duration) *Options {
 	return o
 }
 
+// WithOrigin configures the MTC log origin (e.g. "oid/1.3.6.1.4.1.32473.1.0.1").
+func (o *Options) WithOrigin(origin string) *Options {
+	o.origin = origin
+	return o
+}
+
+// WithSubtreeSigner configures the signer used by the log to sign its own subtrees.
+func (o *Options) WithSubtreeSigner(s note.SubtreeSigner) *Options {
+	o.subtreeSigner = s
+	return o
+}
+
+// WithHTTPClient configures the HTTP client used for witness communications.
+// If unset or nil, http.DefaultClient is used.
+func (o *Options) WithHTTPClient(client *http.Client) *Options {
+	o.httpClient = client
+	return o
+}
+
+// WithSubtreeWitnesses configures the witness group policy and endpoints used
+// to obtain subtree cosignatures for MTC proofs.
+func (o *Options) WithSubtreeWitnesses(witnesses tessera.WitnessGroup) *Options {
+	o.subtreeWitnesses = witnesses
+	return o
+}
+
 type MTCLog struct {
 	a                 *tessera.Appender
 	reader            tessera.LogReader
@@ -181,6 +219,10 @@ type MTCLog struct {
 	awaiter           *tessera.PublicationAwaiter
 	landmarkPublisher *landmark.Publisher
 	maxCertLifetime   time.Duration
+	origin            string
+	subtreeSigner     note.SubtreeSigner
+	logCosignerID     []byte
+	subtreeWitnesses  tessera.WitnessGroup
 }
 
 // AddTBSRsp contains enough information from the log
@@ -398,6 +440,15 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 		return nil, fmt.Errorf("failed to initialise landmark publisher: %v", err)
 	}
 
+	logCosignerID, err := mtcproof.ParseCosignerID(opts.subtreeSigner.Name())
+	if err != nil {
+		return nil, fmt.Errorf("invalid subtree signer name %q: %w", opts.subtreeSigner.Name(), err)
+	}
+
+	if err := checkOriginSignerName(opts.origin, opts.subtreeSigner.Name()); err != nil {
+		return nil, fmt.Errorf("checkOrgiginSignerName: %v", err)
+	}
+
 	return &MTCLog{
 		a:                 a,
 		reader:            opts.reader,
@@ -405,6 +456,10 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 		awaiter:           tessera.NewPublicationAwaiter(ctx, cpReader.Checkpoint, opts.pollPeriod),
 		landmarkPublisher: pub,
 		maxCertLifetime:   opts.maxCertLifetime,
+		origin:            opts.origin,
+		subtreeSigner:     opts.subtreeSigner,
+		logCosignerID:     logCosignerID,
+		subtreeWitnesses:  opts.subtreeWitnesses,
 	}, nil
 }
 
@@ -565,4 +620,20 @@ func CreateSignerAndOrigin(caID string, logNumber uint64, privKey string) (origi
 		return "", nil, fmt.Errorf("signer key name %q does not match expected CA ID name %q", s.Name(), expectedSignerName)
 	}
 	return origin, s, nil
+}
+
+// checkOriginSigner verifies that an origin and signer match with each other.
+//
+// SPEC: draft-ietf-plants-merkle-tree-certs section 5.2.
+// "Each issuance log has a log ID, which is a trust anchor ID constructed by concatenating the following OID components:
+//   - The CA ID (Section 5.1)
+//   - The constant 0
+//   - The log number of the log"
+func checkOriginSignerName(origin, signer string) error {
+	// TODO: enforce here and elsewhere a max log number of 4.
+	expectedPrefix := signer + ".0."
+	if !strings.HasPrefix(origin, expectedPrefix) {
+		return fmt.Errorf("origin %q does not match subtree signer %q, must start with %q", origin, signer, expectedPrefix)
+	}
+	return nil
 }
