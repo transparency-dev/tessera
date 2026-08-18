@@ -18,15 +18,23 @@ import (
 	"bytes"
 	"context"
 	stdasn1 "encoding/asn1"
+	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/merkle/proof"
+	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera"
+	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/entry"
+	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/mtcproof"
+	tposix "github.com/transparency-dev/tessera/storage/posix"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
+	snote "golang.org/x/mod/sumdb/note"
 )
 
 // unmarshal decodes the contents octets of a TBSCertificateLogEntry
@@ -673,12 +681,243 @@ func TestNewMTCLog(t *testing.T) {
 		optsCustom := newDummyOptions().
 			WithMaxCertLifetime(20 * 24 * time.Hour).
 			WithLandmarkInterval(2 * time.Hour)
-		logInst, err := NewMTCLog(ctx, &tessera.Appender{}, optsCustom)
+		mtcLog, err := NewMTCLog(ctx, &tessera.Appender{}, optsCustom)
 		if err != nil {
 			t.Fatalf("NewMTCLog unexpected error: %v", err)
 		}
-		if logInst == nil {
+		if mtcLog == nil {
 			t.Fatal("NewMTCLog returned nil instance")
 		}
 	})
+}
+
+type parsedMTCProof struct {
+	Extensions     []byte
+	Start          uint64
+	End            uint64
+	InclusionProof [][]byte
+	Signatures     []mtcproof.SubtreeSignature
+}
+
+// readUint48 reads a big-endian, 48-bit value from the byte string.
+func readUint48(s *cryptobyte.String, out *uint64) bool {
+	var b []byte
+	if !s.ReadBytes(&b, 6) {
+		return false
+	}
+	*out = uint64(b[0])<<40 |
+		uint64(b[1])<<32 |
+		uint64(b[2])<<24 |
+		uint64(b[3])<<16 |
+		uint64(b[4])<<8 |
+		uint64(b[5])
+	return true
+}
+
+func unmarshalMTCProof(data []byte) (*parsedMTCProof, error) {
+	s := cryptobyte.String(data)
+
+	var extensions cryptobyte.String
+	if !s.ReadUint16LengthPrefixed(&extensions) {
+		return nil, errors.New("malformed extensions")
+	}
+
+	var p parsedMTCProof
+	p.Extensions = append([]byte(nil), extensions...)
+
+	if !readUint48(&s, &p.Start) {
+		return nil, errors.New("malformed start index")
+	}
+	if !readUint48(&s, &p.End) {
+		return nil, errors.New("malformed end index")
+	}
+
+	var incProof cryptobyte.String
+	if !s.ReadUint16LengthPrefixed(&incProof) {
+		return nil, errors.New("malformed inclusion_proof")
+	}
+	for !incProof.Empty() {
+		var hash []byte
+		if !incProof.ReadBytes(&hash, 32) {
+			return nil, errors.New("malformed hash in inclusion_proof")
+		}
+		p.InclusionProof = append(p.InclusionProof, hash)
+	}
+
+	var sigs cryptobyte.String
+	if !s.ReadUint16LengthPrefixed(&sigs) {
+		return nil, errors.New("malformed signatures")
+	}
+	for !sigs.Empty() {
+		var cosignerID cryptobyte.String
+		if !sigs.ReadUint8LengthPrefixed(&cosignerID) || len(cosignerID) == 0 {
+			return nil, errors.New("malformed cosigner_id in signatures")
+		}
+		var sig cryptobyte.String
+		if !sigs.ReadUint16LengthPrefixed(&sig) {
+			return nil, errors.New("malformed signature in signatures")
+		}
+		p.Signatures = append(p.Signatures, mtcproof.SubtreeSignature{
+			CosignerID: append([]byte(nil), cosignerID...),
+			Signature:  append([]byte(nil), sig...),
+		})
+	}
+
+	if !s.Empty() {
+		return nil, errors.New("trailing bytes after MTCProof")
+	}
+	return &p, nil
+}
+
+func setupTestMTCLog(t *testing.T) *MTCLog {
+	t.Helper()
+	ctx := t.Context()
+	storageDir := t.TempDir()
+
+	driver, err := tposix.New(ctx, tposix.Config{Path: storageDir})
+	if err != nil {
+		t.Fatalf("Failed to initialize POSIX storage: %v", err)
+	}
+
+	sk := "PRIVATE+KEY+example.com/log/testdata+33d7b496+AeymY/SZAX0jZcJ8enZ5FY1Dz+wTML2yWSkK+9DSF3eg"
+	signer, err := snote.NewSigner(sk)
+	if err != nil {
+		t.Fatalf("Failed to create test signer: %v", err)
+	}
+
+	opts := tessera.NewAppendOptions().
+		WithCheckpointSigner(signer).
+		WithBatching(4, 500*time.Millisecond).
+		WithCheckpointInterval(500*time.Millisecond)
+	appender, _, reader, err := tessera.NewAppender(ctx, driver, opts)
+	if err != nil {
+		t.Fatalf("Failed to initialize Tessera appender: %v", err)
+	}
+
+	mtcLog, err := NewMTCLog(ctx, appender, NewOptions().
+		WithTesseraReader(reader).
+		WithAwaiterPollInterval(20*time.Millisecond).
+		WithLandmarksStorage(dummyLandmarksStorage{}).
+		WithMaxCertLifetime(7*24*time.Hour))
+	if err != nil {
+		t.Fatalf("Failed to initialize MTC log: %v", err)
+	}
+	return mtcLog
+}
+
+func TestMTCLog_AddTBS(t *testing.T) {
+	ctx := t.Context()
+	mtcLog := setupTestMTCLog(t)
+	now := time.Now().Truncate(time.Second)
+
+	makeEntry := func(id int) TBSCertificateLogEntry {
+		return TBSCertificateLogEntry{
+			Issuer:                    dummySeq(fmt.Sprintf("issuer%d", id)),
+			Validity:                  dummyValidity(now, now.Add(24*time.Hour)),
+			Subject:                   dummySeq(fmt.Sprintf("subject%d", id)),
+			SubjectPublicKeyAlgorithm: dummySeq("algo"),
+			SubjectPublicKeyInfoHash:  make([]byte, 32),
+		}
+	}
+
+	entries := make([]TBSCertificateLogEntry, 5)
+	for i := 0; i < 5; i++ {
+		entries[i] = makeEntry(i)
+	}
+
+	// Add first 4 entries concurrently to form a single batch of size 4 in [0, 4)
+	responses := make([]*AddTBSRsp, 5)
+	entriesByIndex := make([]TBSCertificateLogEntry, 5)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(entry TBSCertificateLogEntry) {
+			defer wg.Done()
+			rsp, err := mtcLog.AddTBS(ctx, entry)
+			if err != nil {
+				t.Errorf("AddTBS error: %v", err)
+				return
+			}
+			mu.Lock()
+			responses[rsp.Index] = rsp
+			entriesByIndex[rsp.Index] = entry
+			mu.Unlock()
+		}(entries[i])
+	}
+	wg.Wait()
+
+	// Add 5th entry individually after the initial batch is sequenced
+	rsp5, err := mtcLog.AddTBS(ctx, entries[4])
+	if err != nil {
+		t.Fatalf("AddTBS(entries[4]) error: %v", err)
+	}
+	responses[rsp5.Index] = rsp5
+	entriesByIndex[rsp5.Index] = entries[4]
+
+	t.Run("invalid entry fails validation", func(t *testing.T) {
+		invalidEntry := entries[0]
+		invalidEntry.Issuer = nil
+		if _, err := mtcLog.AddTBS(ctx, invalidEntry); err == nil {
+			t.Error("AddTBS(invalidEntry) expected error, got nil")
+		}
+	})
+
+	tests := []struct {
+		name         string
+		entryIdx     int
+		wantStart    uint64
+		wantEnd      uint64
+		wantProofLen int
+	}{
+		{name: "entry 0 in subtree [0, 2)", entryIdx: 0, wantStart: 0, wantEnd: 2, wantProofLen: 1},
+		{name: "entry 1 in subtree [0, 2)", entryIdx: 1, wantStart: 0, wantEnd: 2, wantProofLen: 1},
+		{name: "entry 2 in subtree [2, 4)", entryIdx: 2, wantStart: 2, wantEnd: 4, wantProofLen: 1},
+		{name: "entry 3 in subtree [2, 4)", entryIdx: 3, wantStart: 2, wantEnd: 4, wantProofLen: 1},
+		{name: "entry 4 in single-entry subtree [4, 5)", entryIdx: 4, wantStart: 4, wantEnd: 5, wantProofLen: 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rsp := responses[tc.entryIdx]
+			if rsp == nil {
+				t.Fatalf("responses[%d] is nil", tc.entryIdx)
+			}
+			if rsp.Index != uint64(tc.entryIdx) {
+				t.Errorf("Index = %d, want %d", rsp.Index, tc.entryIdx)
+			}
+			proofData, err := unmarshalMTCProof(rsp.MTCProof)
+			if err != nil {
+				t.Fatalf("unmarshalMTCProof error: %v", err)
+			}
+			if proofData.Start != tc.wantStart || proofData.End != tc.wantEnd {
+				t.Errorf("subtree = [%d, %d), want [%d, %d)", proofData.Start, proofData.End, tc.wantStart, tc.wantEnd)
+			}
+			if len(proofData.Extensions) != 0 {
+				t.Errorf("Extensions = %q, want empty", proofData.Extensions)
+			}
+			if len(proofData.InclusionProof) != tc.wantProofLen {
+				t.Errorf("InclusionProof length = %d, want %d", len(proofData.InclusionProof), tc.wantProofLen)
+			}
+			m, err := entriesByIndex[tc.entryIdx].Marshal()
+			if err != nil {
+				t.Fatalf("entries[%d].Marshal error: %v", tc.entryIdx, err)
+			}
+			e := entry.New(m)
+			eb, err := e.Marshal()
+			if err != nil {
+				t.Fatalf("entry.Marshal error: %v", err)
+			}
+			leafHash := rfc6962.DefaultHasher.HashLeaf(eb)
+			offset := uint64(tc.entryIdx) - tc.wantStart
+			treeSize := tc.wantEnd - tc.wantStart
+			subRoot, err := proof.RootFromInclusionProof(rfc6962.DefaultHasher, offset, treeSize, leafHash, proofData.InclusionProof)
+			if err != nil {
+				t.Fatalf("RootFromInclusionProof(entry%d): %v", tc.entryIdx, err)
+			}
+			if len(subRoot) != 32 {
+				t.Fatalf("subRoot length = %d, want 32", len(subRoot))
+			}
+		})
+	}
 }

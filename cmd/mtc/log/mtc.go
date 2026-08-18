@@ -436,15 +436,29 @@ func (l *MTCLog) AddTBS(ctx context.Context, tbs TBSCertificateLogEntry) (*AddTB
 	if !ok {
 		return nil, fmt.Errorf("subtree for index %d not found in recent checkpoint history", idx.Index)
 	}
-	_ = start
-	_ = end
 
-	// TODO: get subtree cosignatures
-	// TODO: build MTCProof
+	pb, err := client.NewProofBuilder(ctx, l.cpReader.LatestSize(), l.reader.ReadTile)
+	if err != nil {
+		return nil, fmt.Errorf("cannot create proof builder: %v", err)
+	}
+	proofNodes, err := pb.SubtreeInclusionProof(ctx, idx.Index, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("cannot get subtree inclusion proof for index %d in subtree [%d, %d): %v", idx.Index, start, end, err)
+	}
+
+	extBytes, err := entry.ExtractExtensions(eb)
+	if err != nil {
+		return nil, fmt.Errorf("cannot extract extensions: %v", err)
+	}
+
+	proofBytes, err := mtcproof.Serialize(extBytes, start, end, proofNodes, nil)
+	if err != nil {
+		return nil, fmt.Errorf("cannot construct MTCProof: %v", err)
+	}
 
 	return &AddTBSRsp{
 		Index:    idx.Index,
-		MTCProof: nil,
+		MTCProof: proofBytes,
 	}, nil
 }
 
@@ -499,7 +513,7 @@ func (l *MTCLog) ProofToLandmark(ctx context.Context, index uint64) ([]byte, tim
 	// "A landmark-relative certificate is a Merkle Tree certificate which contains no signatures"
 	proof, err := mtcproof.Serialize(extBytes, start, end, proofNodes, nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("cannot construct MTCProof: %w", err)
+		return nil, 0, fmt.Errorf("cannot construct MTCProof: %v", err)
 	}
 
 	return proof, 0, nil

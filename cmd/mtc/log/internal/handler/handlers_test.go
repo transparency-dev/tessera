@@ -31,6 +31,7 @@ import (
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/log"
 	lmp "github.com/transparency-dev/tessera/cmd/mtc/log/internal/landmark/posix"
+	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/mtcproof"
 	tposix "github.com/transparency-dev/tessera/storage/posix"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
@@ -53,7 +54,9 @@ func setupTestLog(t *testing.T) *log.MTCLog {
 		t.Fatalf("Failed to create test signer: %v", err)
 	}
 
-	opts := tessera.NewAppendOptions().WithCheckpointSigner(signer)
+	opts := tessera.NewAppendOptions().
+		WithCheckpointSigner(signer).
+		WithCheckpointInterval(100 * time.Millisecond)
 	appender, _, reader, err := tessera.NewAppender(ctx, driver, opts)
 	if err != nil {
 		t.Fatalf("Failed to initialize Tessera appender: %v", err)
@@ -127,6 +130,18 @@ func TestAddTBSHandler(t *testing.T) {
 	largeEntry.Extensions = dummyTag(asn1.Tag(3).ContextSpecific().Constructed(), bytes.Repeat([]byte("a"), 128*1024))
 	largeJSON, _ := json.Marshal(largeEntry)
 
+	mockProof, err := mtcproof.Serialize(nil, 0, 1, nil, nil)
+	if err != nil {
+		t.Fatalf("failed to serialize mock proof: %v", err)
+	}
+	wantSuccessRsp, err := json.Marshal(&log.AddTBSRsp{
+		Index:    0,
+		MTCProof: mockProof,
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal expected response: %v", err)
+	}
+
 	tests := []struct {
 		name       string
 		body       func() io.Reader
@@ -135,10 +150,16 @@ func TestAddTBSHandler(t *testing.T) {
 		wantBody   string
 	}{
 		{
-			name:       "success",
-			body:       func() io.Reader { return bytes.NewReader(validJSON) },
+			name: "success",
+			body: func() io.Reader { return bytes.NewReader(validJSON) },
+			addFunc: func(ctx context.Context, entry log.TBSCertificateLogEntry) (*log.AddTBSRsp, error) {
+				return &log.AddTBSRsp{
+					Index:    0,
+					MTCProof: mockProof,
+				}, nil
+			},
 			wantStatus: http.StatusCreated,
-			wantBody:   `{"index":0,"mtcProof":null}`,
+			wantBody:   string(wantSuccessRsp),
 		},
 		{
 			name:       "malformed json",
