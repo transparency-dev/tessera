@@ -451,7 +451,7 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 	}
 
 	if err := checkOriginSignerName(opts.origin, opts.subtreeSigner.Name()); err != nil {
-		return nil, fmt.Errorf("checkOrgiginSignerName: %v", err)
+		return nil, fmt.Errorf("checkOriginSignerName: %v", err)
 	}
 
 	return &MTCLog{
