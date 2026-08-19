@@ -182,6 +182,16 @@ func newAppenderFromFlags(ctx context.Context, origin string, signer note.Subtre
 		WithGarbageCollectionInterval(*garbageCollectionInterval)
 
 	if *mirrorPolicyFile != "" {
+		// TODO: enforce these checks at the policy level and/or when publishing checkpoints.
+		//
+		// SPEC: [DRAFT] Chrome Quantum-resistant Root Program Policy, Version 0.3.0, Section 3.1.
+		// "Mirroring Cosigner Keys MUST be ML-DSA-44"
+		//
+		// SPEC: [DRAFT] Chrome Quantum-resistant Root Program Policy, Version 0.3.0, Section 2.4.5.
+		// "In order for landmarks to be served by Chrome's Landmark Service, all
+		// checkpoints MUST be served with a minimum of 2 cosignatures. One of these
+		// MUST be from the MTC CA Operator and one MUST be from a Mirroring Cosigner
+		// recognized by Chrome and not operated by the MTC CA Operator."
 		opts = opts.WithMirrors(policy, nil)
 	}
 
