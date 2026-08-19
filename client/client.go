@@ -21,6 +21,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"math/bits"
 	"sync"
 
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -247,6 +248,66 @@ func (pb *ProofBuilder) SubtreeInclusionProof(ctx context.Context, index, start,
 		}
 		return pb.materialiseProof(ctx, nodes)
 	})
+}
+
+// SubtreeRoot returns the root hash of the specified subtree range [start, end).
+func (pb *ProofBuilder) SubtreeRoot(ctx context.Context, start, end uint64) ([]byte, error) {
+	return otel.Trace(ctx, "tessera.client.SubtreeRoot", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
+		if end > pb.treeSize {
+			return nil, fmt.Errorf("requested subtree root to %d which is larger than tree size %d", end, pb.treeSize)
+		}
+		nodes, err := subtreeNodes(start, end)
+		if err != nil {
+			return nil, fmt.Errorf("failed to calculate subtree node list: %v", err)
+		}
+		h, err := pb.materialiseProof(ctx, nodes)
+		if err != nil {
+			return nil, err
+		}
+		rf := compact.RangeFactory{Hash: hasher.HashChildren}
+		r, err := rf.NewRange(0, end-start, h)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create compact range for [%d, %d): %w", start, end, err)
+		}
+		return r.GetRootHash(nil)
+	})
+}
+
+// TODO: move/export subtreeNodes, isSubtreeValid and bitCeil to t-dev/merkle.
+// subtreeNodes returns the proof.Nodes required to compute the root hash of the subtree [start, end).
+func subtreeNodes(start, end uint64) (proof.Nodes, error) {
+	if err := isSubtreeValid(start, end); err != nil {
+		return proof.Nodes{}, err
+	}
+	return proof.Nodes{
+		IDs: compact.RangeNodes(start, end, nil),
+	}, nil
+}
+
+// isSubtreeValid returns whether a subtree covers a valid range.
+func isSubtreeValid(start, end uint64) error {
+	bitCeil := func(n uint64) uint64 {
+		if n <= 1 {
+			return 1
+		}
+		return 1 << (64 - bits.LeadingZeros64(n-1))
+	}
+
+	if start >= end {
+		return fmt.Errorf("start %d must be strictly less than end %d", start, end)
+	}
+	l := end - start
+	if l > 1<<63 {
+		if start != 0 {
+			return fmt.Errorf("start %d must be 0 when subtree length %d > 1<<63", start, l)
+		}
+		return nil
+	}
+	bc := bitCeil(l)
+	if start%bc != 0 {
+		return fmt.Errorf("start %d not a multiple of bit_ceil(end - start) = %d", start, bc)
+	}
+	return nil
 }
 
 // materialiseProof retrieves the specified proof nodes via pb's nodeCache, recreating ephemeral nodes if necessary.

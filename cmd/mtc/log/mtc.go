@@ -35,6 +35,7 @@ import (
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/entry"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/landmark"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/mtcproof"
+	"github.com/transparency-dev/tessera/internal/parse"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
 )
@@ -425,10 +426,31 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 		return nil, err
 	}
 
-	cpReader, err := checkpoint.NewReader(ctx, opts.reader.ReadCheckpoint)
+	logCosignerID, err := mtcproof.ParseCosignerID(opts.subtreeSigner.Name())
+	if err != nil {
+		return nil, fmt.Errorf("invalid subtree signer name %q: %w", opts.subtreeSigner.Name(), err)
+	}
+
+	if err := checkOriginSignerName(opts.origin, opts.subtreeSigner.Name()); err != nil {
+		return nil, fmt.Errorf("checkOriginSignerName: %v", err)
+	}
+
+	l := &MTCLog{
+		a:                a,
+		reader:           opts.reader,
+		maxCertLifetime:  opts.maxCertLifetime,
+		origin:           opts.origin,
+		subtreeSigner:    opts.subtreeSigner,
+		logCosignerID:    logCosignerID,
+		subtreeWitnesses: opts.subtreeWitnesses,
+	}
+
+	cpReader, err := checkpoint.NewReader(ctx, opts.reader.ReadCheckpoint, l.getSubtreeSigs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read initial checkpoint: %v", err)
 	}
+	l.cpReader = cpReader
+	l.awaiter = tessera.NewPublicationAwaiter(ctx, cpReader.Checkpoint, opts.pollPeriod)
 
 	interval := opts.landmarkInterval
 	if interval <= 0 {
@@ -444,27 +466,35 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialise landmark publisher: %v", err)
 	}
+	l.landmarkPublisher = pub
 
-	logCosignerID, err := mtcproof.ParseCosignerID(opts.subtreeSigner.Name())
+	return l, nil
+}
+
+func (l *MTCLog) getSubtreeSigs(ctx context.Context, start, end uint64, rawCp []byte) ([]mtcproof.SubtreeSignature, error) {
+	_, cpSize, _, err := parse.CheckpointUnsafe(rawCp)
 	if err != nil {
-		return nil, fmt.Errorf("invalid subtree signer name %q: %w", opts.subtreeSigner.Name(), err)
+		return nil, fmt.Errorf("failed to parse checkpoint: %v", err)
 	}
 
-	if err := checkOriginSignerName(opts.origin, opts.subtreeSigner.Name()); err != nil {
-		return nil, fmt.Errorf("checkOriginSignerName: %v", err)
+	pb, err := client.NewProofBuilder(ctx, cpSize, l.reader.ReadTile)
+	if err != nil {
+		return nil, fmt.Errorf("cannot create proof builder for [%d, %d): %v", start, end, err)
 	}
 
-	return &MTCLog{
-		a:                 a,
-		reader:            opts.reader,
-		cpReader:          cpReader,
-		awaiter:           tessera.NewPublicationAwaiter(ctx, cpReader.Checkpoint, opts.pollPeriod),
-		landmarkPublisher: pub,
-		maxCertLifetime:   opts.maxCertLifetime,
-		origin:            opts.origin,
-		subtreeSigner:     opts.subtreeSigner,
-		logCosignerID:     logCosignerID,
-		subtreeWitnesses:  opts.subtreeWitnesses,
+	subRoot, err := pb.SubtreeRoot(ctx, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("cannot compute subtree root for [%d, %d): %v", start, end, err)
+	}
+
+	selfSig, err := l.subtreeSigner.SignSubtree(0, l.origin, start, end, subRoot)
+	if err != nil {
+		return nil, fmt.Errorf("cannot sign subtree [%d, %d): %v", start, end, err)
+	}
+
+	// TODO: fetch signatures from mirrors.
+	return []mtcproof.SubtreeSignature{
+		{CosignerID: l.logCosignerID, Signature: selfSig},
 	}, nil
 }
 
@@ -492,7 +522,7 @@ func (l *MTCLog) AddTBS(ctx context.Context, tbs TBSCertificateLogEntry) (*AddTB
 		return nil, fmt.Errorf("error waiting for Tessera index future and its integration: %v", err)
 	}
 
-	start, end, err := l.cpReader.SubtreeForIndex(idx.Index)
+	start, end, getSigs, err := l.cpReader.SubtreeForIndex(idx.Index)
 	if err != nil {
 		return nil, fmt.Errorf("no subtree covering index %d: %w", idx.Index, err)
 	}
@@ -506,12 +536,17 @@ func (l *MTCLog) AddTBS(ctx context.Context, tbs TBSCertificateLogEntry) (*AddTB
 		return nil, fmt.Errorf("cannot get subtree inclusion proof for index %d in subtree [%d, %d): %v", idx.Index, start, end, err)
 	}
 
+	subtreeSigs, err := getSigs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get subtree signatures: %v", err)
+	}
+
 	extBytes, err := entry.ExtractExtensions(eb)
 	if err != nil {
 		return nil, fmt.Errorf("cannot extract extensions: %v", err)
 	}
 
-	proofBytes, err := mtcproof.Serialize(extBytes, start, end, proofNodes, nil)
+	proofBytes, err := mtcproof.Serialize(extBytes, start, end, proofNodes, subtreeSigs)
 	if err != nil {
 		return nil, fmt.Errorf("cannot construct MTCProof: %v", err)
 	}
