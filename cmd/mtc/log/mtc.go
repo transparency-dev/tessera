@@ -186,15 +186,20 @@ func (o *Options) WithMaxCertLifetime(duration time.Duration) *Options {
 	return o
 }
 
-// WithOrigin configures the MTC log origin (e.g. "oid/1.3.6.1.4.1.32473.1.0.1").
+// WithOrigin configures the log origin string used for subtree signatures.
+// origin MUST not be empty, otherwise valid() will fail.
+// The same origin MUST be used with Tessera's WithOrigin() option.
+// TODO: think of whether we could enforce this matching.
 func (o *Options) WithOrigin(origin string) *Options {
 	o.origin = origin
 	return o
 }
 
-// WithSubtreeSigner configures the signer used by the log to sign its own subtrees.
-func (o *Options) WithSubtreeSigner(s note.SubtreeSigner) *Options {
-	o.subtreeSigner = s
+// WithSubtreeSigner configures the signer used to produce subtree signatures for MTC proofs.
+// signer MUST not be nil, otherwise valid() will fail.
+// The same signer MUST be used with Tessera's WithCheckpointSigner() option.
+func (o *Options) WithSubtreeSigner(signer note.SubtreeSigner) *Options {
+	o.subtreeSigner = signer
 	return o
 }
 
