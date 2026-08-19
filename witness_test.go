@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	f_note "github.com/transparency-dev/formats/note"
-	"github.com/transparency-dev/formats/policy"
 	"golang.org/x/mod/sumdb/note"
 )
 
@@ -63,6 +62,10 @@ func TestPopulatePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create witness 3: %v", err)
 	}
+	// w2Clash is w2 under a key whose name happens to match w1's, as would be the case for a
+	// witness which has rotated its key.
+	w2Clash := w2
+	w2Clash.polName = w1.polName
 
 	w1Signer, err := f_note.NewSignerForCosignatureV1(testWit1SKey)
 	if err != nil {
@@ -156,11 +159,23 @@ func TestPopulatePolicy(t *testing.T) {
 			group:         NewWitnessGroup(0),
 			wantWitnesses: nil,
 		},
+		{
+			desc:          "witnesses with colliding key names stay distinct",
+			group:         NewWitnessGroup(2, w1, w2Clash),
+			wantWitnesses: []string{w1.name(), w1.name() + "-2"},
+			satisfyTests: []struct {
+				signers []note.Signer
+				wantSat bool
+			}{
+				{signers: []note.Signer{w1Signer, w2Signer}, wantSat: true},
+				{signers: []note.Signer{w1Signer}, wantSat: false},
+				{signers: []note.Signer{w2Signer}, wantSat: false},
+				{signers: []note.Signer{}, wantSat: false},
+			},
+		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
-			var pol policy.TLogPolicy
-			pol.Quorum = test.group.name()
-			populatePolicy(&pol, test.group)
+			pol := test.group.toPolicy()
 
 			if got, want := pol.Quorum, test.group.name(); got != want {
 				t.Errorf("pol.Quorum = %q, want %q", got, want)

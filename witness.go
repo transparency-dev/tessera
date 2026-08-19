@@ -57,6 +57,7 @@ func fromPolicy(p policy.TLogPolicy) (WitnessGroup, error) {
 			urlStr = w.URL.String()
 		}
 		witnesses[w.Name] = Witness{
+			polName:   w.Name,
 			vkey:      w.VKey,
 			parsedURL: w.URL,
 			Key:       v,
@@ -74,7 +75,11 @@ func fromPolicy(p policy.TLogPolicy) (WitnessGroup, error) {
 				return WitnessGroup{}, fmt.Errorf("invalid policy: member %q not defined", m)
 			}
 		}
-		groups[g.Name] = NewWitnessGroup(int(g.Threshold), members...)
+		wg := NewWitnessGroup(int(g.Threshold), members...)
+		// Hold on to the name from the policy rather than the generated one, so that converting
+		// back produces the policy the operator actually wrote.
+		wg.grpName = g.Name
+		groups[g.Name] = wg
 	}
 
 	if p.Quorum == "none" || p.Quorum == "" {
@@ -100,6 +105,7 @@ func NewWitness(vkey string, witnessRoot *url.URL) (Witness, error) {
 	}
 
 	return Witness{
+		polName:   v.Name(),
 		vkey:      vkey,
 		parsedURL: witnessRoot,
 		Key:       v,
@@ -111,6 +117,10 @@ func NewWitness(vkey string, witnessRoot *url.URL) (Witness, error) {
 //
 // Deprecated: Use [github.com/transparency-dev/formats/policy] directly instead.
 type Witness struct {
+	// polName is the name this witness is known by within a policy. For a witness parsed from a
+	// policy this is the name the operator gave it; otherwise it's the witness' key name, which
+	// is not necessarily unique. See nameAllocator.
+	polName   string
 	vkey      string
 	Key       note.Verifier
 	URL       string
@@ -118,7 +128,7 @@ type Witness struct {
 }
 
 func (w Witness) name() string {
-	return w.Key.Name()
+	return w.polName
 }
 
 var anonGroupNameCounter atomic.Int64
@@ -141,37 +151,83 @@ func NewWitnessGroup(n int, children ...policyComponent) WitnessGroup {
 	}
 }
 
-func populatePolicy(p *policy.TLogPolicy, wg WitnessGroup) {
-	me := &policy.Group{
-		Name:      wg.name(),
+// nameAllocator hands out the component names used by a policy under construction.
+//
+// Names identify components within a policy, so two distinct components sharing one would be
+// conflated by [policy.TLogPolicy.Satisfied], which resolves members via a name-keyed map. Names
+// parsed from a policy are already unique, but those derived from a witness' key name are not:
+// a witness which has rotated its key has two keys sharing a name, and nothing stops two
+// operators picking the same name. Anything which would collide gets a disambiguating suffix.
+type nameAllocator struct {
+	taken  map[string]bool
+	byVKey map[string]string
+}
+
+func newNameAllocator() *nameAllocator {
+	return &nameAllocator{
+		taken:  make(map[string]bool),
+		byVKey: make(map[string]string),
+	}
+}
+
+// alloc returns a unique name, preferring want.
+func (a *nameAllocator) alloc(want string) string {
+	n := want
+	for i := 2; a.taken[n]; i++ {
+		n = fmt.Sprintf("%s-%d", want, i)
+	}
+	a.taken[n] = true
+	return n
+}
+
+// witness returns the name to use for the witness with the given key, along with whether it
+// still needs to be added to the policy. A witness used in more than one group is defined once
+// and referred to by the same name throughout.
+func (a *nameAllocator) witness(want, vkey string) (string, bool) {
+	if n, ok := a.byVKey[vkey]; ok {
+		return n, false
+	}
+	n := a.alloc(want)
+	a.byVKey[vkey] = n
+	return n, true
+}
+
+// populatePolicy adds wg, and everything beneath it, to p. It returns the name assigned to wg.
+func populatePolicy(p *policy.TLogPolicy, names *nameAllocator, wg WitnessGroup) string {
+	me := policy.Group{
 		Threshold: uint(wg.N),
 		Members:   make([]string, 0, len(wg.Components)),
 	}
 	for _, c := range wg.Components {
 		switch c := c.(type) {
 		case Witness:
-			p.Witnesses = append(p.Witnesses, policy.Witness{
-				Name:     c.name(),
-				URL:      c.parsedURL,
-				VKey:     c.vkey,
-				Verifier: c.Key,
-			})
-			me.Members = append(me.Members, c.name())
+			n, isNew := names.witness(c.name(), c.vkey)
+			if isNew {
+				p.Witnesses = append(p.Witnesses, policy.Witness{
+					Name:     n,
+					URL:      c.parsedURL,
+					VKey:     c.vkey,
+					Verifier: c.Key,
+				})
+			}
+			me.Members = append(me.Members, n)
 		case WitnessGroup:
-			populatePolicy(p, c)
-			me.Members = append(me.Members, c.name())
+			me.Members = append(me.Members, populatePolicy(p, names, c))
 		default:
 			panic(fmt.Errorf("unexpected component type: %T", c))
 		}
 	}
-	p.Groups = append(p.Groups, *me)
+	// Named last so that members, which are the ones with names worth preserving, get first
+	// refusal on the name they'd prefer. Appended last so that every group is defined after
+	// its members, as the policy format requires.
+	me.Name = names.alloc(wg.name())
+	p.Groups = append(p.Groups, me)
+	return me.Name
 }
 
 func (wg WitnessGroup) toPolicy() policy.TLogPolicy {
-	p := policy.TLogPolicy{
-		Quorum: wg.name(),
-	}
-	populatePolicy(&p, wg)
+	p := policy.TLogPolicy{}
+	p.Quorum = populatePolicy(&p, newNameAllocator(), wg)
 	return p
 }
 
