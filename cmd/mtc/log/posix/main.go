@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/log"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/handler"
@@ -159,13 +160,13 @@ func newAppenderFromFlags(ctx context.Context, origin string, signer note.Subtre
 			slog.ErrorContext(ctx, "Failed to read mirror policy", slog.Any("error", err), slog.String("path", *mirrorPolicyFile))
 			os.Exit(1)
 		}
-		policy, err := tessera.NewWitnessGroupFromPolicy(b)
-		if err != nil {
+		var mPol policy.TLogPolicy
+		if err := mPol.Unmarshal(b); err != nil {
 			slog.ErrorContext(ctx, "Failed to parse mirror policy", slog.Any("error", err), slog.String("path", *mirrorPolicyFile))
 			os.Exit(1)
 		}
-		opts = opts.WithMirrors(policy, nil)
-		slog.InfoContext(ctx, "Mirroring enabled", slog.Any("policy", policy), slog.String("path", *mirrorPolicyFile))
+		opts = opts.WithMirrorPolicy(mPol, nil)
+		slog.InfoContext(ctx, "Mirroring enabled", slog.Any("policy", mPol), slog.String("path", *mirrorPolicyFile))
 	}
 
 	cfg := posix.Config{

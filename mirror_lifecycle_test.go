@@ -208,7 +208,7 @@ func TestMirrorTarget_SealAndOpen(t *testing.T) {
 		t.Errorf("open: eturn unexpected bytes")
 	}
 
-	for i := 0; i < len(ticket); i++ {
+	for i := range ticket {
 		b := ticket[i]
 		ticket[i] = b ^ 0xff
 		if _, err := mt.open(ticket); err == nil {

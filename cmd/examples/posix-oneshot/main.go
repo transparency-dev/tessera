@@ -31,6 +31,7 @@ import (
 
 	"log/slog"
 
+	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/storage/posix"
 )
@@ -39,7 +40,7 @@ var (
 	storageDir        = flag.String("storage_dir", "", "Root directory to store log data.")
 	entries           = flag.String("entries", "", "File path glob of entries to add to the log.")
 	privKeyFile       = flag.String("private_key", "", "Location of private key file. If unset, uses the contents of the LOG_PRIVATE_KEY environment variable.")
-	witnessPolicyFile = flag.String("witness_policy_file", "", "(Optional) Path to the file containing the witness policy in the format describe at https://git.glasklar.is/sigsum/core/sigsum-go/-/blob/main/doc/policy.md")
+	witnessPolicyFile = flag.String("witness_policy_file", "", "(Optional) Path to the file containing the witness policy in the format described at https://c2sp.org/tlog-policy")
 	witnessTimeout    = flag.Duration("witness_timeout", tessera.DefaultWitnessTimeout, "Maximum time to wait for witness responses.")
 	witnessFailOpen   = flag.Bool("witness_fail_open", false, "Still publish a checkpoint even if witness policy could not be met")
 	slogLevel         = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is 0 (INFO). See https://pkg.go.dev/log/slog#Level for other levels.")
@@ -105,9 +106,9 @@ func main() {
 			slog.ErrorContext(ctx, "Failed to read witness policy file", slog.String("witnesspolicyfile", *witnessPolicyFile), slog.Any("error", err))
 			os.Exit(1)
 		}
-		wg, err := tessera.NewWitnessGroupFromPolicy(f)
-		if err != nil {
-			slog.ErrorContext(ctx, "Failed to create witness group from policy", slog.Any("error", err))
+		var wPol policy.TLogPolicy
+		if err := wPol.Unmarshal(f); err != nil {
+			slog.ErrorContext(ctx, "Failed to parse witness policy", slog.String("witnesspolicyfile", *witnessPolicyFile), slog.Any("error", err))
 			os.Exit(1)
 		}
 
@@ -115,7 +116,7 @@ func main() {
 			FailOpen: *witnessFailOpen,
 			Timeout:  *witnessTimeout,
 		}
-		opts.WithWitnesses(wg, wOpts)
+		opts.WithWitnessPolicy(wPol, wOpts)
 	}
 
 	slog.DebugContext(ctx, "Creating appender")
