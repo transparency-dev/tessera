@@ -425,6 +425,16 @@ func TestGatherCosignatures(t *testing.T) {
 	sig2 := createCosignature(t, n, testWit2SKey)
 	sig3 := createCosignature(t, n, testWit3SKey)
 
+	// A policy which names a witness, but whose quorum is satisfied without any cosignatures.
+	wit1CoSigVKey, err := f_note.VKeyToCosignatureV1(testWit1VKey)
+	if err != nil {
+		t.Fatalf("failed to convert witness 1 vkey: %v", err)
+	}
+	var quorumNone policy.TLogPolicy
+	if err := quorumNone.Unmarshal(fmt.Appendf(nil, "witness w1 %s https://wit1.example.com\nquorum none\n", wit1CoSigVKey)); err != nil {
+		t.Fatalf("failed to parse quorum none policy: %v", err)
+	}
+
 	for _, test := range []struct {
 		desc               string
 		policy             policy.TLogPolicy
@@ -534,6 +544,29 @@ func TestGatherCosignatures(t *testing.T) {
 			greedy:             true,
 			failOpen:           true,
 			expectFailedOpen:   true,
+			expectCosignatures: []note.Verifier{wit1Verifier},
+		},
+		{
+			desc:   "non-greedy does not contact witnesses when the policy needs no cosignatures",
+			policy: quorumNone,
+			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
+				t.Error("fetcher called for a policy which is already satisfied")
+				ch := make(chan []byte)
+				close(ch)
+				return ch
+			},
+			greedy: false,
+		},
+		{
+			desc:   "greedy still gathers surplus cosignatures when the policy needs none",
+			policy: quorumNone,
+			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
+				ch := make(chan []byte, 1)
+				ch <- sig1
+				close(ch)
+				return ch
+			},
+			greedy:             true,
 			expectCosignatures: []note.Verifier{wit1Verifier},
 		},
 	} {

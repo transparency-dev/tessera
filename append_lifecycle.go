@@ -988,6 +988,17 @@ func gatherCosignatures(ctx context.Context, name string, fetcher cosigSource, p
 		if len(pol.Witnesses) == 0 {
 			return nil, nil
 		}
+		// A policy can name witnesses and yet be satisfied by the empty set of cosignatures,
+		// e.g. one whose quorum is "none". There's nothing to wait for in that case, so publish
+		// straight away rather than delaying every checkpoint by a witness round-trip (or, if
+		// the witnesses are unreachable, by the full timeout).
+		//
+		// Greedy is the exception: there we've been explicitly asked to collect whatever surplus
+		// cosignatures we can within the time available.
+		if !greedy && pol.Satisfied(cp) {
+			span.AddEvent("Policy satisfied with no cosignatures")
+			return nil, nil
+		}
 
 		span.AddEvent("Starting gathering")
 		sigCh := fetcher(ctx, cp, cpSize)
@@ -1203,7 +1214,7 @@ func (o *AppendOptions) WithMirrors(mirrors WitnessGroup, opts *MirroringOptions
 }
 
 // WitnessOptions contains extra optional configuration for how Tessera should use/interact with
-// a user-provided WitnessGroup policy.
+// a user-provided witness policy.
 type WitnessOptions struct {
 	// Timeout is the maximum time to wait while attempting to satisfy the configured witness policy.
 	//
