@@ -35,6 +35,7 @@ import (
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/entry"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/landmark"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/mtcproof"
+	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/subtreewitness"
 	"github.com/transparency-dev/tessera/internal/parse"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
@@ -228,7 +229,7 @@ type MTCLog struct {
 	origin            string
 	subtreeSigner     note.SubtreeSigner
 	logCosignerID     []byte
-	subtreeWitnesses  tessera.WitnessGroup
+	subtreeGateway    *subtreewitness.Gateway
 }
 
 // AddTBSRsp contains enough information from the log
@@ -435,14 +436,28 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 		return nil, fmt.Errorf("checkOriginSignerName: %v", err)
 	}
 
+	httpClient := opts.httpClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+
+	var gateway *subtreewitness.Gateway
+	if len(opts.subtreeWitnesses.Components) > 0 {
+		gw, err := subtreewitness.NewGateway(httpClient, opts.subtreeWitnesses)
+		if err != nil {
+			return nil, fmt.Errorf("creating subtree witness gateway: %w", err)
+		}
+		gateway = gw
+	}
+
 	l := &MTCLog{
-		a:                a,
-		reader:           opts.reader,
-		maxCertLifetime:  opts.maxCertLifetime,
-		origin:           opts.origin,
-		subtreeSigner:    opts.subtreeSigner,
-		logCosignerID:    logCosignerID,
-		subtreeWitnesses: opts.subtreeWitnesses,
+		a:               a,
+		reader:          opts.reader,
+		maxCertLifetime: opts.maxCertLifetime,
+		origin:          opts.origin,
+		subtreeSigner:   opts.subtreeSigner,
+		logCosignerID:   logCosignerID,
+		subtreeGateway:  gateway,
 	}
 
 	cpReader, err := checkpoint.NewReader(ctx, opts.reader.ReadCheckpoint, l.getSubtreeSigs)
@@ -492,10 +507,24 @@ func (l *MTCLog) getSubtreeSigs(ctx context.Context, start, end uint64, rawCp []
 		return nil, fmt.Errorf("cannot sign subtree [%d, %d): %v", start, end, err)
 	}
 
-	// TODO: fetch signatures from mirrors.
-	return []mtcproof.SubtreeSignature{
+	allSigs := []mtcproof.SubtreeSignature{
 		{CosignerID: l.logCosignerID, Signature: selfSig},
-	}, nil
+	}
+
+	if l.subtreeGateway != nil {
+		consProof, err := pb.SubtreeConsistencyProof(ctx, start, end)
+		if err != nil {
+			return nil, fmt.Errorf("cannot get subtree consistency proof for [%d, %d): %v", start, end, err)
+		}
+
+		witnessSigs, err := l.subtreeGateway.CosignSubtree(ctx, l.origin, l.subtreeSigner.Verifier(), start, end, subRoot, consProof, rawCp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch subtree cosignatures for [%d, %d): %v", start, end, err)
+		}
+		allSigs = append(allSigs, witnessSigs...)
+	}
+
+	return allSigs, nil
 }
 
 // AddTBS adds a TBSCertificateLogEntry to the log.
@@ -662,7 +691,7 @@ func CreateSignerAndOrigin(caID string, logNumber uint64, privKey string) (origi
 	return origin, s, nil
 }
 
-// checkOriginSigner verifies that an origin and signer match with each other.
+// checkOriginSignerName verifies that an origin and signer match with each other.
 //
 // SPEC: draft-ietf-plants-merkle-tree-certs section 5.2.
 // "Each issuance log has a log ID, which is a trust anchor ID constructed by concatenating the following OID components:

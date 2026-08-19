@@ -835,7 +835,7 @@ func setupTestMTCLog(t *testing.T) *MTCLog {
 	opts := tessera.NewAppendOptions().
 		WithCheckpointSigner(signer).
 		WithBatching(4, 500*time.Millisecond).
-		WithCheckpointInterval(500*time.Millisecond)
+		WithCheckpointInterval(500 * time.Millisecond)
 	appender, _, reader, err := tessera.NewAppender(ctx, driver, opts)
 	if err != nil {
 		t.Fatalf("Failed to initialize Tessera appender: %v", err)
@@ -980,6 +980,74 @@ func TestMTCLog_AddTBS(t *testing.T) {
 			}
 			if !bytes.Equal(proofData.Signatures[0].CosignerID, wantCosignerID) {
 				t.Errorf("CosignerID = %x, want %x", proofData.Signatures[0].CosignerID, wantCosignerID)
+			}
+		})
+	}
+}
+
+func TestNewMTCLog_WithSubtreeWitnesses(t *testing.T) {
+	ctx := t.Context()
+
+	driver, err := tposix.New(ctx, tposix.Config{Path: t.TempDir()})
+	if err != nil {
+		t.Fatalf("tposix.New: %v", err)
+	}
+	signer := mustTestSigner()
+	appender, _, reader, err := tessera.NewAppender(ctx, driver, tessera.NewAppendOptions().WithCheckpointSigner(signer))
+	if err != nil {
+		t.Fatalf("NewAppender: %v", err)
+	}
+
+	_, vkey1, err := note.GenerateMLDSAKey("oid/1.3.6.1.4.1.32473.101")
+	if err != nil {
+		t.Fatalf("GenerateMLDSAKey: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		policy     string
+		hasGateway bool
+		wantErr    bool
+	}{
+		{
+			name:       "single witness policy",
+			policy:     fmt.Sprintf("witness wit1 %s http://wit1.example.com\nquorum wit1\n", vkey1),
+			hasGateway: true,
+		},
+		{
+			name:       "empty witness group",
+			policy:     "",
+			hasGateway: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var wg tessera.WitnessGroup
+			if tc.policy != "" {
+				var err error
+				wg, err = tessera.NewWitnessGroupFromPolicy([]byte(tc.policy))
+				if err != nil {
+					t.Fatalf("NewWitnessGroupFromPolicy error: %v", err)
+				}
+			}
+
+			opts := NewOptions().
+				WithTesseraReader(reader).
+				WithLandmarksStorage(dummyLandmarksStorage{}).
+				WithOrigin(testOrigin).
+				WithSubtreeSigner(signer).
+				WithSubtreeWitnesses(wg)
+
+			l, err := NewMTCLog(ctx, appender, opts)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("NewMTCLog error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			if (l.subtreeGateway != nil) != tc.hasGateway {
+				t.Errorf("has subtreeGateway = %v, want %v", l.subtreeGateway != nil, tc.hasGateway)
 			}
 		})
 	}
