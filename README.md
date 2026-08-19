@@ -328,6 +328,8 @@ This property can be verified by witnesses, and signatures from witnesses can be
 Personalities can configure Tessera with options that specify witnesses compatible with the [C2SP Witness Protocol](https://github.com/C2SP/C2SP/blob/main/tlog-witness.md).
 
 Configuring the witnesses is done by passing an instance of a populated [`TLogPolicy`](https://pkg.go.dev/github.com/transparency-dev/formats/policy@main#TLogPolicy) struct to the [`WithWitnessPolicy`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithWitnessPolicy) option.
+A `TLogPolicy` can either be constructed directly, or parsed from a policy file in the format described at [c2sp.org/tlog-policy](https://c2sp.org/tlog-policy) using [`TLogPolicy.Unmarshal`](https://pkg.go.dev/github.com/transparency-dev/formats/policy@main#TLogPolicy.Unmarshal).
+Every witness in the policy which Tessera is expected to contact must have a URL configured.
 
 If this option is not specified, no witnessing is performed.
 
