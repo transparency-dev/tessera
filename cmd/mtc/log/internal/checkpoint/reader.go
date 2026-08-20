@@ -100,10 +100,13 @@ func (r *Reader) Checkpoint(ctx context.Context) ([]byte, error) {
 }
 
 // pushSubtreeLocked adds a subtree and potentially removes old ones, capping the number of elements.
+// When capacity is exceeded, the oldest delta subtree is merged into subtrees[0], keeping subtrees[0]
+// covering [0, subtrees[1].end) before shifting so that the log start is always anchored at 0.
 // r.mu MUST be locked when calling this method.
 func (r *Reader) pushSubtreeLocked(st subtree) {
 	if len(r.subtrees) >= maxSubtrees {
-		copy(r.subtrees, r.subtrees[1:])
+		r.subtrees[0].end = r.subtrees[1].end
+		copy(r.subtrees[1:], r.subtrees[2:])
 		r.subtrees[len(r.subtrees)-1] = st
 	} else {
 		r.subtrees = append(r.subtrees, st)
@@ -121,7 +124,6 @@ func (r *Reader) LatestSize() uint64 {
 }
 
 // SubtreeForIndex returns the exact [start, end) subtree covering index (start <= index < end).
-// If index precedes the earliest retained subtree, it returns [0, subtrees[0].start).
 func (r *Reader) SubtreeForIndex(index uint64) (start, end uint64, ok bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -139,6 +141,7 @@ func (r *Reader) SubtreeForIndex(index uint64) (start, end uint64, ok bool) {
 		}
 	}
 
-	// If not found in retained subtrees, it must precede the earliest retained subtree.
-	return 0, r.subtrees[0].start, true
+	// Since subtrees[0] always covers [0, ...), any index < LatestSize() should
+	// have been matched in the loop above.
+	return 0, 0, false
 }

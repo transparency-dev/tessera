@@ -313,25 +313,29 @@ func TestReader_CapacityPruning(t *testing.T) {
 		t.Fatalf("len(subtrees) = %d, want maxSubtrees %d", len(r.subtrees), maxSubtrees)
 	}
 
-	earliest := r.subtrees[0].start
-	// Index 0 was pruned from explicit subtrees since earliest subtree start has advanced past 0
-	if earliest == 0 {
-		t.Fatalf("earliest subtree start should have advanced past 0 after %d checkpoints", numCheckpoints)
+	// The first subtree always starts at 0 and expands as older delta subtrees are pruned.
+	if r.subtrees[0].start != 0 {
+		t.Fatalf("subtrees[0].start = %d, want 0", r.subtrees[0].start)
 	}
-	// Index < earliest falls back to [0, earliest)
-	start, end, ok := r.SubtreeForIndex(0)
-	if !ok || start != 0 || end != earliest {
-		t.Errorf("SubtreeForIndex(0) = [%d, %d), ok=%v; want [0, %d), ok=true", start, end, ok, earliest)
-	}
-	start, end, ok = r.SubtreeForIndex(earliest - 1)
-	if !ok || start != 0 || end != earliest {
-		t.Errorf("SubtreeForIndex(%d) = [%d, %d), ok=%v; want [0, %d), ok=true", earliest-1, start, end, ok, earliest)
+	if r.subtrees[0].end == 0 {
+		t.Fatalf("subtrees[0].end should have expanded after %d checkpoints", numCheckpoints)
 	}
 
-	// Earliest remaining subtree is still valid
-	start, end, ok = r.SubtreeForIndex(earliest)
-	if !ok || start != r.subtrees[0].start || end != r.subtrees[0].end {
-		t.Errorf("SubtreeForIndex(%d) = [%d, %d), ok=%v; want [%d, %d), ok=true", earliest, start, end, ok, r.subtrees[0].start, r.subtrees[0].end)
+	// Verify every subtree has no gaps with the next (subtrees may overlap due to FindSubtrees power-of-2 alignment).
+	for i := 0; i < len(r.subtrees)-1; i++ {
+		if r.subtrees[i].end < r.subtrees[i+1].start {
+			t.Errorf("gap detected: subtrees[%d].end (%d) < subtrees[%d].start (%d)", i, r.subtrees[i].end, i+1, r.subtrees[i+1].start)
+		}
+	}
+
+	// Verify SubtreeForIndex returns the first subtree for index 0 and index within subtrees[0].
+	start, end, ok := r.SubtreeForIndex(0)
+	if !ok || start != 0 || end != r.subtrees[0].end {
+		t.Errorf("SubtreeForIndex(0) = [%d, %d), ok=%v; want [0, %d), ok=true", start, end, ok, r.subtrees[0].end)
+	}
+	start, end, ok = r.SubtreeForIndex(r.subtrees[0].end - 1)
+	if !ok || start != 0 || end != r.subtrees[0].end {
+		t.Errorf("SubtreeForIndex(%d) = [%d, %d), ok=%v; want [0, %d), ok=true", r.subtrees[0].end-1, start, end, ok, r.subtrees[0].end)
 	}
 
 	// Latest subtree is valid
