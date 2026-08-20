@@ -75,7 +75,7 @@ func mkdirAll(name string, perm os.FileMode) error {
 	di, err := os.Lstat(name)
 	switch {
 	case errors.Is(err, syscall.ENOENT):
-		// We'll see an ENOENT if there's a problem with a non-existant path element, so
+		// We'll see an ENOENT if there's a problem with a non-existent path element, so
 		// we'll recurse and create the parent directory if necessary.
 		// Don't return an error if someone else managed to get in and create the directory before us, though.
 		if dir != "" {

@@ -23,7 +23,7 @@ import (
 
 // Entry represents an entry in a log.
 type Entry struct {
-	// We keep the all data in exported fields inside an unexported interal struct.
+	// We keep the all data in exported fields inside an unexported internal struct.
 	// This allows us to use gob to serialise the entry data (relying on the backwards-compatibility
 	// it provides), while also keeping these fields private which allows us to deter bad practice
 	// by forcing use of the API to set these values to safe values.

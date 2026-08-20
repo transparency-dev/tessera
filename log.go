@@ -32,11 +32,11 @@ var (
 	// Personalities should check for this error (wrapped or not) using `errors.Is(e, ErrPushback)`.
 	ErrPushback = errors.New("pushback")
 	// ErrPushbackAntispam is a wrapped ErrPushback. It is returned by underlying storage implementations
-	// when an entry cannot be accepted becasue the antispam follower has fallen too far behind the size
+	// when an entry cannot be accepted because the antispam follower has fallen too far behind the size
 	// of the integrated tree.
 	ErrPushbackAntispam = fmt.Errorf("antispam %w", ErrPushback)
 	// ErrPushbackIntegration is a wrapped ErrPushback. It is returned by underlying storage implementations
-	// when an entry cannot be accepted becasue there are too many "in-flight" add requests - i.e. entries
+	// when an entry cannot be accepted because there are too many "in-flight" add requests - i.e. entries
 	// with sequence numbers assigned, but which are not yet integrated into the log.
 	ErrPushbackIntegration = fmt.Errorf("integration %w", ErrPushback)
 )
