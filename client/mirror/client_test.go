@@ -899,7 +899,7 @@ func TestSync_ErrorsAndEdgeCases(t *testing.T) {
 					body:   "10\n8\ndGlja2V0LW5ldw==\n",
 				},
 				// The client should attempt to get a cosig for the checkpoint it's currently trying to upload.
-				// Since all entries are already on the mirror, this will look like an zero-length upload starting and ending
+				// Since all entries are already on the mirror, this will look like a zero-length upload starting and ending
 				// at the checkpoint size.
 				{
 					start:  5,

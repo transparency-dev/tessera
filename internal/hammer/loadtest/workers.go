@@ -69,7 +69,7 @@ type LeafReader struct {
 // Run runs the log reader. This should be called in a goroutine.
 func (r *LeafReader) Run(ctx context.Context) {
 	if r.cancel != nil {
-		panic("LeafReader was ran multiple times")
+		panic("LeafReader was run multiple times")
 	}
 	ctx, r.cancel = context.WithCancel(ctx)
 	for {

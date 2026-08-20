@@ -170,12 +170,12 @@ func (gw *Gateway) CosignCheckpoint(ctx context.Context, cp []byte, cpSize uint6
 			case target.goals <- newGoal:
 				done = true
 			default:
-				// No space in the goals channel, try to supercede the goal currently in there with the new one.
+				// No space in the goals channel, try to supersede the goal currently in there with the new one.
 				// This replacement is "racy", but the worst that can happen is that the worker has already
 				// picked up the old goal and we end up simply queuing the new goal instead of replacing the old one.
 				select {
 				case oldGoal := <-target.goals:
-					// Ok, we've removed the superceded goal, so we need to signal that it's done:
+					// Ok, we've removed the superseded goal, so we need to signal that it's done:
 					oldGoal.done(nil, fmt.Errorf("superseded by newer goal for size %d", cpSize))
 					// Then let the loop retry the send in the select at the top.
 				default:
