@@ -251,35 +251,35 @@ func TestReader_SubtreeForIndex(t *testing.T) {
 		index     uint64
 		wantStart uint64
 		wantEnd   uint64
-		wantOK    bool
+		wantErr   bool
 	}{
-		{name: "first index of first subtree [0, 32)", index: 0, wantStart: 0, wantEnd: 32, wantOK: true},
-		{name: "middle of first subtree [0, 32)", index: 15, wantStart: 0, wantEnd: 32, wantOK: true},
-		{name: "last index of first subtree [0, 32)", index: 31, wantStart: 0, wantEnd: 32, wantOK: true},
-		{name: "first index of second subtree [32, 50)", index: 32, wantStart: 32, wantEnd: 50, wantOK: true},
-		{name: "middle of second subtree [32, 50)", index: 40, wantStart: 32, wantEnd: 50, wantOK: true},
-		{name: "overlapping index 48 in [48, 64)", index: 48, wantStart: 48, wantEnd: 64, wantOK: true},
-		{name: "overlapping index 49 in [48, 64)", index: 49, wantStart: 48, wantEnd: 64, wantOK: true},
-		{name: "first index of third subtree [48, 64)", index: 50, wantStart: 48, wantEnd: 64, wantOK: true},
-		{name: "last index of third subtree [48, 64)", index: 63, wantStart: 48, wantEnd: 64, wantOK: true},
-		{name: "first index of fourth subtree [64, 120)", index: 64, wantStart: 64, wantEnd: 120, wantOK: true},
-		{name: "middle of fourth subtree [64, 120)", index: 100, wantStart: 64, wantEnd: 120, wantOK: true},
-		{name: "last index of fourth subtree [64, 120)", index: 119, wantStart: 64, wantEnd: 120, wantOK: true},
-		{name: "first index of fifth subtree [120, 128)", index: 120, wantStart: 120, wantEnd: 128, wantOK: true},
-		{name: "last index of fifth subtree [120, 128)", index: 127, wantStart: 120, wantEnd: 128, wantOK: true},
-		{name: "first index of sixth subtree [128, 200)", index: 128, wantStart: 128, wantEnd: 200, wantOK: true},
-		{name: "last index of sixth subtree [128, 200)", index: 199, wantStart: 128, wantEnd: 200, wantOK: true},
-		{name: "index equal to latest checkpoint size", index: 200, wantOK: false},
-		{name: "future uncheckpointed index", index: 500, wantOK: false},
+		{name: "first index of first subtree [0, 32)", index: 0, wantStart: 0, wantEnd: 32, wantErr: false},
+		{name: "middle of first subtree [0, 32)", index: 15, wantStart: 0, wantEnd: 32, wantErr: false},
+		{name: "last index of first subtree [0, 32)", index: 31, wantStart: 0, wantEnd: 32, wantErr: false},
+		{name: "first index of second subtree [32, 50)", index: 32, wantStart: 32, wantEnd: 50, wantErr: false},
+		{name: "middle of second subtree [32, 50)", index: 40, wantStart: 32, wantEnd: 50, wantErr: false},
+		{name: "overlapping index 48 in [48, 64)", index: 48, wantStart: 48, wantEnd: 64, wantErr: false},
+		{name: "overlapping index 49 in [48, 64)", index: 49, wantStart: 48, wantEnd: 64, wantErr: false},
+		{name: "first index of third subtree [48, 64)", index: 50, wantStart: 48, wantEnd: 64, wantErr: false},
+		{name: "last index of third subtree [48, 64)", index: 63, wantStart: 48, wantEnd: 64, wantErr: false},
+		{name: "first index of fourth subtree [64, 120)", index: 64, wantStart: 64, wantEnd: 120, wantErr: false},
+		{name: "middle of fourth subtree [64, 120)", index: 100, wantStart: 64, wantEnd: 120, wantErr: false},
+		{name: "last index of fourth subtree [64, 120)", index: 119, wantStart: 64, wantEnd: 120, wantErr: false},
+		{name: "first index of fifth subtree [120, 128)", index: 120, wantStart: 120, wantEnd: 128, wantErr: false},
+		{name: "last index of fifth subtree [120, 128)", index: 127, wantStart: 120, wantEnd: 128, wantErr: false},
+		{name: "first index of sixth subtree [128, 200)", index: 128, wantStart: 128, wantEnd: 200, wantErr: false},
+		{name: "last index of sixth subtree [128, 200)", index: 199, wantStart: 128, wantEnd: 200, wantErr: false},
+		{name: "index equal to latest checkpoint size", index: 200, wantErr: true},
+		{name: "future uncheckpointed index", index: 500, wantErr: true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			start, end, ok := r.SubtreeForIndex(tc.index)
-			if ok != tc.wantOK {
-				t.Fatalf("SubtreeForIndex(%d) ok = %v, want %v", tc.index, ok, tc.wantOK)
+			start, end, err := r.SubtreeForIndex(tc.index)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("SubtreeForIndex(%d) error = %v, wantErr %v", tc.index, err, tc.wantErr)
 			}
-			if ok && (start != tc.wantStart || end != tc.wantEnd) {
+			if !tc.wantErr && (start != tc.wantStart || end != tc.wantEnd) {
 				t.Errorf("SubtreeForIndex(%d) = [%d, %d), want [%d, %d)", tc.index, start, end, tc.wantStart, tc.wantEnd)
 			}
 		})
@@ -313,36 +313,40 @@ func TestReader_CapacityPruning(t *testing.T) {
 		t.Fatalf("len(subtrees) = %d, want maxSubtrees %d", len(r.subtrees), maxSubtrees)
 	}
 
-	earliest := r.subtrees[0].start
-	// Index 0 was pruned from explicit subtrees since earliest subtree start has advanced past 0
-	if earliest == 0 {
-		t.Fatalf("earliest subtree start should have advanced past 0 after %d checkpoints", numCheckpoints)
+	// The first subtree always starts at 0 and expands as older delta subtrees are pruned.
+	if r.subtrees[0].start != 0 {
+		t.Fatalf("subtrees[0].start = %d, want 0", r.subtrees[0].start)
 	}
-	// Index < earliest falls back to [0, earliest)
-	start, end, ok := r.SubtreeForIndex(0)
-	if !ok || start != 0 || end != earliest {
-		t.Errorf("SubtreeForIndex(0) = [%d, %d), ok=%v; want [0, %d), ok=true", start, end, ok, earliest)
-	}
-	start, end, ok = r.SubtreeForIndex(earliest - 1)
-	if !ok || start != 0 || end != earliest {
-		t.Errorf("SubtreeForIndex(%d) = [%d, %d), ok=%v; want [0, %d), ok=true", earliest-1, start, end, ok, earliest)
+	if r.subtrees[0].end == 0 {
+		t.Fatalf("subtrees[0].end should have expanded after %d checkpoints", numCheckpoints)
 	}
 
-	// Earliest remaining subtree is still valid
-	start, end, ok = r.SubtreeForIndex(earliest)
-	if !ok || start != r.subtrees[0].start || end != r.subtrees[0].end {
-		t.Errorf("SubtreeForIndex(%d) = [%d, %d), ok=%v; want [%d, %d), ok=true", earliest, start, end, ok, r.subtrees[0].start, r.subtrees[0].end)
+	// Verify every subtree has no gaps with the next (subtrees may overlap due to FindSubtrees power-of-2 alignment).
+	for i := 0; i < len(r.subtrees)-1; i++ {
+		if r.subtrees[i].end < r.subtrees[i+1].start {
+			t.Errorf("gap detected: subtrees[%d].end (%d) < subtrees[%d].start (%d)", i, r.subtrees[i].end, i+1, r.subtrees[i+1].start)
+		}
+	}
+
+	// Verify SubtreeForIndex returns the first subtree for index 0 and index within subtrees[0].
+	start, end, err := r.SubtreeForIndex(0)
+	if err != nil || start != 0 || end != r.subtrees[0].end {
+		t.Errorf("SubtreeForIndex(0) = [%d, %d), err=%v; want [0, %d), err=nil", start, end, err, r.subtrees[0].end)
+	}
+	start, end, err = r.SubtreeForIndex(r.subtrees[0].end - 1)
+	if err != nil || start != 0 || end != r.subtrees[0].end {
+		t.Errorf("SubtreeForIndex(%d) = [%d, %d), err=%v; want [0, %d), err=nil", r.subtrees[0].end-1, start, end, err, r.subtrees[0].end)
 	}
 
 	// Latest subtree is valid
 	latest := r.subtrees[len(r.subtrees)-1]
-	start, end, ok = r.SubtreeForIndex(latest.start)
-	if !ok || start != latest.start || end != latest.end {
-		t.Errorf("SubtreeForIndex(%d) = [%d, %d), ok=%v; want [%d, %d), ok=true", latest.start, start, end, ok, latest.start, latest.end)
+	start, end, err = r.SubtreeForIndex(latest.start)
+	if err != nil || start != latest.start || end != latest.end {
+		t.Errorf("SubtreeForIndex(%d) = [%d, %d), err=%v; want [%d, %d), err=nil", latest.start, start, end, err, latest.start, latest.end)
 	}
 
-	// Future index beyond latest size returns ok=false
-	if _, _, ok := r.SubtreeForIndex(latest.end); ok {
-		t.Errorf("SubtreeForIndex(%d) expected ok=false, got ok=true", latest.end)
+	// Future index beyond latest size returns error
+	if _, _, err := r.SubtreeForIndex(latest.end); err == nil {
+		t.Errorf("SubtreeForIndex(%d) expected error, got nil", latest.end)
 	}
 }
