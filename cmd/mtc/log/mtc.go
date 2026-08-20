@@ -492,9 +492,9 @@ func (l *MTCLog) AddTBS(ctx context.Context, tbs TBSCertificateLogEntry) (*AddTB
 		return nil, fmt.Errorf("error waiting for Tessera index future and its integration: %v", err)
 	}
 
-	start, end, ok := l.cpReader.SubtreeForIndex(idx.Index)
-	if !ok {
-		return nil, fmt.Errorf("subtree for index %d not found in recent checkpoint history", idx.Index)
+	start, end, err := l.cpReader.SubtreeForIndex(idx.Index)
+	if err != nil {
+		return nil, fmt.Errorf("no subtree covering index %d: %w", idx.Index, err)
 	}
 
 	pb, err := client.NewProofBuilder(ctx, l.cpReader.LatestSize(), l.reader.ReadTile)

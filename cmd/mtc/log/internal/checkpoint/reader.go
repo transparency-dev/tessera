@@ -124,12 +124,16 @@ func (r *Reader) LatestSize() uint64 {
 }
 
 // SubtreeForIndex returns the exact [start, end) subtree covering index (start <= index < end).
-func (r *Reader) SubtreeForIndex(index uint64) (start, end uint64, ok bool) {
+func (r *Reader) SubtreeForIndex(index uint64) (start, end uint64, err error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	if len(r.subtrees) == 0 || index >= r.subtrees[len(r.subtrees)-1].end {
-		return 0, 0, false
+	if len(r.subtrees) == 0 {
+		return 0, 0, errors.New("no subtrees available")
+	}
+	latestSize := r.subtrees[len(r.subtrees)-1].end
+	if index >= latestSize {
+		return 0, 0, fmt.Errorf("index %d exceeds latest checkpoint size %d", index, latestSize)
 	}
 
 	// Search backwards from the end because index is almost always in the most
@@ -137,11 +141,11 @@ func (r *Reader) SubtreeForIndex(index uint64) (start, end uint64, ok bool) {
 	for i := len(r.subtrees) - 1; i >= 0; i-- {
 		st := r.subtrees[i]
 		if index >= st.start && index < st.end {
-			return st.start, st.end, true
+			return st.start, st.end, nil
 		}
 	}
 
 	// Since subtrees[0] always covers [0, ...), any index < LatestSize() should
 	// have been matched in the loop above.
-	return 0, 0, false
+	return 0, 0, fmt.Errorf("no subtree covering index %d", index)
 }
