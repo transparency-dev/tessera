@@ -67,19 +67,47 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 	ctx := context.Background()
 
+	var policy tessera.WitnessGroup
+	if *mirrorPolicyFile != "" {
+		b, err := os.ReadFile(*mirrorPolicyFile)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to read mirror policy", slog.Any("error", err), slog.String("path", *mirrorPolicyFile))
+			os.Exit(1)
+		}
+		policy, err = tessera.NewWitnessGroupFromPolicy(b)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to parse mirror policy", slog.Any("error", err), slog.String("path", *mirrorPolicyFile))
+			os.Exit(1)
+		}
+		slog.InfoContext(ctx, "Mirroring enabled", slog.Any("policy", policy), slog.String("path", *mirrorPolicyFile))
+	}
+
 	origin, signer, err := log.CreateSignerAndOrigin(*caID, *logNumber, mustGetPrivateKey())
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create signer and origin", slog.Any("error", err))
 		os.Exit(1)
 	}
 
-	appender, shutdown, reader := newAppenderFromFlags(ctx, origin, signer)
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConns:        *clientHTTPMaxIdle,
+			MaxIdleConnsPerHost: *clientHTTPMaxIdlePerHost,
+			DisableKeepAlives:   false,
+		},
+		Timeout: *clientHTTPTimeout,
+	}
+
+	appender, shutdown, reader := newAppenderFromFlags(ctx, origin, signer, policy, httpClient)
 	opts := log.NewOptions().
 		WithTesseraReader(reader).
 		WithAwaiterPollInterval(*awaiterPollInterval).
 		WithLandmarksStorage(lmp.NewStorage(*storageDir)).
 		WithLandmarkInterval(*landmarkInterval).
-		WithMaxCertLifetime(*maxCertLifetime)
+		WithMaxCertLifetime(*maxCertLifetime).
+		WithOrigin(origin).
+		WithSubtreeSigner(signer).
+		WithSubtreeWitnesses(policy).
+		WithHTTPClient(httpClient)
 	mtcLog, err := log.NewMTCLog(ctx, appender, opts)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to initialize MTC log", slog.Any("error", err))
@@ -139,7 +167,7 @@ func getKeyFile(path string) (string, error) {
 	return string(k), nil
 }
 
-func newAppenderFromFlags(ctx context.Context, origin string, signer note.SubtreeSigner) (*tessera.Appender, func(ctx context.Context) error, tessera.LogReader) {
+func newAppenderFromFlags(ctx context.Context, origin string, signer note.SubtreeSigner, policy tessera.WitnessGroup, httpClient *http.Client) (*tessera.Appender, func(ctx context.Context) error, tessera.LogReader) {
 	if *storageDir == "" {
 		slog.ErrorContext(ctx, "flag --storage_dir is required")
 		os.Exit(1)
@@ -154,30 +182,12 @@ func newAppenderFromFlags(ctx context.Context, origin string, signer note.Subtre
 		WithGarbageCollectionInterval(*garbageCollectionInterval)
 
 	if *mirrorPolicyFile != "" {
-		b, err := os.ReadFile(*mirrorPolicyFile)
-		if err != nil {
-			slog.ErrorContext(ctx, "Failed to read mirror policy", slog.Any("error", err), slog.String("path", *mirrorPolicyFile))
-			os.Exit(1)
-		}
-		policy, err := tessera.NewWitnessGroupFromPolicy(b)
-		if err != nil {
-			slog.ErrorContext(ctx, "Failed to parse mirror policy", slog.Any("error", err), slog.String("path", *mirrorPolicyFile))
-			os.Exit(1)
-		}
 		opts = opts.WithMirrors(policy, nil)
-		slog.InfoContext(ctx, "Mirroring enabled", slog.Any("policy", policy), slog.String("path", *mirrorPolicyFile))
 	}
 
 	cfg := posix.Config{
-		Path: *storageDir,
-		HTTPClient: &http.Client{
-			Transport: &http.Transport{
-				MaxIdleConns:        *clientHTTPMaxIdle,
-				MaxIdleConnsPerHost: *clientHTTPMaxIdlePerHost,
-				DisableKeepAlives:   false,
-			},
-			Timeout: *clientHTTPTimeout,
-		},
+		Path:       *storageDir,
+		HTTPClient: httpClient,
 	}
 
 	driver, err := posix.New(ctx, cfg)

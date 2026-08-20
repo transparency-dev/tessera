@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/log"
 	lmp "github.com/transparency-dev/tessera/cmd/mtc/log/internal/landmark/posix"
@@ -37,6 +38,23 @@ import (
 	"golang.org/x/crypto/cryptobyte/asn1"
 	"golang.org/x/mod/sumdb/note"
 )
+
+const (
+	testSignerName = "oid/1.3.6.1.4.1.32473.106"
+	testOrigin     = "oid/1.3.6.1.4.1.32473.106.0.1"
+)
+
+func mustTestSigner() fnote.SubtreeSigner {
+	validKey, _, err := fnote.GenerateMLDSAKey(testSignerName)
+	if err != nil {
+		panic(err)
+	}
+	s, err := fnote.NewMLDSASigner(validKey)
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
 
 func setupTestLog(t *testing.T) *log.MTCLog {
 	t.Helper()
@@ -66,7 +84,9 @@ func setupTestLog(t *testing.T) *log.MTCLog {
 		WithTesseraReader(reader).
 		WithAwaiterPollInterval(20*time.Millisecond).
 		WithLandmarksStorage(lmp.NewStorage(storageDir)).
-		WithMaxCertLifetime(7*24*time.Hour))
+		WithMaxCertLifetime(7*24*time.Hour).
+		WithOrigin(testOrigin).
+		WithSubtreeSigner(mustTestSigner()))
 	if err != nil {
 		t.Fatalf("Failed to initialize MTC log: %v", err)
 	}
