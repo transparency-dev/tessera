@@ -120,9 +120,9 @@ func (r *Reader) makeSubtree(start, end uint64, rawCp []byte) subtree {
 		// signatures lazily retrieves and caches subtree signatures on first successful
 		// call. Errors are not cached to allow subsequent callers to retry.
 		//
-		// TODO: Consider using a detached or background context so that one caller's
-		// cancellation does not cancel in-flight signature fetching that other concurrent
-		// or future callers could benefit from.
+		// TODO: Consider using a detached, background context or retries so that
+		// context cancellation or HSM failure do not give up on signature fetching
+		// that other concurrent or future callers could benefit from.
 		signatures: func(ctx context.Context) ([]mtcproof.SubtreeSignature, error) {
 			mu.Lock()
 			defer mu.Unlock()

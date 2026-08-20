@@ -426,11 +426,11 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 		return nil, err
 	}
 
+	// Verify that the origin and signer name are valid.
 	logCosignerID, err := mtcproof.ParseCosignerID(opts.subtreeSigner.Name())
 	if err != nil {
 		return nil, fmt.Errorf("invalid subtree signer name %q: %w", opts.subtreeSigner.Name(), err)
 	}
-
 	if err := checkOriginSignerName(opts.origin, opts.subtreeSigner.Name()); err != nil {
 		return nil, fmt.Errorf("checkOriginSignerName: %v", err)
 	}

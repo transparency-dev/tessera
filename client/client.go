@@ -285,8 +285,10 @@ func subtreeNodes(start, end uint64) (proof.Nodes, error) {
 }
 
 // isSubtreeValid returns whether a subtree covers a valid range.
+// copied over from t-dev/merkle for the time being.
 func isSubtreeValid(start, end uint64) error {
 	bitCeil := func(n uint64) uint64 {
+		// copied over from t-dev/merkle for the time being.
 		if n <= 1 {
 			return 1
 		}
@@ -303,6 +305,7 @@ func isSubtreeValid(start, end uint64) error {
 		}
 		return nil
 	}
+
 	bc := bitCeil(l)
 	if start%bc != 0 {
 		return fmt.Errorf("start %d not a multiple of bit_ceil(end - start) = %d", start, bc)

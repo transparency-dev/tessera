@@ -359,6 +359,26 @@ func TestProofBuilder_SubtreeRoot(t *testing.T) {
 		t.Fatalf("NewProofBuilder: %v", err)
 	}
 
+	tileRaw, err := testLogTileFetcher(ctx, 0, 0, 15)
+	if err != nil {
+		t.Fatalf("testLogTileFetcher: %v", err)
+	}
+	var tile api.HashTile
+	if err := tile.UnmarshalText(tileRaw); err != nil {
+		t.Fatalf("UnmarshalText: %v", err)
+	}
+	rf := compact.RangeFactory{Hash: hasher.HashChildren}
+	r := rf.NewEmptyRange(0)
+	for _, l := range tile.Nodes[8:12] {
+		if err := r.Append(l, nil); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	want8to12, err := r.GetRootHash(nil)
+	if err != nil {
+		t.Fatalf("GetRootHash: %v", err)
+	}
+
 	tests := []struct {
 		name    string
 		start   uint64
@@ -371,6 +391,13 @@ func TestProofBuilder_SubtreeRoot(t *testing.T) {
 			start:   0,
 			end:     8,
 			want:    testCheckpoints[8].Hash,
+			wantErr: false,
+		},
+		{
+			name:    "valid range with non-zero start",
+			start:   8,
+			end:     12,
+			want:    want8to12,
 			wantErr: false,
 		},
 		{
