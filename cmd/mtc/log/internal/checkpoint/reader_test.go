@@ -19,60 +19,81 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
+
+	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/mtcproof"
 )
 
 func mockCheckpoint(origin string, size uint64) []byte {
 	return []byte(fmt.Sprintf("%s\n%d\nAAAA\n", origin, size))
 }
 
+func dummyGetSubtreeSigs(_ context.Context, _, _ uint64, _ []byte) ([]mtcproof.SubtreeSignature, error) {
+	return nil, nil
+}
+
 func TestNewReader(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name     string
-		readCP   func(context.Context) ([]byte, error)
-		wantSize uint64
-		wantErr  bool
+		name           string
+		readCP         func(context.Context) ([]byte, error)
+		getSubtreeSigs GetSubtreeSigsFunc
+		wantSize       uint64
+		wantErr        bool
 	}{
 		{
 			name: "successful initial read",
 			readCP: func(_ context.Context) ([]byte, error) {
 				return mockCheckpoint("test.log", 100), nil
 			},
-			wantSize: 100,
+			getSubtreeSigs: dummyGetSubtreeSigs,
+			wantSize:       100,
 		},
 		{
 			name: "successful initial read with size 0",
 			readCP: func(_ context.Context) ([]byte, error) {
 				return mockCheckpoint("test.log", 0), nil
 			},
-			wantSize: 0,
+			getSubtreeSigs: dummyGetSubtreeSigs,
+			wantSize:       0,
 		},
 		{
-			name:    "nil readCheckpoint function",
-			readCP:  nil,
-			wantErr: true,
+			name:           "nil readCheckpoint function",
+			readCP:         nil,
+			getSubtreeSigs: dummyGetSubtreeSigs,
+			wantErr:        true,
+		},
+		{
+			name: "nil getSubtreeSigs function",
+			readCP: func(_ context.Context) ([]byte, error) {
+				return mockCheckpoint("test.log", 100), nil
+			},
+			getSubtreeSigs: nil,
+			wantErr:        true,
 		},
 		{
 			name: "storage error on initial read",
 			readCP: func(_ context.Context) ([]byte, error) {
 				return nil, errors.New("network error")
 			},
-			wantErr: true,
+			getSubtreeSigs: dummyGetSubtreeSigs,
+			wantErr:        true,
 		},
 		{
 			name: "malformed initial checkpoint",
 			readCP: func(_ context.Context) ([]byte, error) {
 				return []byte("not-a-valid-checkpoint"), nil
 			},
-			wantErr: true,
+			getSubtreeSigs: dummyGetSubtreeSigs,
+			wantErr:        true,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			r, err := NewReader(ctx, tc.readCP)
+			r, err := NewReader(ctx, tc.readCP, tc.getSubtreeSigs)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("NewReader() error = %v, wantErr %v", err, tc.wantErr)
 			}
@@ -128,7 +149,7 @@ func TestReader_Checkpoint(t *testing.T) {
 			currentCP := mockCheckpoint("test.log", 100)
 			r, err := NewReader(ctx, func(_ context.Context) ([]byte, error) {
 				return currentCP, nil
-			})
+			}, dummyGetSubtreeSigs)
 			if err != nil {
 				t.Fatalf("NewReader() error: %v", err)
 			}
@@ -192,7 +213,7 @@ func TestReader_LatestSize(t *testing.T) {
 				return mockCheckpoint("test.log", currentSize), nil
 			}
 
-			r, err := NewReader(ctx, readCP)
+			r, err := NewReader(ctx, readCP, dummyGetSubtreeSigs)
 			if err != nil {
 				t.Fatalf("NewReader() unexpected error: %v", err)
 			}
@@ -229,7 +250,7 @@ func TestReader_SubtreeForIndex(t *testing.T) {
 		return mockCheckpoint("test.log", currentSize), nil
 	}
 
-	r, err := NewReader(ctx, reader)
+	r, err := NewReader(ctx, reader, dummyGetSubtreeSigs)
 	if err != nil {
 		t.Fatalf("NewReader() error: %v", err)
 	}
@@ -275,7 +296,7 @@ func TestReader_SubtreeForIndex(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			start, end, err := r.SubtreeForIndex(tc.index)
+			start, end, _, err := r.SubtreeForIndex(tc.index)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("SubtreeForIndex(%d) error = %v, wantErr %v", tc.index, err, tc.wantErr)
 			}
@@ -294,7 +315,7 @@ func TestReader_CapacityPruning(t *testing.T) {
 		return mockCheckpoint("test.log", currentSize), nil
 	}
 
-	r, err := NewReader(ctx, reader)
+	r, err := NewReader(ctx, reader, dummyGetSubtreeSigs)
 	if err != nil {
 		t.Fatalf("NewReader() error: %v", err)
 	}
@@ -329,24 +350,141 @@ func TestReader_CapacityPruning(t *testing.T) {
 	}
 
 	// Verify SubtreeForIndex returns the first subtree for index 0 and index within subtrees[0].
-	start, end, err := r.SubtreeForIndex(0)
+	start, end, _, err := r.SubtreeForIndex(0)
 	if err != nil || start != 0 || end != r.subtrees[0].end {
 		t.Errorf("SubtreeForIndex(0) = [%d, %d), err=%v; want [0, %d), err=nil", start, end, err, r.subtrees[0].end)
 	}
-	start, end, err = r.SubtreeForIndex(r.subtrees[0].end - 1)
+	start, end, _, err = r.SubtreeForIndex(r.subtrees[0].end - 1)
 	if err != nil || start != 0 || end != r.subtrees[0].end {
 		t.Errorf("SubtreeForIndex(%d) = [%d, %d), err=%v; want [0, %d), err=nil", r.subtrees[0].end-1, start, end, err, r.subtrees[0].end)
 	}
 
 	// Latest subtree is valid
 	latest := r.subtrees[len(r.subtrees)-1]
-	start, end, err = r.SubtreeForIndex(latest.start)
+	start, end, _, err = r.SubtreeForIndex(latest.start)
 	if err != nil || start != latest.start || end != latest.end {
 		t.Errorf("SubtreeForIndex(%d) = [%d, %d), err=%v; want [%d, %d), err=nil", latest.start, start, end, err, latest.start, latest.end)
 	}
 
 	// Future index beyond latest size returns error
-	if _, _, err := r.SubtreeForIndex(latest.end); err == nil {
+	if _, _, _, err := r.SubtreeForIndex(latest.end); err == nil {
 		t.Errorf("SubtreeForIndex(%d) expected error, got nil", latest.end)
 	}
+}
+
+func TestReader_SubtreeSignatures(t *testing.T) {
+	ctx := t.Context()
+	dummySigs := []mtcproof.SubtreeSignature{
+		{CosignerID: []byte{1, 2, 3}, Signature: []byte("sig1")},
+	}
+
+	t.Run("lazy signature retrieval and caching on subsequent calls", func(t *testing.T) {
+		var sigCalls atomic.Int32
+		getSubtreeSigs := func(_ context.Context, start, end uint64, rawCp []byte) ([]mtcproof.SubtreeSignature, error) {
+			sigCalls.Add(1)
+			return dummySigs, nil
+		}
+
+		currentCP := mockCheckpoint("test.log", 100)
+		r, err := NewReader(ctx, func(_ context.Context) ([]byte, error) {
+			return currentCP, nil
+		}, getSubtreeSigs)
+		if err != nil {
+			t.Fatalf("NewReader() error: %v", err)
+		}
+
+		if got := sigCalls.Load(); got != 0 {
+			t.Fatalf("sigCalls before demand = %d, want 0", got)
+		}
+
+		start, end, getSigs, err := r.SubtreeForIndex(50)
+		if err != nil {
+			t.Fatalf("SubtreeForIndex(50) error = %v", err)
+		}
+		if start != 0 || end != 64 {
+			t.Errorf("SubtreeForIndex(50) = [%d, %d), want [0, 64)", start, end)
+		}
+
+		// First demand
+		sigs, err := getSigs(ctx)
+		if err != nil {
+			t.Fatalf("getSigs() unexpected error: %v", err)
+		}
+		if len(sigs) != len(dummySigs) {
+			t.Fatalf("getSigs() len = %d, want %d", len(sigs), len(dummySigs))
+		}
+		if got := sigCalls.Load(); got != 1 {
+			t.Fatalf("sigCalls after first demand = %d, want 1", got)
+		}
+
+		// Second demand (cached)
+		sigs2, err := getSigs(ctx)
+		if err != nil {
+			t.Fatalf("getSigs() second call unexpected error: %v", err)
+		}
+		if len(sigs2) != len(dummySigs) {
+			t.Fatalf("getSigs() second call len = %d, want %d", len(sigs2), len(dummySigs))
+		}
+		if got := sigCalls.Load(); got != 1 {
+			t.Fatalf("sigCalls after second demand = %d, want 1 (cached)", got)
+		}
+	})
+
+	t.Run("errors are not cached and can be retried", func(t *testing.T) {
+		var sigCalls atomic.Int32
+		failFirst := true
+		getSubtreeSigs := func(_ context.Context, start, end uint64, rawCp []byte) ([]mtcproof.SubtreeSignature, error) {
+			sigCalls.Add(1)
+			if failFirst {
+				failFirst = false
+				return nil, errors.New("transient failure")
+			}
+			return dummySigs, nil
+		}
+
+		currentCP := mockCheckpoint("test.log", 100)
+		r, err := NewReader(ctx, func(_ context.Context) ([]byte, error) {
+			return currentCP, nil
+		}, getSubtreeSigs)
+		if err != nil {
+			t.Fatalf("NewReader() error: %v", err)
+		}
+
+		_, _, getSigs, err := r.SubtreeForIndex(50)
+		if err != nil {
+			t.Fatalf("SubtreeForIndex(50) error = %v", err)
+		}
+
+		// First attempt fails
+		if _, err := getSigs(ctx); err == nil {
+			t.Fatal("first getSigs() expected error, got nil")
+		}
+		if got := sigCalls.Load(); got != 1 {
+			t.Fatalf("sigCalls after failed attempt = %d, want 1", got)
+		}
+
+		// Second attempt succeeds and caches
+		sigs, err := getSigs(ctx)
+		if err != nil {
+			t.Fatalf("second getSigs() unexpected error: %v", err)
+		}
+		if len(sigs) != len(dummySigs) {
+			t.Fatalf("second getSigs() len = %d, want %d", len(sigs), len(dummySigs))
+		}
+		if got := sigCalls.Load(); got != 2 {
+			t.Fatalf("sigCalls after retry = %d, want 2", got)
+		}
+
+		// Third attempt uses cached result
+		sigs3, err := getSigs(ctx)
+		if err != nil {
+			t.Fatalf("third getSigs() unexpected error: %v", err)
+		}
+		if len(sigs3) != len(dummySigs) {
+			t.Fatalf("third getSigs() len = %d, want %d", len(sigs3), len(dummySigs))
+		}
+		if got := sigCalls.Load(); got != 2 {
+			t.Fatalf("sigCalls after third attempt = %d, want 2 (cached)", got)
+		}
+	})
 }

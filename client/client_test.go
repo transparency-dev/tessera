@@ -351,6 +351,92 @@ func TestNodeFetcherAddressing(t *testing.T) {
 	}
 }
 
+func TestProofBuilder_SubtreeRoot(t *testing.T) {
+	ctx := t.Context()
+	cp := testCheckpoints[len(testCheckpoints)-1]
+	pb, err := NewProofBuilder(ctx, cp.Size, testLogTileFetcher)
+	if err != nil {
+		t.Fatalf("NewProofBuilder: %v", err)
+	}
+
+	tileRaw, err := testLogTileFetcher(ctx, 0, 0, 15)
+	if err != nil {
+		t.Fatalf("testLogTileFetcher: %v", err)
+	}
+	var tile api.HashTile
+	if err := tile.UnmarshalText(tileRaw); err != nil {
+		t.Fatalf("UnmarshalText: %v", err)
+	}
+	rf := compact.RangeFactory{Hash: hasher.HashChildren}
+	r := rf.NewEmptyRange(0)
+	for _, l := range tile.Nodes[8:12] {
+		if err := r.Append(l, nil); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	want8to12, err := r.GetRootHash(nil)
+	if err != nil {
+		t.Fatalf("GetRootHash: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		start   uint64
+		end     uint64
+		want    []byte
+		wantErr bool
+	}{
+		{
+			name:    "valid range",
+			start:   0,
+			end:     8,
+			want:    testCheckpoints[8].Hash,
+			wantErr: false,
+		},
+		{
+			name:    "valid range with non-zero start",
+			start:   8,
+			end:     12,
+			want:    want8to12,
+			wantErr: false,
+		},
+		{
+			name:    "full tree range",
+			start:   0,
+			end:     cp.Size,
+			want:    cp.Hash,
+			wantErr: false,
+		},
+		{
+			name:    "invalid range",
+			start:   1,
+			end:     3,
+			wantErr: true,
+		},
+		{
+			name:    "end > treeSize",
+			start:   0,
+			end:     cp.Size + 1,
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := pb.SubtreeRoot(ctx, tc.start, tc.end)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("SubtreeRoot(%d, %d) error = %v, wantErr %v", tc.start, tc.end, err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			if !bytes.Equal(got, tc.want) {
+				t.Errorf("SubtreeRoot(%d, %d) = %x, want %x", tc.start, tc.end, got, tc.want)
+			}
+		})
+	}
+}
+
 func BenchmarkProofBuilder(b *testing.B) {
 	ctx := context.Background()
 	const treeSize = 1_000_000
