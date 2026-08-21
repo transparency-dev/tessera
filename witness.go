@@ -190,9 +190,15 @@ func isBadName(n string) bool {
 // NewWitness returns a Witness given a verifier key and the root URL for where this
 // witness can be reached.
 func NewWitness(vkey string, witnessRoot *url.URL) (Witness, error) {
-	v, err := f_note.NewVerifierForCosignatureV1(vkey)
-	if err != nil {
-		return Witness{}, err
+	var v note.Verifier
+	if sv, err := f_note.NewMLDSAVerifier(vkey); err == nil {
+		v = sv
+	} else {
+		var err error
+		v, err = f_note.NewVerifierForCosignatureV1(vkey)
+		if err != nil {
+			return Witness{}, err
+		}
 	}
 
 	return Witness{
