@@ -309,15 +309,13 @@ func TestNewAntispamExistingSchema(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 
-	// The spannertest emulator does not honour IF NOT EXISTS on CREATE TABLE statements, so the
-	// second NewAntispam below would fail if it attempted to apply any DDL - check that this is
-	// still the case, so that this test can't pass vacuously if the emulator changes.
+	// spannertest rejects CREATE TABLE IF NOT EXISTS on an existing table, so a re-open that ran DDL
+	// would fail below; guard against the emulator changing and this passing vacuously.
 	if err := createAndPrepareTables(ctx, testSpannerDB, db, []string{"CREATE TABLE IF NOT EXISTS Tenant1_IDSeq (h BYTES(32) NOT NULL, idx INT64 NOT NULL) PRIMARY KEY (h)"}, nil); err == nil {
 		t.Skip("spannertest now honours CREATE TABLE IF NOT EXISTS, so this test can no longer tell whether NewAntispam applied DDL")
 	}
 
-	// Opening antispam storage which has already been initialised, e.g. when restarting a log, should
-	// succeed without applying any DDL (see above), and must not disturb existing state.
+	// Re-opening must apply no DDL (see above) and leave existing state alone.
 	as, err := NewAntispam(ctx, testSpannerDB, opts)
 	if err != nil {
 		t.Fatalf("NewAntispam on existing schema: %v", err)
@@ -331,9 +329,9 @@ func TestNewAntispamExistingSchema(t *testing.T) {
 func TestSchemaInitialised(t *testing.T) {
 	for _, test := range []struct {
 		name string
-		// prep, if set, is used to modify a database in which NewAntispam has already created the (unprefixed) schema.
+		// prep modifies a DB in which NewAntispam has created the unprefixed schema.
 		prep func(ctx context.Context, t *testing.T, db *spanner.Client)
-		// table identifies the tables to check, defaults to unprefixed.
+		// table defaults to unprefixed.
 		table func(string) string
 		want  bool
 	}{
@@ -385,17 +383,17 @@ func TestSchemaInitialised(t *testing.T) {
 	}
 }
 
-// testSpannerDB is the resource name of the database served by the spannertest emulator in these tests.
+// testSpannerDB is the database served by the spannertest emulator.
 const testSpannerDB = "projects/p/instances/i/databases/d"
 
-// prefixTable returns a function which returns the provided table name with prefix prepended.
+// prefixTable returns a func which prepends prefix to a table name.
 func prefixTable(prefix string) func(string) string {
 	return func(table string) string {
 		return prefix + table
 	}
 }
 
-// applyDDL applies the provided DDL statements directly to testSpannerDB.
+// applyDDL applies DDL directly to testSpannerDB.
 func applyDDL(t *testing.T, statements ...string) {
 	t.Helper()
 	adminClient, err := database.NewDatabaseAdminClient(t.Context())

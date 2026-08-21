@@ -820,19 +820,12 @@ func newSpannerCoordinator(ctx context.Context, dbPool *spanner.Client, table fu
 //   - GCCoord
 //     This table coordinates garbage collection of unneeded partial tiles
 //     and entry bundles.
-//
-// Spanner executes DDL statements as schema-update operations, which are slow (and
-// serialised per database) even when IF NOT EXISTS means they end up changing nothing,
-// so the DDL and seeding below are skipped entirely if a cheap read via dbPool shows
-// that the schema they would create is already fully present - see schemaInitialised.
-// This keeps re-opening an existing log fast, which matters particularly when many
-// logs share one database via SpannerTablePrefix.
 func initDB(ctx context.Context, spannerDB string, dbPool *spanner.Client, table func(string) string) error {
+	// Skip the (slow, even when no-op) DDL if the schema is already present. Keep schemaInitialised in sync with this.
 	if schemaInitialised(ctx, dbPool, table) {
 		return nil
 	}
-	// Note that schemaInitialised needs to be kept in sync with any changes to the statements or mutations below.
-	return createAndPrepareTables(ctx, spannerDB, dbPool,
+	return createAndPrepareTables(ctx, spannerDB,
 		[]string{
 			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INT64 NOT NULL, compatibilityVersion INT64 NOT NULL) PRIMARY KEY (id)", table("Tessera")),
 			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INT64 NOT NULL, next INT64 NOT NULL,) PRIMARY KEY (id)", table("SeqCoord")),
@@ -853,15 +846,8 @@ func initDB(ctx context.Context, spannerDB string, dbPool *spanner.Client, table
 		})
 }
 
-// schemaInitialised returns true if the schema which initDB creates is already fully present in
-// the database: every table exists, PubCoord has its size column, every seed row is present,
-// and the stored compatibilityVersion matches this version of the library (so that any schema
-// migration which a future initDB performs for older versions will still be run).
-//
-// If anything is missing, different, or simply cannot be read, it returns false so that initDB
-// goes on to create/migrate the schema exactly as it would have done anyway. I.e. this check
-// can only ever cause initDB to skip work which would have been a no-op, so it must be kept in
-// sync with the DDL and mutations in initDB.
+// schemaInitialised reports whether everything initDB creates is present (tables, PubCoord.size,
+// seed rows) at this SchemaCompatibilityVersion. Any error reads as false, so initDB runs as before.
 func schemaInitialised(ctx context.Context, dbPool *spanner.Client, table func(string) string) bool {
 	row, err := dbPool.Single().ReadRow(ctx, table("Tessera"), spanner.Key{0}, []string{"compatibilityVersion"})
 	if err != nil {
@@ -871,8 +857,7 @@ func schemaInitialised(ctx context.Context, dbPool *spanner.Client, table func(s
 	if err := row.Columns(&compat); err != nil || compat != SchemaCompatibilityVersion {
 		return false
 	}
-	// A successful read of each seed row shows that the table, the named columns, and the row
-	// itself are all present.
+	// Reading each seed row proves the table, columns, and row exist.
 	for _, seed := range []struct {
 		table string
 		cols  []string
@@ -886,7 +871,7 @@ func schemaInitialised(ctx context.Context, dbPool *spanner.Client, table func(s
 			return false
 		}
 	}
-	// Seq has no seed row, so just check that the table itself exists.
+	// Seq has no seed row; just check the table exists.
 	if err := dbPool.Single().ReadWithOptions(ctx, table("Seq"), spanner.AllKeys(), []string{"id", "seq"}, &spanner.ReadOptions{Limit: 1}).Do(func(*spanner.Row) error { return nil }); err != nil {
 		return false
 	}
@@ -1708,8 +1693,7 @@ func (m *MigrationStorage) buildTree(ctx context.Context, sourceSize uint64) (ui
 // This is intended to be used to create and initialise Spanner instances on first use.
 // DDL should likely be of the form "CREATE TABLE IF NOT EXISTS".
 // Mutation groups should likey be one or more spanner.Insert operations - AlreadyExists errors will be silently ignored.
-// dbPool is used to apply the mutations, and is not closed.
-func createAndPrepareTables(ctx context.Context, spannerDB string, dbPool *spanner.Client, ddl []string, alter []string, mutations [][]*spanner.Mutation) error {
+func createAndPrepareTables(ctx context.Context, spannerDB string, ddl []string, alter []string, mutations [][]*spanner.Mutation) error {
 	adminClient, err := database.NewDatabaseAdminClient(ctx)
 	if err != nil {
 		return err
@@ -1747,6 +1731,12 @@ func createAndPrepareTables(ctx context.Context, spannerDB string, dbPool *spann
 			}
 		}
 	}
+
+	dbPool, err := spanner.NewClient(ctx, spannerDB)
+	if err != nil {
+		return fmt.Errorf("failed to connect to Spanner: %v", err)
+	}
+	defer dbPool.Close()
 
 	// Set default values for a newly initialised schema using passed in mutation groups.
 	// Note that this will only succeed if no row exists, so there's no danger of "resetting" an existing log.

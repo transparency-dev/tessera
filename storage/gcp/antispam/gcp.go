@@ -130,11 +130,23 @@ func NewAntispam(ctx context.Context, spannerDB string, opts AntispamOpts) (*Ant
 		}
 	}
 
-	if err := initDB(ctx, spannerDB, db, table); err != nil {
-		if opts.SpannerClient == nil {
-			db.Close()
+	// Skip the (slow, even when no-op) DDL if the schema is already present. Keep schemaInitialised in sync with this.
+	if !schemaInitialised(ctx, db, table) {
+		if err := createAndPrepareTables(
+			ctx, spannerDB, db,
+			[]string{
+				fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INT64 NOT NULL, nextIdx INT64 NOT NULL) PRIMARY KEY (id)", table("FollowCoord")),
+				fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (h BYTES(32) NOT NULL, idx INT64 NOT NULL) PRIMARY KEY (h)", table("IDSeq")),
+			},
+			[][]*spanner.Mutation{
+				{spanner.Insert(table("FollowCoord"), []string{"id", "nextIdx"}, []any{0, 0})},
+			},
+		); err != nil {
+			if opts.SpannerClient == nil {
+				db.Close()
+			}
+			return nil, fmt.Errorf("failed to create tables: %v", err)
 		}
-		return nil, fmt.Errorf("failed to create tables: %v", err)
 	}
 
 	r := &AntispamStorage{
@@ -481,43 +493,13 @@ func (f *follower) EntriesProcessed(ctx context.Context) (uint64, error) {
 	return uint64(nextIdx), nil
 }
 
-// initDB ensures that the antispam DB is initialised correctly.
-//
-// Spanner executes DDL statements as schema-update operations, which are slow (and
-// serialised per database) even when IF NOT EXISTS means they end up changing nothing,
-// so the DDL and seeding below are skipped entirely if a cheap read via dbPool shows
-// that the schema they would create is already fully present - see schemaInitialised.
-func initDB(ctx context.Context, spannerDB string, dbPool *spanner.Client, table func(string) string) error {
-	if schemaInitialised(ctx, dbPool, table) {
-		return nil
-	}
-	// Note that schemaInitialised needs to be kept in sync with any changes to the statements or mutations below.
-	return createAndPrepareTables(
-		ctx, spannerDB, dbPool,
-		[]string{
-			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INT64 NOT NULL, nextIdx INT64 NOT NULL) PRIMARY KEY (id)", table("FollowCoord")),
-			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (h BYTES(32) NOT NULL, idx INT64 NOT NULL) PRIMARY KEY (h)", table("IDSeq")),
-		},
-		[][]*spanner.Mutation{
-			{spanner.Insert(table("FollowCoord"), []string{"id", "nextIdx"}, []any{0, 0})},
-		},
-	)
-}
-
-// schemaInitialised returns true if the schema which initDB creates is already fully present in
-// the database: both tables exist and the FollowCoord seed row is present.
-//
-// If anything is missing or simply cannot be read, it returns false so that initDB goes on to
-// create the schema exactly as it would have done anyway. I.e. this check can only ever cause
-// initDB to skip work which would have been a no-op, so it must be kept in sync with the DDL
-// and mutations in initDB.
+// schemaInitialised reports whether the tables and seed row NewAntispam creates are all present.
+// Any error reads as false, so NewAntispam falls back to creating them.
 func schemaInitialised(ctx context.Context, dbPool *spanner.Client, table func(string) string) bool {
-	// A successful read of the seed row shows that the table, the named columns, and the row
-	// itself are all present.
 	if _, err := dbPool.Single().ReadRow(ctx, table("FollowCoord"), spanner.Key{0}, []string{"id", "nextIdx"}); err != nil {
 		return false
 	}
-	// IDSeq has no seed row, so just check that the table itself exists.
+	// IDSeq has no seed row; just check the table exists.
 	if err := dbPool.Single().ReadWithOptions(ctx, table("IDSeq"), spanner.AllKeys(), []string{"h", "idx"}, &spanner.ReadOptions{Limit: 1}).Do(func(*spanner.Row) error { return nil }); err != nil {
 		return false
 	}
@@ -529,7 +511,8 @@ func schemaInitialised(ctx context.Context, dbPool *spanner.Client, table func(s
 // This is intended to be used to create and initialise Spanner instances on first use.
 // DDL should likely be of the form "CREATE TABLE IF NOT EXISTS".
 // Mutation groups should likey be one or more spanner.Insert operations - AlreadyExists errors will be silently ignored.
-// dbPool is used to apply the mutations, and is not closed.
+// If dbPool is non-nil it is used to apply the mutations (and is not closed); otherwise a
+// temporary client is created for the duration of this call.
 func createAndPrepareTables(ctx context.Context, spannerDB string, dbPool *spanner.Client, ddl []string, mutations [][]*spanner.Mutation) error {
 	adminClient, err := database.NewDatabaseAdminClient(ctx)
 	if err != nil {
@@ -550,6 +533,14 @@ func createAndPrepareTables(ctx context.Context, spannerDB string, dbPool *spann
 	}
 	if err := op.Wait(ctx); err != nil {
 		return err
+	}
+
+	if dbPool == nil {
+		dbPool, err = spanner.NewClient(ctx, spannerDB)
+		if err != nil {
+			return fmt.Errorf("failed to connect to Spanner: %v", err)
+		}
+		defer dbPool.Close()
 	}
 
 	// Set default values for a newly initialised schema using passed in mutation groups.

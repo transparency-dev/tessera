@@ -48,7 +48,7 @@ func init() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 }
 
-// testSpannerDB is the resource name of the database served by the spannertest emulator in these tests.
+// testSpannerDB is the database served by the spannertest emulator.
 const testSpannerDB = "projects/p/instances/i/databases/d"
 
 func newSpannerDB(t *testing.T) (*spanner.Client, func()) {
@@ -63,8 +63,7 @@ func prefixTable(prefix string) func(string) string {
 	}
 }
 
-// newEmptySpannerDB starts a new spannertest emulator with no schema, points SPANNER_EMULATOR_HOST
-// at it, and returns a client connected to testSpannerDB along with a func to shut the emulator down.
+// newEmptySpannerDB starts a schemaless spannertest emulator and returns a client and a shutdown func.
 func newEmptySpannerDB(t *testing.T) (*spanner.Client, func()) {
 	t.Helper()
 	srv, err := spannertest.NewServer("localhost:0")
@@ -91,7 +90,7 @@ func newSpannerDBWithPrefix(t *testing.T, tablePrefix string) (*spanner.Client, 
 	return c, close
 }
 
-// applyDDL applies the provided DDL statements directly to testSpannerDB.
+// applyDDL applies DDL directly to testSpannerDB.
 func applyDDL(t *testing.T, statements ...string) {
 	t.Helper()
 	adminClient, err := database.NewDatabaseAdminClient(t.Context())
@@ -362,9 +361,9 @@ func TestCheckDataCompatibility(t *testing.T) {
 func TestSchemaInitialised(t *testing.T) {
 	for _, test := range []struct {
 		name string
-		// prep, if set, is used to modify a database in which initDB has already created the (unprefixed) schema.
+		// prep modifies a DB in which initDB has created the unprefixed schema.
 		prep func(ctx context.Context, t *testing.T, db *spanner.Client)
-		// table identifies the tables to check, defaults to unprefixed.
+		// table defaults to unprefixed.
 		table func(string) string
 		want  bool
 	}{
@@ -440,7 +439,6 @@ func TestSchemaInitialised(t *testing.T) {
 
 func TestInitDBExistingSchema(t *testing.T) {
 	ctx := t.Context()
-	// newEmptySpannerDB rather than newSpannerDB so that the initial initDB below is explicit.
 	db, close := newEmptySpannerDB(t)
 	defer close()
 
@@ -454,10 +452,9 @@ func TestInitDBExistingSchema(t *testing.T) {
 		t.Fatal("schemaInitialised: got false after initDB, want true")
 	}
 
-	// The spannertest emulator does not honour IF NOT EXISTS on CREATE TABLE statements, so the
-	// further calls to initDB below would fail if they attempted to apply any DDL - check that this
-	// is still the case, so that this test can't pass vacuously if the emulator changes.
-	if err := createAndPrepareTables(ctx, testSpannerDB, db, []string{"CREATE TABLE IF NOT EXISTS Tessera (id INT64 NOT NULL, compatibilityVersion INT64 NOT NULL) PRIMARY KEY (id)"}, nil, nil); err == nil {
+	// spannertest rejects CREATE TABLE IF NOT EXISTS on an existing table, so a re-open that ran DDL
+	// would fail below; guard against the emulator changing and this passing vacuously.
+	if err := createAndPrepareTables(ctx, testSpannerDB, []string{"CREATE TABLE IF NOT EXISTS Tessera (id INT64 NOT NULL, compatibilityVersion INT64 NOT NULL) PRIMARY KEY (id)"}, nil, nil); err == nil {
 		t.Skip("spannertest now honours CREATE TABLE IF NOT EXISTS, so this test can no longer tell whether initDB applied DDL")
 	}
 
@@ -473,8 +470,7 @@ func TestInitDBExistingSchema(t *testing.T) {
 		t.Fatalf("assignEntries: %v", err)
 	}
 
-	// Re-initialising an existing schema, e.g. when restarting a log, should succeed without
-	// applying any DDL (see above), and must not disturb existing state.
+	// Re-running initDB must apply no DDL (see above) and leave existing state alone.
 	for i := range 2 {
 		if err := initDB(ctx, testSpannerDB, db, prefixTable("")); err != nil {
 			t.Fatalf("initDB on existing schema (attempt %d): %v", i, err)
