@@ -336,11 +336,15 @@ func TestPublishTree(t *testing.T) {
 				s:           s,
 				entriesPath: opts.EntriesPath(),
 			}
-			pubAt := time.Now() // Good approximation of the checkpoint's future modTime.
 			appender, lr, err := s.newAppender(ctx, logStorage, opts)
 			if err != nil {
 				t.Fatalf("Appender: %v", err)
 			}
+			cpInfo, err := s.stat(layout.CheckpointPath)
+			if err != nil {
+				t.Fatalf("stat: %v", err)
+			}
+			pubAt := cpInfo.ModTime()
 
 			// Add time as an extension line on the checkpoint so we can easily tell when it's been updated.
 			appender.newCP = func(_ context.Context, size uint64, hash []byte) ([]byte, error) {
@@ -384,7 +388,11 @@ func TestPublishTree(t *testing.T) {
 				}
 				if !bytes.Equal(cpOld, cpNew) {
 					updatesSeen++
-					pubAt = time.Now()
+					cpInfo, err := s.stat(layout.CheckpointPath)
+					if err != nil {
+						t.Fatalf("stat: %v", err)
+					}
+					pubAt = cpInfo.ModTime()
 					cpOld = cpNew
 				}
 			}
