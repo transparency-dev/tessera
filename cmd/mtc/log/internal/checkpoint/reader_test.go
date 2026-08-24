@@ -37,10 +37,6 @@ func dummyGetSubtreeSigs(_ context.Context, _, _ uint64, _ []byte) ([]mtcproof.S
 func TestNewReader(t *testing.T) {
 	ctx := t.Context()
 
-	var attempts atomic.Int32
-	canceledCtx, cancel := context.WithCancel(ctx)
-	cancel()
-
 	tests := []struct {
 		name           string
 		ctx            context.Context
@@ -67,18 +63,25 @@ func TestNewReader(t *testing.T) {
 		},
 		{
 			name: "waits for checkpoint when initially not found",
-			readCP: func(_ context.Context) ([]byte, error) {
-				if attempts.Add(1) < 3 {
-					return nil, os.ErrNotExist
+			readCP: func() func(context.Context) ([]byte, error) {
+				var attempts atomic.Int32
+				return func(_ context.Context) ([]byte, error) {
+					if attempts.Add(1) < 3 {
+						return nil, os.ErrNotExist
+					}
+					return mockCheckpoint("test.log", 150), nil
 				}
-				return mockCheckpoint("test.log", 150), nil
-			},
+			}(),
 			getSubtreeSigs: dummyGetSubtreeSigs,
 			wantSize:       150,
 		},
 		{
 			name: "context canceled while waiting for checkpoint",
-			ctx:  canceledCtx,
+			ctx: func() context.Context {
+				c, cancel := context.WithCancel(ctx)
+				cancel()
+				return c
+			}(),
 			readCP: func(_ context.Context) ([]byte, error) {
 				return nil, os.ErrNotExist
 			},
