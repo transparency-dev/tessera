@@ -571,7 +571,7 @@ func (l *MTCLog) AddTBS(ctx context.Context, tbs TBSCertificateLogEntry) (*AddTB
 		// "Standalone certificates MUST have at least 2 cosignatures. One of these
 		// MUST be from the MTC CA Operator, and one MUST be from a Mirroring
 		// Cosigner recognized by Chrome and not operated by the MTC CA Operator."
-		slog.WarnContext(ctx, "collected less than 2 subtree signatures", slog.Int("num_sigs", numSigs))
+		slog.WarnContext(ctx, "Collected less than 2 subtree signatures", slog.Int("num_sigs", numSigs))
 	}
 
 	extBytes, err := entry.ExtractExtensions(eb)

@@ -1028,11 +1028,6 @@ func TestMTCLog_AddTBS(t *testing.T) {
 		{name: "entry 4 in single-entry subtree [4, 5)", entryIdx: 4, wantStart: 4, wantEnd: 5, wantProofLen: 0},
 	}
 
-	wantCosignerID, err := mtcproof.ParseCosignerID(mtcLog.subtreeSigner.Name())
-	if err != nil {
-		t.Fatalf("ParseCosignerID: %v", err)
-	}
-
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rsp := responses[tc.entryIdx]
@@ -1080,8 +1075,8 @@ func TestMTCLog_AddTBS(t *testing.T) {
 			if !mtcLog.subtreeSigner.Verifier().VerifySubtree(0, mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, proofData.Signatures[0].Signature) {
 				t.Errorf("VerifySubtree failed for log signature on entry%d", tc.entryIdx)
 			}
-			if !bytes.Equal(proofData.Signatures[0].CosignerID, wantCosignerID) {
-				t.Errorf("CosignerID = %x, want %x", proofData.Signatures[0].CosignerID, wantCosignerID)
+			if !bytes.Equal(proofData.Signatures[0].CosignerID, mtcLog.logCosignerID) {
+				t.Errorf("CosignerID = %x, want %x", proofData.Signatures[0].CosignerID, mtcLog.logCosignerID)
 			}
 			if !witVerifier.VerifySubtree(0, mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, proofData.Signatures[1].Signature) {
 				t.Errorf("VerifySubtree failed for witness signature on entry%d", tc.entryIdx)

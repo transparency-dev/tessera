@@ -38,6 +38,7 @@ import (
 var ErrPolicyNotSatisfied = errors.New("witness policy was not satisfied")
 
 type witnessKey struct {
+	// string representation of the cosignerID
 	name    string
 	keyHash uint32
 }
@@ -109,6 +110,7 @@ func New(httpClient *http.Client, policy tessera.WitnessGroup) (*Gateway, error)
 // checkpoint have been collected.
 // TODO: implement subtree cosignature policy matching directly.
 func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end uint64, subRoot []byte, consProof [][]byte, rawCp []byte) ([]mtcproof.SubtreeSignature, error) {
+	// TODO: consider disallowing this if empty policies are not allowed.
 	if len(gw.witnesses) == 0 {
 		if gw.policy.Satisfied(rawCp) {
 			return nil, nil
@@ -124,7 +126,7 @@ func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end 
 	}
 	n := unverified.Note
 
-	// reconstructCp is used for policy checking.
+	// reconstructedCp is used for policy checking.
 	reconstructedCp := fmt.Appendf(nil, "%s\n", n.Text)
 
 	cpSigs := make(map[witnessKey]string)
