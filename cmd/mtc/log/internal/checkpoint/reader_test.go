@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"testing"
 
@@ -34,10 +35,15 @@ func dummyGetSubtreeSigs(_ context.Context, _, _ uint64, _ []byte) ([]mtcproof.S
 }
 
 func TestNewReader(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
+
+	var attempts atomic.Int32
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
 
 	tests := []struct {
 		name           string
+		ctx            context.Context
 		readCP         func(context.Context) ([]byte, error)
 		getSubtreeSigs GetSubtreeSigsFunc
 		wantSize       uint64
@@ -58,6 +64,26 @@ func TestNewReader(t *testing.T) {
 			},
 			getSubtreeSigs: dummyGetSubtreeSigs,
 			wantSize:       0,
+		},
+		{
+			name: "waits for checkpoint when initially not found",
+			readCP: func(_ context.Context) ([]byte, error) {
+				if attempts.Add(1) < 3 {
+					return nil, os.ErrNotExist
+				}
+				return mockCheckpoint("test.log", 150), nil
+			},
+			getSubtreeSigs: dummyGetSubtreeSigs,
+			wantSize:       150,
+		},
+		{
+			name: "context canceled while waiting for checkpoint",
+			ctx:  canceledCtx,
+			readCP: func(_ context.Context) ([]byte, error) {
+				return nil, os.ErrNotExist
+			},
+			getSubtreeSigs: dummyGetSubtreeSigs,
+			wantErr:        true,
 		},
 		{
 			name:           "nil readCheckpoint function",
@@ -93,7 +119,11 @@ func TestNewReader(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			r, err := NewReader(ctx, tc.readCP, tc.getSubtreeSigs)
+			testCtx := ctx
+			if tc.ctx != nil {
+				testCtx = tc.ctx
+			}
+			r, err := NewReader(testCtx, tc.readCP, tc.getSubtreeSigs)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("NewReader() error = %v, wantErr %v", err, tc.wantErr)
 			}
