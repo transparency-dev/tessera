@@ -43,7 +43,6 @@ var (
 	// Tessera settings
 	storageDir                = flag.String("storage_dir", "", "Path to root of log storage.")
 	checkpointInterval        = flag.Duration("checkpoint_interval", 1500*time.Millisecond, "Interval between publishing checkpoints when the log has grown")
-	landmarkInterval          = flag.Duration("landmark_interval", 0, "Interval between publishing landmarks. If 0, defaults to CQRP recommended interval for max_cert_lifetime.")
 	batchMaxSize              = flag.Uint("batch_max_size", tessera.DefaultBatchMaxSize, "Maximum number of entries to process in a single sequencing batch.")
 	batchMaxAge               = flag.Duration("batch_max_age", tessera.DefaultBatchMaxAge, "Maximum age of entries in a single sequencing batch.")
 	awaiterPollInterval       = flag.Duration("awaiter_poll_interval", 100*time.Millisecond, "Interval between checkpoint polls by the publication awaiter.")
@@ -56,10 +55,11 @@ var (
 	clientHTTPMaxIdlePerHost = flag.Int("client_http_max_idle_per_host", 10, "Maximum number of idle HTTP connections per host for outgoing requests.")
 
 	// CA settings
-	caID            = flag.String("ca_id", "32473.106", "The CA ID as per draft-ietf-plants-merkle-tree-certs section 5.1 (e.g. 32473.106)")
-	logNumber       = flag.Uint64("log_number", 1, "The issuance log number (strictly positive)")
-	privKeyFile     = flag.String("private_key", "", "Location of private key file. If unset, uses the contents of the LOG_PRIVATE_KEY environment variable.")
-	maxCertLifetime = flag.Duration("max_cert_lifetime", log.DefaultMaxCertLifetime, "Maximum validity duration allowed for submitted certificate entries.")
+	landmarkInterval = flag.Duration("landmark_interval", 0, "Interval between publishing landmarks. If 0, defaults to CQRP recommended interval for max_cert_lifetime.")
+	caID             = flag.String("ca_id", "32473.106", "The CA ID as per draft-ietf-plants-merkle-tree-certs Section 5.1 (e.g. 32473.106)")
+	logNumber        = flag.Uint64("log_number", 1, "The issuance log number (strictly positive)")
+	privKeyFile      = flag.String("private_key", "", "Location of private key file. If unset, uses the contents of the LOG_PRIVATE_KEY environment variable.")
+	maxCertLifetime  = flag.Duration("max_cert_lifetime", log.DefaultMaxCertLifetime, "Maximum validity duration allowed for submitted certificate entries.")
 )
 
 func main() {

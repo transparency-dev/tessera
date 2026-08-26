@@ -1,14 +1,65 @@
 # POSIX MTC Log
 
-This directory contains an MTC (`draft-ietf-plants-merkle-tree-certs`) issuance
-log server backed by Tessera's POSIX storage implementation.
+This directory contains an MTC ([`draft-ietf-plants-merkle-tree-certs`](https://ietf-plants-wg.github.io/merkle-tree-certs/draft-ietf-plants-merkle-tree-certs.html))
+issuance log server backed by [Tessera's POSIX storage implementation](/storage/posix/).
+
+This document contains [Documentation](#documentation) and a [Codelab](#codelab).
+
+A matching POSIX Mirror implementation is available at [/cmd/mtc/mirror/posix](/cmd/mtc/mirror/posix).
 
 > [!WARNING]
 > This binary and the internal packages it uses are still under active
 > development, and should be considered experimental and not
 > production-ready. They remain outside the SemVer policy.
 
-## Running
+## Documentation
+
+### Main functionalities
+
+See [mtc/log/README.md](../README.md).
+
+### API
+
+#### HTTP Endpoints
+
+The log server exposes the following HTTP endpoints:
+
+- `POST /add-tbs`: Submits a JSON-encoded [`TBSCertificateLogEntry`](https://ietf-plants-wg.github.io/merkle-tree-certs/draft-ietf-plants-merkle-tree-certs.html#log-entries)
+  to append to the log. Returns HTTP 201 Created with a JSON-encoded
+  [`AddTBSRsp`](https://github.com/search?q=repo%3Atransparency-dev%2Ftessera+symbol%3AAddTBSRsp+path%3Amtc.go&type=code)
+  containing the assigned entry `index` and a TLS-encoded [`MTCProof`](https://ietf-plants-wg.github.io/merkle-tree-certs/draft-ietf-plants-merkle-tree-certs.html#name-certificate-format),
+  with subtree signatures.
+- `GET /proof-to-landmark?index=<index>`: Fetches a landmark-relative
+  [`MTCProof`](https://ietf-plants-wg.github.io/merkle-tree-certs/draft-ietf-plants-merkle-tree-certs.html#name-certificate-format)
+  for the given entry index. Returns HTTP 200 OK with a [`ProofToLandmarkRsp`](https://github.com/search?q=repo%3Atransparency-dev%2Ftessera+symbol%3AProofToLandmarkRsp+path%3Amtc.go&type=code),
+  containing a TLS-encoded [`MTCProof`](https://ietf-plants-wg.github.io/merkle-tree-certs/draft-ietf-plants-merkle-tree-certs.html#name-certificate-format),
+  or HTTP 202 Accepted with a `Retry-After` header if an enclosing landmark has
+  not been published yet.
+
+#### Log data and Landmarks
+
+Log data (checkpoints, tiles, leaves) and the `/landmarks` resource are
+accessible through the underlying POSIX storage filesystem.
+
+### Configuration
+
+Inspect the [`main.go`](./main.go) file for a full list of flags.
+
+Notable MTC-related flags are:
+
+- `landmark_interval`: Interval between publishing landmarks. If 0, defaults
+   to CQRP recommended interval for max_cert_lifetime.
+- `ca_id`: The CA ID as per [draft-ietf-plants-merkle-tree-certs Section 5.1](https://ietf-plants-wg.github.io/merkle-tree-certs/draft-ietf-plants-merkle-tree-certs.html#name-certification-authority-ide)
+  (e.g. 32473.106)
+- `log_number`: The issuance log number (strictly positive).
+- `private_key`: Location of private key file. If unset, uses the contents of
+  the `LOG_PRIVATE_KEY` environment variable.
+- `max_cert_lifetime`: Maximum validity duration allowed for submitted
+  certificate entries.
+- `mirror_policy`: File containing the mirror policy in tlog-policy format. If
+  unset, no mirroring will be performed.
+
+## Codelab
 
 These instructions will help you bring up an MTC POSIX log, and send entries to
 it using the [Hammer](../hammer/hammer.go). If you'd like, you can also run a
