@@ -3,7 +3,7 @@
 This directory contains an MTC ([`draft-ietf-plants-merkle-tree-certs`](https://ietf-plants-wg.github.io/merkle-tree-certs/draft-ietf-plants-merkle-tree-certs.html))
 issuance log server backed by [Tessera's POSIX storage implementation](/storage/posix/).
 
-This document contains [Documentation](#documentation), and a [Codelab](#codelab).
+This document contains [Documentation](#documentation) and a [Codelab](#codelab).
 
 A matching POSIX Mirror implementation is available at [/cmd/mtc/mirror/posix](/cmd/mtc/mirror/posix).
 
@@ -16,7 +16,7 @@ A matching POSIX Mirror implementation is available at [/cmd/mtc/mirror/posix](/
 
 ### Main functionalities
 
-See [mtc/log/README.md](../).
+See [mtc/log/README.md](../README.md).
 
 ### API
 
@@ -53,7 +53,7 @@ Notable MTC-related flags are:
   (e.g. 32473.106)
 - `log_number`: The issuance log number (strictly positive).
 - `private_key`: Location of private key file. If unset, uses the contents of
-  the LOG_PRIVATE_KEY environment variable.
+  the `LOG_PRIVATE_KEY` environment variable.
 - `max_cert_lifetime`: Maximum validity duration allowed for submitted
   certificate entries.
 - `mirror_policy`: File containing the mirror policy in tlog-policy format. If

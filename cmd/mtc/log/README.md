@@ -27,10 +27,10 @@ This library:
 
 - **`NewMTCLog(ctx, appender, opts)`**: Initializes an `MTCLog` instance backed
   by a Tessera appender and configured with [`*Options`](./mtc.go).
-- **`NewOptions()`**: Creates an `Options` builder to configure storage
-  backends, landmark intervals, maximum certificate lifetime, signers, and
-  subtree witness groups. Default options can be customized with corresponding
-  `With*` methods defined in [`mtc.go`](./mtc.go), such as
+- **`NewOptions()`**: Creates an `Options` builder to configure the landmarks
+  storage backends, landmark intervals, maximum certificate lifetime, signers,
+  and subtree witness groups. Default options can be customized with
+  corresponding `With*` methods defined in [`mtc.go`](./mtc.go), such as
   `WithMaxCertLifetime`.
 
 ### MTC APIs
