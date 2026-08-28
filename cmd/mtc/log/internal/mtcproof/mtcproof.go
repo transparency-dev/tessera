@@ -38,12 +38,36 @@ const (
 type hashValue [sha256.Size]byte
 
 // SubtreeSignature represents a cosigner's signature on a subtree root
-// as per draft-ietf-plants-merkle-tree-certs section 6.2:
+// as per draft-ietf-plants-merkle-tree-certs section 6.2.
 type SubtreeSignature struct {
 	// CosignerID is the binary representation of the trust anchor ID (1..255 bytes).
 	CosignerID []byte
-	// Signature is the raw signature bytes over the subtree.
+	// Signature is the raw signature bytes over the subtree (with no timestamp).
 	Signature []byte
+}
+
+// SPEC: https://c2sp.org/tlog-cosignature
+//
+//	"struct {
+//	   u64 timestamp;
+//	   select (signature_algorithm) {
+//	       case ed25519: opaque ed25519_signature[64];
+//	       case ml-dsa-44: opaque ml_dsa_44_signature[2420];
+//	   } signature;
+//	 } timestamped_signature;"
+//
+// NewSubtreeSignatureFromCosig creates a SubtreeSignature from a C2SP
+// timestamped_signature by stripping the timestamp prefix.
+func NewSubtreeSignatureFromCosig(cosignerID []byte, cosig []byte) (SubtreeSignature, error) {
+	s := cryptobyte.String(cosig)
+	var timestamp uint64
+	if !s.ReadUint64(&timestamp) {
+		return SubtreeSignature{}, fmt.Errorf("cosignature too short (%d bytes, missing u64 timestamp)", len(cosig))
+	}
+	return SubtreeSignature{
+		CosignerID: cosignerID,
+		Signature:  s,
+	}, nil
 }
 
 // mtcProof represents an MTC inclusion proof as per
@@ -178,18 +202,18 @@ func new(extensions []byte, start, end uint64, inclusionProof [][]byte, signatur
 //
 // opaque HashValue[HASH_SIZE];
 //
-// struct {
-//     TrustAnchorID cosigner_id;
-//     opaque signature<0..2^16-1>;
-// } SubtreeSignature;
+//	struct {
+//	    TrustAnchorID cosigner_id;
+//	    opaque signature<0..2^16-1>;
+//	} SubtreeSignature;
 //
-// struct {
-//     MTCLogEntryExtension extensions<0..2^16-1>;
-//     uint48 start;
-//     uint48 end;
-//     HashValue inclusion_proof<0..2^16-1>;
-//     SubtreeSignature signatures<0..2^16-1>;
-// } MTCProof;
+//	struct {
+//	    MTCLogEntryExtension extensions<0..2^16-1>;
+//	    uint48 start;
+//	    uint48 end;
+//	    HashValue inclusion_proof<0..2^16-1>;
+//	    SubtreeSignature signatures<0..2^16-1>;
+//	} MTCProof;
 func (p *mtcProof) marshal() ([]byte, error) {
 	var b cryptobyte.Builder
 

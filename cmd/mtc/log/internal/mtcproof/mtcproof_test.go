@@ -17,6 +17,7 @@ package mtcproof
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"reflect"
 	"strings"
@@ -429,6 +430,59 @@ func TestParseCosignerID(t *testing.T) {
 			}
 			if !bytes.Equal(got, tc.want) {
 				t.Errorf("ParseCosignerID(%q) = %x, want %x", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNewSubtreeSignatureFromCosig(t *testing.T) {
+	cosignerID := []byte{0x2b, 0x06, 0x01, 0x04, 0x01}
+	rawSig := []byte("raw-signature-bytes")
+
+	tests := []struct {
+		name    string
+		input   []byte
+		want    []byte
+		wantErr bool
+	}{
+		{
+			name:    "valid cosignature with timestamp and signature",
+			input:   append(binary.BigEndian.AppendUint64(nil, 1724867400), rawSig...),
+			want:    rawSig,
+			wantErr: false,
+		},
+		{
+			name:    "valid cosignature with timestamp only",
+			input:   binary.BigEndian.AppendUint64(nil, 1724867400),
+			want:    []byte{},
+			wantErr: false,
+		},
+		{
+			name:    "too short (less than 8 bytes)",
+			input:   []byte{0x01, 0x02, 0x03},
+			wantErr: true,
+		},
+		{
+			name:    "empty",
+			input:   nil,
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := NewSubtreeSignatureFromCosig(cosignerID, tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("NewSubtreeSignatureFromCosig() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			if !bytes.Equal(got.CosignerID, cosignerID) {
+				t.Errorf("CosignerID = %x, want %x", got.CosignerID, cosignerID)
+			}
+			if !bytes.Equal(got.Signature, tc.want) {
+				t.Errorf("Signature = %x, want %x", got.Signature, tc.want)
 			}
 		})
 	}

@@ -27,6 +27,7 @@ import (
 	f_log "github.com/transparency-dev/formats/log"
 	f_note "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
+	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/mtcproof"
 	"golang.org/x/mod/sumdb/note"
 )
 
@@ -41,14 +42,18 @@ func (m *mockSubtreeClient) SignSubtree(ctx context.Context, start, end uint64, 
 // mustSignSubtree signs a subtree and formats the signature as a note-style signature line.
 func mustSignSubtree(t *testing.T, s f_note.SubtreeSigner, origin string, start, end uint64, root []byte) (rawSig []byte, sigLine []byte) {
 	t.Helper()
-	rawSig, err := s.SignSubtree(0, origin, start, end, root)
+	noteSig, err := s.SignSubtree(0, origin, start, end, root)
 	if err != nil {
 		t.Fatalf("SignSubtree: %v", err)
 	}
 	buf := binary.BigEndian.AppendUint32(nil, s.KeyHash())
-	buf = append(buf, rawSig...)
+	buf = append(buf, noteSig...)
 	sigLine = []byte(fmt.Sprintf("— %s %s\n", s.Name(), base64.StdEncoding.EncodeToString(buf)))
-	return rawSig, sigLine
+	sigObj, err := mtcproof.NewSubtreeSignatureFromCosig(nil, noteSig)
+	if err != nil {
+		t.Fatalf("NewSubtreeSignatureFromCosig: %v", err)
+	}
+	return sigObj.Signature, sigLine
 }
 
 func TestNew(t *testing.T) {
@@ -160,10 +165,10 @@ func TestGateway_CosignSubtree(t *testing.T) {
 
 	rawSubSig, subSigLine := mustSignSubtree(t, signer1, origin, start, end, root)
 
-	corruptSubSig := bytes.Clone(rawSubSig)
-	corruptSubSig[0] ^= 0xff
+	corruptNoteSig, _ := signer1.SignSubtree(0, origin, start, end, root)
+	corruptNoteSig[len(corruptNoteSig)-1] ^= 0xff
 	corruptBuf := binary.BigEndian.AppendUint32(nil, signer1.KeyHash())
-	corruptBuf = append(corruptBuf, corruptSubSig...)
+	corruptBuf = append(corruptBuf, corruptNoteSig...)
 	corruptSubSigLine := []byte(fmt.Sprintf("— %s %s\n", signer1.Name(), base64.StdEncoding.EncodeToString(corruptBuf)))
 
 	u1, _ := url.Parse("https://wit1.example.com")
