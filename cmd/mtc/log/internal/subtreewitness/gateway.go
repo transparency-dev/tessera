@@ -186,6 +186,9 @@ func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end 
 				slog.WarnContext(ctx, "Failed to decode witness subtree signature base64", slog.String("witness", s.Name), slog.Any("error", bErr))
 				continue
 			}
+			// SPEC: https://c2sp.org/signed-note
+			// "— <key name> base64(32-bit key ID || signature)"
+			// Remove the first 4 bytes to extract the C2SP timestamped_signature payload.
 			keyHash := s.Hash
 			sigBytes := raw[4:]
 
@@ -223,10 +226,16 @@ func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end 
 				continue
 			}
 
-			verifiedSubtreeSigs[k] = mtcproof.SubtreeSignature{
-				CosignerID: w.cosignerID,
-				Signature:  sigBytes,
+			subSig, err := mtcproof.NewSubtreeSignatureFromCosig(w.cosignerID, sigBytes)
+			if err != nil {
+				slog.ErrorContext(ctx, "Extracting raw subtree signature",
+					slog.String("witness", s.Name),
+					slog.Any("error", err),
+				)
+				continue
 			}
+
+			verifiedSubtreeSigs[k] = subSig
 			reconstructedCp = fmt.Appendf(reconstructedCp, "— %s %s\n", s.Name, b64)
 		}
 

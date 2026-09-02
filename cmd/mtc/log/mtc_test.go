@@ -1072,13 +1072,20 @@ func TestMTCLog_AddTBS(t *testing.T) {
 			if len(proofData.Signatures) != 2 {
 				t.Fatalf("got %d signatures, want 2", len(proofData.Signatures))
 			}
-			if !mtcLog.subtreeSigner.Verifier().VerifySubtree(0, mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, proofData.Signatures[0].Signature) {
+			// SPEC: draft-ietf-plants-merkle-tree-certs section 6.2.
+			// SubtreeSignature.Signature contains the raw signature.
+			// SPEC: https://c2sp.org/tlog-cosignature
+			// note.SubtreeVerifier expects a C2SP timestamped_signature prefixed with the 8-byte u64 timestamp.
+			reconstructCosig := func(rawSig []byte) []byte {
+				return append(make([]byte, 8), rawSig...)
+			}
+			if !mtcLog.subtreeSigner.Verifier().VerifySubtree(0, mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, reconstructCosig(proofData.Signatures[0].Signature)) {
 				t.Errorf("VerifySubtree failed for log signature on entry%d", tc.entryIdx)
 			}
 			if !bytes.Equal(proofData.Signatures[0].CosignerID, mtcLog.logCosignerID) {
 				t.Errorf("CosignerID = %x, want %x", proofData.Signatures[0].CosignerID, mtcLog.logCosignerID)
 			}
-			if !witVerifier.VerifySubtree(0, mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, proofData.Signatures[1].Signature) {
+			if !witVerifier.VerifySubtree(0, mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, reconstructCosig(proofData.Signatures[1].Signature)) {
 				t.Errorf("VerifySubtree failed for witness signature on entry%d", tc.entryIdx)
 			}
 		})
