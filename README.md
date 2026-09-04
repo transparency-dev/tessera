@@ -1,6 +1,5 @@
 # Tessera
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/transparency-dev/tessera)](https://goreportcard.com/report/github.com/transparency-dev/tessera)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/transparency-dev/tessera/badge)](https://scorecard.dev/viewer/?uri=github.com/transparency-dev/tessera)
 [![Benchmarks](https://img.shields.io/badge/Benchmarks-blue.svg)](https://transparency-dev.github.io/tessera/dev/bench/)
 [![Slack Status](https://img.shields.io/badge/Slack-Chat-blue.svg)](https://transparency-dev.slack.com/)
