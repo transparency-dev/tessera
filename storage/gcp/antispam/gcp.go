@@ -121,25 +121,31 @@ func NewAntispam(ctx context.Context, spannerDB string, opts AntispamOpts) (*Ant
 		return opts.SpannerTablePrefix + t
 	}
 
-	if err := createAndPrepareTables(
-		ctx, spannerDB, opts.SpannerClient,
-		[]string{
-			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INT64 NOT NULL, nextIdx INT64 NOT NULL) PRIMARY KEY (id)", table("FollowCoord")),
-			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (h BYTES(32) NOT NULL, idx INT64 NOT NULL) PRIMARY KEY (h)", table("IDSeq")),
-		},
-		[][]*spanner.Mutation{
-			{spanner.Insert(table("FollowCoord"), []string{"id", "nextIdx"}, []any{0, 0})},
-		},
-	); err != nil {
-		return nil, fmt.Errorf("failed to create tables: %v", err)
-	}
-
 	db := opts.SpannerClient
 	if db == nil {
 		var err error
 		db, err = spanner.NewClient(ctx, spannerDB)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to Spanner: %v", err)
+		}
+	}
+
+	// Skip the (slow, even when no-op) DDL if the schema is already present. Keep schemaInitialised in sync with this.
+	if !schemaInitialised(ctx, db, table) {
+		if err := createAndPrepareTables(
+			ctx, spannerDB, db,
+			[]string{
+				fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INT64 NOT NULL, nextIdx INT64 NOT NULL) PRIMARY KEY (id)", table("FollowCoord")),
+				fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (h BYTES(32) NOT NULL, idx INT64 NOT NULL) PRIMARY KEY (h)", table("IDSeq")),
+			},
+			[][]*spanner.Mutation{
+				{spanner.Insert(table("FollowCoord"), []string{"id", "nextIdx"}, []any{0, 0})},
+			},
+		); err != nil {
+			if opts.SpannerClient == nil {
+				db.Close()
+			}
+			return nil, fmt.Errorf("failed to create tables: %v", err)
 		}
 	}
 
@@ -485,6 +491,19 @@ func (f *follower) EntriesProcessed(ctx context.Context) (uint64, error) {
 		return 0, fmt.Errorf("failed to read follow coordination info: %v", err)
 	}
 	return uint64(nextIdx), nil
+}
+
+// schemaInitialised reports whether the tables and seed row NewAntispam creates are all present.
+// Any error reads as false, so NewAntispam falls back to creating them.
+func schemaInitialised(ctx context.Context, dbPool *spanner.Client, table func(string) string) bool {
+	if _, err := dbPool.Single().ReadRow(ctx, table("FollowCoord"), spanner.Key{0}, []string{"id", "nextIdx"}); err != nil {
+		return false
+	}
+	// IDSeq has no seed row; just check the table exists.
+	if err := dbPool.Single().ReadWithOptions(ctx, table("IDSeq"), spanner.AllKeys(), []string{"h", "idx"}, &spanner.ReadOptions{Limit: 1}).Do(func(*spanner.Row) error { return nil }); err != nil {
+		return false
+	}
+	return true
 }
 
 // createAndPrepareTables applies the passed in list of DDL statements and groups of mutations.
