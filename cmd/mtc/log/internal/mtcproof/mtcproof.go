@@ -46,6 +46,9 @@ type SubtreeSignature struct {
 	Signature []byte
 }
 
+// NewSubtreeSignatureFromCosig creates a SubtreeSignature from a C2SP
+// timestamped_signature by stripping the timestamp prefix.
+//
 // SPEC: https://c2sp.org/tlog-cosignature
 //
 //	"struct {
@@ -55,9 +58,6 @@ type SubtreeSignature struct {
 //	       case ml-dsa-44: opaque ml_dsa_44_signature[2420];
 //	   } signature;
 //	 } timestamped_signature;"
-//
-// NewSubtreeSignatureFromCosig creates a SubtreeSignature from a C2SP
-// timestamped_signature by stripping the timestamp prefix.
 func NewSubtreeSignatureFromCosig(cosignerID []byte, cosig []byte) (SubtreeSignature, error) {
 	s := cryptobyte.String(cosig)
 	var timestamp uint64
