@@ -228,7 +228,7 @@ func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end 
 
 			subSig, err := mtcproof.NewSubtreeSignatureFromCosig(w.cosignerID, sigBytes)
 			if err != nil {
-				slog.ErrorContext(ctx, "Extracting raw subtree signature",
+				slog.ErrorContext(ctx, "Failed to extract raw subtree signature",
 					slog.String("witness", s.Name),
 					slog.Any("error", err),
 				)
