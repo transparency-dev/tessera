@@ -31,7 +31,6 @@ import (
 
 	"github.com/transparency-dev/formats/log"
 	f_note "github.com/transparency-dev/formats/note"
-	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/internal/witness"
 	"golang.org/x/mod/sumdb/note"
@@ -70,30 +69,16 @@ func TestWitnessGateway(t *testing.T) {
 	// The witnesses just sign the checkpoint with whatever key is requested, they don't check the body at all.
 	// An improvement on this would be to make the fake witnesses more realistic, but it's a non-trivial
 	// amount of code to add to this already long test!
-	var wit1, wit2, witBad, witMulti1, witMulti2 tessera.Witness
 	var witCalls atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w1u, err := url.Parse(wit1.URL)
-		if err != nil {
-			t.Fatal(err)
-		}
-		w2u, err := url.Parse(wit2.URL)
-		if err != nil {
-			t.Fatal(err)
-		}
-		wbu, err := url.Parse(witBad.URL)
-		if err != nil {
-			t.Fatal(err)
-		}
-
 		switch r.URL.Path {
-		case w1u.Path + "/add-checkpoint":
+		case "/wit1/add-checkpoint":
 			witCalls.Add(1)
 			_, _ = w.Write(sigForSigner(t, cp, wit1Skey))
-		case w2u.Path + "/add-checkpoint":
+		case "/wit2/add-checkpoint":
 			witCalls.Add(1)
 			_, _ = w.Write(sigForSigner(t, cp, wit2Skey))
-		case wbu.Path + "/add-checkpoint":
+		case "/add-checkpoint":
 			witCalls.Add(1)
 			_, _ = w.Write([]byte("this is not a signature\n"))
 		case "/wit_multi/add-checkpoint":
@@ -109,25 +94,25 @@ func TestWitnessGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	wit1URL := baseURL.JoinPath("wit1")
-	wit1, err = tessera.NewWitness(wit1Vkey, wit1URL)
+	wit1Verifier, err := f_note.NewVerifierForCosignatureV1(wit1Vkey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	wit2URL := baseURL.JoinPath("wit2")
-	wit2, err = tessera.NewWitness(wit2Vkey, wit2URL)
+	wit2Verifier, err := f_note.NewVerifierForCosignatureV1(wit2Vkey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	witMulti1URL := baseURL.JoinPath("wit_multi")
-	witMulti1, err = tessera.NewWitness(wit1Vkey, witMulti1URL)
+	witMulti1Verifier, err := f_note.NewVerifierForCosignatureV1(wit1Vkey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	witMulti2, err = tessera.NewWitness(wit2Vkey, witMulti1URL)
+	witMulti2Verifier, err := f_note.NewVerifierForCosignatureV1(wit2Vkey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	witBad, err = tessera.NewWitness(witBadVkey, baseURL)
+	witBadVerifier, err := f_note.NewVerifierForCosignatureV1(witBadVkey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,15 +132,15 @@ func TestWitnessGateway(t *testing.T) {
 		},
 		{
 			desc:             "one witness",
-			witnesses:        []witness.Witness{{URL: wit1URL, Verifiers: []note.Verifier{wit1.Key}}},
+			witnesses:        []witness.Witness{{URL: wit1URL, Verifiers: []note.Verifier{wit1Verifier}}},
 			wantSigs:         1,
 			wantWitnessCalls: exactly(1),
 		},
 		{
 			desc: "two witnesses",
 			witnesses: []witness.Witness{
-				{URL: wit1URL, Verifiers: []note.Verifier{wit1.Key}},
-				{URL: wit2URL, Verifiers: []note.Verifier{wit2.Key}},
+				{URL: wit1URL, Verifiers: []note.Verifier{wit1Verifier}},
+				{URL: wit2URL, Verifiers: []note.Verifier{wit2Verifier}},
 			},
 			wantSigs:         2,
 			wantWitnessCalls: exactly(2),
@@ -163,45 +148,45 @@ func TestWitnessGateway(t *testing.T) {
 		{
 			desc: "one required witness twice",
 			witnesses: []witness.Witness{
-				{URL: wit1URL, Verifiers: []note.Verifier{wit1.Key}},
-				{URL: wit1URL, Verifiers: []note.Verifier{wit1.Key}},
+				{URL: wit1URL, Verifiers: []note.Verifier{wit1Verifier}},
+				{URL: wit1URL, Verifiers: []note.Verifier{wit1Verifier}},
 			},
 			wantSigs:         1,
 			wantWitnessCalls: exactly(1),
 		},
 		{
 			desc:             "one witness with two keys",
-			witnesses:        []witness.Witness{{URL: witMulti1URL, Verifiers: []note.Verifier{witMulti1.Key, witMulti2.Key}}},
+			witnesses:        []witness.Witness{{URL: witMulti1URL, Verifiers: []note.Verifier{witMulti1Verifier, witMulti2Verifier}}},
 			wantSigs:         2,
 			wantWitnessCalls: exactly(1),
 		},
 		{
 			desc: "two witnesses with same URL but different keys",
 			witnesses: []witness.Witness{
-				{URL: witMulti1URL, Verifiers: []note.Verifier{witMulti1.Key}},
-				{URL: witMulti1URL, Verifiers: []note.Verifier{witMulti2.Key}},
+				{URL: witMulti1URL, Verifiers: []note.Verifier{witMulti1Verifier}},
+				{URL: witMulti1URL, Verifiers: []note.Verifier{witMulti2Verifier}},
 			},
 			wantSigs:         2,
 			wantWitnessCalls: exactly(1),
 		},
 		{
 			desc:             "bad witness",
-			witnesses:        []witness.Witness{{URL: wit1URL, Verifiers: []note.Verifier{witBad.Key}}},
+			witnesses:        []witness.Witness{{URL: wit1URL, Verifiers: []note.Verifier{witBadVerifier}}},
 			wantSigs:         0,
 			wantWitnessCalls: exactly(1),
 		}, {
 			desc: "two bad witnesses",
 			witnesses: []witness.Witness{
-				{URL: wit1URL, Verifiers: []note.Verifier{witBad.Key}},
-				{URL: wit2URL, Verifiers: []note.Verifier{witBad.Key}},
+				{URL: wit1URL, Verifiers: []note.Verifier{witBadVerifier}},
+				{URL: wit2URL, Verifiers: []note.Verifier{witBadVerifier}},
 			},
 			wantSigs:         0,
 			wantWitnessCalls: exactly(2),
 		}, {
 			desc: "one good, one bad witness",
 			witnesses: []witness.Witness{
-				{URL: wit1URL, Verifiers: []note.Verifier{wit1.Key}},
-				{URL: wit2URL, Verifiers: []note.Verifier{witBad.Key}},
+				{URL: wit1URL, Verifiers: []note.Verifier{wit1Verifier}},
+				{URL: wit2URL, Verifiers: []note.Verifier{witBadVerifier}},
 			},
 			wantSigs:         1,
 			wantWitnessCalls: exactly(2),
@@ -222,7 +207,7 @@ func TestWitnessGateway(t *testing.T) {
 
 			cpSigs, _ := collectSigs(t, g.CosignCheckpoint(ctx, logSignedCheckpoint, logSignedCheckpointSize))
 			witnessedCP := append(slices.Clone(logSignedCheckpoint), cpSigs...)
-			n, err := note.Open(witnessedCP, note.VerifierList(logVerifier, wit1.Key, wit2.Key))
+			n, err := note.Open(witnessedCP, note.VerifierList(logVerifier, wit1Verifier, wit2Verifier))
 			if err != nil {
 				t.Fatalf("failed to open note %q: %v", witnessedCP, err)
 			}
@@ -253,11 +238,9 @@ func TestSlipperyWitness(t *testing.T) {
 
 	// Set up a fake server hosting the witness.
 	// This witness will always reply that a different size is required.
-	var wit1 tessera.Witness
 	var count int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w1u := mustURL(t, wit1.URL)
-		if got, want := r.URL.String(), w1u.Path+"/add-checkpoint"; got != want {
+		if got, want := r.URL.Path, "/add-checkpoint"; got != want {
 			t.Fatalf("Got request to URL %q but expected %q", got, want)
 		}
 
@@ -269,8 +252,7 @@ func TestSlipperyWitness(t *testing.T) {
 		count++
 	}))
 	baseURL := mustURL(t, ts.URL)
-	var err error
-	wit1, err = tessera.NewWitness(wit1Vkey, baseURL)
+	wit1Verifier, err := f_note.NewVerifierForCosignatureV1(wit1Vkey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +260,7 @@ func TestSlipperyWitness(t *testing.T) {
 	ctx := t.Context()
 
 	g, err := witness.NewGateway(ctx, witness.Options{
-		Witnesses:  []witness.Witness{{URL: baseURL, Verifiers: []note.Verifier{wit1.Key}}},
+		Witnesses:  []witness.Witness{{URL: baseURL, Verifiers: []note.Verifier{wit1Verifier}}},
 		HTTPClient: ts.Client(),
 		FetchTiles: testLogTileFetcher,
 	})
@@ -295,7 +277,6 @@ func TestSlipperyWitness(t *testing.T) {
 }
 
 func TestWitnessReusesProofs(t *testing.T) {
-	var wit1, wit2 tessera.Witness
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -310,27 +291,24 @@ func TestWitnessReusesProofs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		w1u := mustURL(t, wit1.URL)
-		w2u := mustURL(t, wit2.URL)
 
-		switch r.URL.String() {
-		case w1u.Path + "/add-checkpoint":
+		switch r.URL.Path {
+		case "/wit1/add-checkpoint":
 			_, _ = w.Write(sigForSigner(t, n.Text, wit1Skey))
-		case w2u.Path + "/add-checkpoint":
+		case "/wit2/add-checkpoint":
 			_, _ = w.Write(sigForSigner(t, n.Text, wit2Skey))
 		default:
 			t.Fatalf("Unknown case: %s", r.URL.String())
 		}
 	}))
 	baseURL := mustURL(t, ts.URL)
-	var err error
 	wit1URL := baseURL.JoinPath("wit1")
-	wit1, err = tessera.NewWitness(wit1Vkey, wit1URL)
+	wit1Verifier, err := f_note.NewVerifierForCosignatureV1(wit1Vkey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	wit2URL := baseURL.JoinPath("wit2")
-	wit2, err = tessera.NewWitness(wit2Vkey, wit2URL)
+	wit2Verifier, err := f_note.NewVerifierForCosignatureV1(wit2Vkey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +326,7 @@ func TestWitnessReusesProofs(t *testing.T) {
 	}
 	g1, err := witness.NewGateway(ctx, witness.Options{
 		HTTPClient: ts.Client(),
-		Witnesses:  []witness.Witness{{URL: wit1URL, Verifiers: []note.Verifier{wit1.Key}}},
+		Witnesses:  []witness.Witness{{URL: wit1URL, Verifiers: []note.Verifier{wit1Verifier}}},
 		FetchTiles: cf1,
 	})
 	if err != nil {
@@ -357,8 +335,8 @@ func TestWitnessReusesProofs(t *testing.T) {
 	g2, err := witness.NewGateway(ctx, witness.Options{
 		HTTPClient: ts.Client(),
 		Witnesses: []witness.Witness{
-			{URL: wit1URL, Verifiers: []note.Verifier{wit1.Key}},
-			{URL: wit2URL, Verifiers: []note.Verifier{wit2.Key}},
+			{URL: wit1URL, Verifiers: []note.Verifier{wit1Verifier}},
+			{URL: wit2URL, Verifiers: []note.Verifier{wit2Verifier}},
 		},
 		FetchTiles: cf2,
 	})
