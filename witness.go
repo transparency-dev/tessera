@@ -15,14 +15,12 @@
 package tessera
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
 	"net/url"
-	"strconv"
-	"strings"
+	"sync/atomic"
 
 	f_note "github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/formats/policy"
 	"golang.org/x/mod/sumdb/note"
 )
 
@@ -38,158 +36,82 @@ type policyComponent interface {
 	// the witness with a new checkpoint, to the values which are the verifiers to check
 	// the response is well formed.
 	WitnessEndpoints() map[string][]note.Verifier
+
+	name() string
 }
 
-// NewWitnessGroupFromPolicy creates a graph of witness objects that represents the
-// policy provided, and which can be passed directly to the WithWitnesses
-// appender lifecycle option.
+// NewWitnessGroupFromPolicy parses a policy description and returns a WitnessGroup
+// which can be passed to the WithWitnesses appender lifecycle option.
 //
-// The policy structure is as described by [Sigsum's policy format](https://git.glasklar.is/sigsum/core/sigsum-go/-/blob/main/doc/policy.md)
-// but with the difference that the configured witness keys MUST be signature type `0x04` `vkey`s as specified
-// by C2SP [signed-note](https://github.com/C2SP/C2SP/blob/main/signed-note.md#verifier-keys).
+// The policy structure is as described at https://c2sp.org/tlog-policy.
 func NewWitnessGroupFromPolicy(p []byte) (WitnessGroup, error) {
-	scanner := bufio.NewScanner(bytes.NewBuffer(p))
-	components := make(map[string]policyComponent)
-
-	urlToWitnessName := make(map[string]string)
-
-	var quorumName string
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if i := strings.Index(line, "#"); i >= 0 {
-			line = line[:i]
-		}
-		if line == "" {
-			continue
-		}
-
-		switch fields := strings.Fields(line); fields[0] {
-		case "log":
-			// This keyword is important to clients who might use the policy file, but we don't need to know about it since
-			// we _are_ the log, so just ignore it.
-		case "witness":
-			// Strictly, the URL is optional so policy files can be used client-side, where they don't care about the URL.
-			// Given this function is parsing to create the graph structure which will be used by a Tessera log to witness
-			// new checkpoints we'll ignore that special case here.
-			if len(fields) != 4 {
-				return WitnessGroup{}, fmt.Errorf("invalid witness definition: %q", line)
-			}
-			name, vkey, witnessURLStr := fields[1], fields[2], fields[3]
-			if isBadName(name) {
-				return WitnessGroup{}, fmt.Errorf("invalid witness name %q", name)
-			}
-			if _, ok := components[name]; ok {
-				return WitnessGroup{}, fmt.Errorf("duplicate component name: %q", name)
-			}
-			witnessURL, err := url.Parse(witnessURLStr)
-			if err != nil {
-				return WitnessGroup{}, fmt.Errorf("invalid witness URL %q: %w", witnessURLStr, err)
-			}
-			w, err := NewWitness(vkey, witnessURL)
-			if err != nil {
-				return WitnessGroup{}, fmt.Errorf("invalid witness config %q: %w", line, err)
-			}
-			components[name] = w
-			if wName, ok := urlToWitnessName[witnessURLStr]; !ok {
-				urlToWitnessName[witnessURLStr] = w.Key.Name()
-			} else if wName != w.Key.Name() {
-				return WitnessGroup{}, fmt.Errorf("witness URL %q has multiple witness signer names assigned %q and %q", witnessURLStr, wName, w.Key.Name())
-			}
-		case "group":
-			if len(fields) < 3 {
-				return WitnessGroup{}, fmt.Errorf("invalid group definition: %q", line)
-			}
-
-			name, N, childrenNames := fields[1], fields[2], fields[3:]
-			if isBadName(name) {
-				return WitnessGroup{}, fmt.Errorf("invalid group name %q", name)
-			}
-			if _, ok := components[name]; ok {
-				return WitnessGroup{}, fmt.Errorf("duplicate component name: %q", name)
-			}
-			var n int
-			switch N {
-			case "any":
-				n = 1
-			case "all":
-				n = len(childrenNames)
-			default:
-				i, err := strconv.ParseUint(N, 10, 8)
-				if err != nil {
-					return WitnessGroup{}, fmt.Errorf("invalid threshold %q for group %q: %w", N, name, err)
-				}
-				n = int(i)
-			}
-			if c := len(childrenNames); n > c {
-				return WitnessGroup{}, fmt.Errorf("group with %d children cannot have threshold %d", c, n)
-			}
-
-			children := make([]policyComponent, len(childrenNames))
-			for i, cName := range childrenNames {
-				if isBadName(cName) {
-					return WitnessGroup{}, fmt.Errorf("invalid component name %q", cName)
-				}
-				child, ok := components[cName]
-				if !ok {
-					return WitnessGroup{}, fmt.Errorf("unknown component %q in group definition", cName)
-				}
-				children[i] = child
-			}
-			wg := NewWitnessGroup(n, children...)
-			components[name] = wg
-		case "quorum":
-			if len(fields) != 2 {
-				return WitnessGroup{}, fmt.Errorf("invalid quorum definition: %q", line)
-			}
-			quorumName = fields[1]
-		default:
-			return WitnessGroup{}, fmt.Errorf("unknown keyword: %q", fields[0])
-		}
-	}
-	if err := scanner.Err(); err != nil {
+	ret := policy.TLogPolicy{}
+	if err := ret.Unmarshal(p); err != nil {
 		return WitnessGroup{}, err
 	}
+	return fromPolicy(ret)
+}
 
-	switch quorumName {
-	case "":
-		return WitnessGroup{}, fmt.Errorf("policy file must define a quorum")
-	case "none":
-		return NewWitnessGroup(0), nil
-	default:
-		if isBadName(quorumName) {
-			return WitnessGroup{}, fmt.Errorf("invalid quorum name %q", quorumName)
+// FromPolicy converts a [policy.TLogPolicy] to a [WitnessGroup].
+//
+// This is only needed while we're in the process of migrating this codebase to
+// TLogPolicy, and can be removed once the migration is complete and before
+// we cut a new release.
+func FromPolicy(p policy.TLogPolicy) (WitnessGroup, error) {
+	return fromPolicy(p)
+}
+
+func fromPolicy(p policy.TLogPolicy) (WitnessGroup, error) {
+	groups := make(map[string]WitnessGroup, len(p.Groups))
+	witnesses := make(map[string]Witness, len(p.Witnesses))
+	for _, w := range p.Witnesses {
+		if w.Verifier == nil {
+			return WitnessGroup{}, fmt.Errorf("witness %q has nil Verifier", w.Name)
 		}
-		policy, ok := components[quorumName]
-		if !ok {
-			return WitnessGroup{}, fmt.Errorf("quorum component %q not found", quorumName)
+		if w.URL == nil {
+			return WitnessGroup{}, fmt.Errorf("witness %q has nil URL", w.Name)
 		}
-		wg, ok := policy.(WitnessGroup)
-		if !ok {
-			// A single witness can be a policy. Wrap it in a group.
-			return NewWitnessGroup(1, policy), nil
+		witnesses[w.Name] = Witness{
+			witName: w.Name,
+			vkey:    w.VKey,
+			Key:     w.Verifier,
+			URL:     w.URL.String(),
 		}
-		return wg, nil
 	}
-}
+	for _, g := range p.Groups {
+		members := make([]policyComponent, 0, len(g.Members))
+		for _, m := range g.Members {
+			if w, ok := witnesses[m]; ok {
+				members = append(members, w)
+			} else if grp, ok := groups[m]; ok {
+				members = append(members, grp)
+			} else {
+				return WitnessGroup{}, fmt.Errorf("invalid policy: member %q not defined", m)
+			}
+		}
+		wg := NewWitnessGroup(int(g.Threshold), members...)
+		wg.grpName = g.Name
+		groups[g.Name] = wg
+	}
 
-var keywords = map[string]struct{}{
-	"witness": {},
-	"group":   {},
-	"any":     {},
-	"all":     {},
-	"none":    {},
-	"quorum":  {},
-	"log":     {},
-}
-
-func isBadName(n string) bool {
-	_, isKeyword := keywords[n]
-	return isKeyword
+	if p.Quorum == "none" || p.Quorum == "" {
+		return NewWitnessGroup(0), nil
+	}
+	if root, ok := groups[p.Quorum]; ok {
+		return root, nil
+	}
+	if w, ok := witnesses[p.Quorum]; ok {
+		return NewWitnessGroup(1, w), nil
+	}
+	return WitnessGroup{}, fmt.Errorf("invalid policy: quorum %q not defined", p.Quorum)
 }
 
 // NewWitness returns a Witness given a verifier key and the root URL for where this
 // witness can be reached.
 func NewWitness(vkey string, witnessRoot *url.URL) (Witness, error) {
+	if witnessRoot == nil {
+		return Witness{}, fmt.Errorf("witness root URL cannot be nil")
+	}
 	var v note.Verifier
 	var err error
 	v, err = f_note.NewMLDSAVerifier(vkey)
@@ -202,8 +124,10 @@ func NewWitness(vkey string, witnessRoot *url.URL) (Witness, error) {
 	}
 
 	return Witness{
-		Key: v,
-		URL: witnessRoot.String(),
+		witName: fmt.Sprintf("%s-%08x", v.Name(), v.KeyHash()),
+		vkey:    vkey,
+		Key:     v,
+		URL:     witnessRoot.String(),
 	}, nil
 }
 
@@ -211,8 +135,14 @@ func NewWitness(vkey string, witnessRoot *url.URL) (Witness, error) {
 // The URLs() method returns the URL where it can be reached for witnessing, and the Satisfied method
 // provides a predicate to check whether this witness has signed a checkpoint.
 type Witness struct {
-	Key note.Verifier
-	URL string
+	witName string
+	vkey    string
+	Key     note.Verifier
+	URL     string
+}
+
+func (w Witness) name() string {
+	return w.witName
 }
 
 // Satisfied returns true if the checkpoint provided is signed by this witness.
@@ -243,6 +173,8 @@ func (w Witness) WitnessEndpoints() map[string][]note.Verifier {
 	return map[string][]note.Verifier{w.URL: {w.Key}}
 }
 
+var anonGroupNameCounter atomic.Int64
+
 // NewWitnessGroup creates a grouping of Witness or WitnessGroup with a configurable threshold
 // of these sub-components that need to be satisfied in order for this group to be satisfied.
 //
@@ -253,9 +185,87 @@ func NewWitnessGroup(n int, children ...policyComponent) WitnessGroup {
 		panic(fmt.Errorf("threshold of %d outside bounds for children %s", n, children))
 	}
 	return WitnessGroup{
+		grpName:    fmt.Sprintf("anonGrp-%d", anonGroupNameCounter.Add(1)),
 		Components: children,
 		N:          n,
 	}
+}
+
+// populatePolicy recursively populates a policy.TLogPolicy from a WitnessGroup.
+// It returns the name of the group and an error if any part of the population fails.
+func populatePolicy(p *policy.TLogPolicy, wg WitnessGroup) (string, error) {
+	grpName := wg.grpName
+	if grpName == "" {
+		grpName = fmt.Sprintf("anonGrp-%d", anonGroupNameCounter.Add(1))
+	}
+	me := &policy.Group{
+		Name:      grpName,
+		Threshold: uint(wg.N),
+		Members:   make([]string, 0, len(wg.Components)),
+	}
+	for _, c := range wg.Components {
+		switch c := c.(type) {
+		case Witness:
+			witName := c.name()
+			u, err := url.Parse(c.URL)
+			if err != nil {
+				return "", fmt.Errorf("failed to parse witness URL %q: %w", c.URL, err)
+			}
+			if witName == "" {
+				witName = fmt.Sprintf("anonWit-%d", anonGroupNameCounter.Add(1))
+			}
+			alreadyAdded := false
+			for _, existing := range p.Witnesses {
+				if existing.Name == witName {
+					if existing.Verifier == c.Key && (existing.VKey == c.vkey || c.vkey == "") {
+						alreadyAdded = true
+						break
+					}
+					witName = fmt.Sprintf("%s-%d", witName, anonGroupNameCounter.Add(1))
+					break
+				}
+			}
+			if !alreadyAdded {
+				p.Witnesses = append(p.Witnesses, policy.Witness{
+					Name:     witName,
+					URL:      u,
+					VKey:     c.vkey,
+					Verifier: c.Key,
+				})
+			}
+			me.Members = append(me.Members, witName)
+		case WitnessGroup:
+			childName, err := populatePolicy(p, c)
+			if err != nil {
+				return "", err
+			}
+			me.Members = append(me.Members, childName)
+		default:
+			return "", fmt.Errorf("unexpected component type: %T", c)
+		}
+	}
+	p.Groups = append(p.Groups, *me)
+	return grpName, nil
+}
+
+// ToPolicy converts a [WitnessGroup] to a [policy.TLogPolicy].
+func (wg WitnessGroup) ToPolicy() (policy.TLogPolicy, error) {
+	return wg.toPolicy()
+}
+
+func (wg WitnessGroup) toPolicy() (policy.TLogPolicy, error) {
+	if wg.N == 0 || len(wg.Components) == 0 {
+		return policy.TLogPolicy{
+			Quorum: "none",
+		}, nil
+	}
+	var p policy.TLogPolicy
+	var err error
+	p.Quorum, err = populatePolicy(&p, wg)
+	if err != nil {
+		return policy.TLogPolicy{}, err
+	}
+	return p, nil
 }
 
 // WitnessGroup defines a group of witnesses, and a threshold of
@@ -266,8 +276,13 @@ func NewWitnessGroup(n int, children ...policyComponent) WitnessGroup {
 // simple majority, but other strategies are available.
 // N must be <= len(WitnessKeys).
 type WitnessGroup struct {
+	grpName    string
 	Components []policyComponent
 	N          int
+}
+
+func (wg WitnessGroup) name() string {
+	return wg.grpName
 }
 
 // Satisfied returns true if the checkpoint provided has sufficient signatures
