@@ -54,17 +54,6 @@ func NewWitnessGroupFromPolicy(p []byte) (WitnessGroup, error) {
 	return fromPolicy(ret)
 }
 
-// FromPolicy converts a [policy.TLogPolicy] to a [WitnessGroup].
-//
-// This is only needed while we're in the process of migrating this codebase to
-// TLogPolicy, and can be removed once the migration is complete and before
-// we cut a new release.
-//
-// Deprecated: Use [github.com/transparency-dev/formats/policy] directly instead.
-func FromPolicy(p policy.TLogPolicy) (WitnessGroup, error) {
-	return fromPolicy(p)
-}
-
 func fromPolicy(p policy.TLogPolicy) (WitnessGroup, error) {
 	groups := make(map[string]WitnessGroup, len(p.Groups))
 	witnesses := make(map[string]Witness, len(p.Witnesses))

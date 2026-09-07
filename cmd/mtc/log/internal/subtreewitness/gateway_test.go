@@ -26,7 +26,7 @@ import (
 
 	f_log "github.com/transparency-dev/formats/log"
 	f_note "github.com/transparency-dev/formats/note"
-	"github.com/transparency-dev/tessera"
+	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/mtcproof"
 	"golang.org/x/mod/sumdb/note"
 )
@@ -48,7 +48,7 @@ func mustSignSubtree(t *testing.T, s f_note.SubtreeSigner, origin string, start,
 	}
 	buf := binary.BigEndian.AppendUint32(nil, s.KeyHash())
 	buf = append(buf, noteSig...)
-	sigLine = []byte(fmt.Sprintf("— %s %s\n", s.Name(), base64.StdEncoding.EncodeToString(buf)))
+	sigLine = fmt.Appendf(nil, "— %s %s\n", s.Name(), base64.StdEncoding.EncodeToString(buf))
 	sigObj, err := mtcproof.NewSubtreeSignatureFromCosig(nil, noteSig)
 	if err != nil {
 		t.Fatalf("NewSubtreeSignatureFromCosig: %v", err)
@@ -61,10 +61,16 @@ func TestNew(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateMLDSAKey: %v", err)
 	}
-	u1, _ := url.Parse("https://wit1.example.com")
-	wValid, err := tessera.NewWitness(vkeyValid, u1)
+	verValid, err := f_note.NewMLDSAVerifier(vkeyValid)
 	if err != nil {
-		t.Fatalf("NewWitness: %v", err)
+		t.Fatalf("NewMLDSAVerifier: %v", err)
+	}
+	u1, _ := url.Parse("https://wit1.example.com")
+	witValid := policy.Witness{
+		Name:     verValid.Name(),
+		URL:      u1,
+		VKey:     vkeyValid,
+		Verifier: verValid,
 	}
 
 	_, vkeyNonSubtree, err := note.GenerateKey(nil, "non-subtree-witness")
@@ -72,61 +78,92 @@ func TestNew(t *testing.T) {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	u2, _ := url.Parse("https://wit2.example.com")
-	wNonSubtree, err := tessera.NewWitness(vkeyNonSubtree, u2)
+	vNonSubtree, err := f_note.NewVerifierForCosignatureV1(vkeyNonSubtree)
 	if err != nil {
-		t.Fatalf("NewWitness: %v", err)
+		t.Fatalf("NewVerifierForCosignatureV1: %v", err)
+	}
+	witNonSubtree := policy.Witness{
+		Name:     vNonSubtree.Name(),
+		URL:      u2,
+		VKey:     vkeyNonSubtree,
+		Verifier: vNonSubtree,
 	}
 
 	_, vkeyInvalidName, err := f_note.GenerateMLDSAKey("invalid-name-not-oid")
 	if err != nil {
 		t.Fatalf("GenerateMLDSAKey: %v", err)
 	}
-	u3, _ := url.Parse("https://wit3.example.com")
-	wInvalidName, err := tessera.NewWitness(vkeyInvalidName, u3)
+	verInvalid, err := f_note.NewMLDSAVerifier(vkeyInvalidName)
 	if err != nil {
-		t.Fatalf("NewWitness: %v", err)
+		t.Fatalf("NewMLDSAVerifier: %v", err)
+	}
+	u3, _ := url.Parse("https://wit3.example.com")
+	witInvalidName := policy.Witness{
+		Name:     verInvalid.Name(),
+		URL:      u3,
+		VKey:     vkeyInvalidName,
+		Verifier: verInvalid,
 	}
 
 	tests := []struct {
 		name          string
-		policy        tessera.WitnessGroup
+		policy        policy.TLogPolicy
 		wantWitnesses int
 		wantErr       bool
 	}{
 		{
-			name:          "valid single subtree witness",
-			policy:        tessera.NewWitnessGroup(1, wValid),
+			name: "valid single subtree witness",
+			policy: policy.TLogPolicy{
+				Witnesses: []policy.Witness{witValid},
+				Quorum:    witValid.Name,
+			},
 			wantWitnesses: 1,
 			wantErr:       false,
 		},
 		{
-			name:          "non-subtree verifier is skipped",
-			policy:        tessera.NewWitnessGroup(1, wNonSubtree),
+			name: "non-subtree verifier is skipped",
+			policy: policy.TLogPolicy{
+				Witnesses: []policy.Witness{witNonSubtree},
+				Quorum:    witNonSubtree.Name,
+			},
 			wantWitnesses: 0,
 			wantErr:       false,
 		},
 		{
-			name:          "mixed subtree and non-subtree witnesses",
-			policy:        tessera.NewWitnessGroup(1, wValid, wNonSubtree),
+			name: "mixed subtree and non-subtree witnesses",
+			policy: policy.TLogPolicy{
+				Witnesses: []policy.Witness{witValid, witNonSubtree},
+				Groups: []policy.Group{
+					{
+						Name:      "group",
+						Threshold: 1,
+						Members:   []string{witValid.Name, witNonSubtree.Name},
+					},
+				},
+				Quorum: "group",
+			},
 			wantWitnesses: 1,
 			wantErr:       false,
 		},
 		{
-			name:          "invalid cosigner name in subtree verifier",
-			policy:        tessera.NewWitnessGroup(1, wInvalidName),
+			name: "invalid cosigner name in subtree verifier",
+			policy: policy.TLogPolicy{
+				Witnesses: []policy.Witness{witInvalidName},
+				Quorum:    witInvalidName.Name,
+			},
 			wantWitnesses: 0,
 			wantErr:       true,
 		},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			gw, err := New(nil, tc.policy)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("NewGateway() error = %v, wantErr %v", err, tc.wantErr)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gw, err := New(nil, test.policy)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("New() error = %v, wantErr %v", err, test.wantErr)
 			}
-			if !tc.wantErr && len(gw.witnesses) != tc.wantWitnesses {
-				t.Errorf("got %d witnesses in gateway, want %d", len(gw.witnesses), tc.wantWitnesses)
+			if !test.wantErr && len(gw.witnesses) != test.wantWitnesses {
+				t.Errorf("got %d witnesses in gateway, want %d", len(gw.witnesses), test.wantWitnesses)
 			}
 		})
 	}
@@ -169,19 +206,25 @@ func TestGateway_CosignSubtree(t *testing.T) {
 	corruptNoteSig[len(corruptNoteSig)-1] ^= 0xff
 	corruptBuf := binary.BigEndian.AppendUint32(nil, signer1.KeyHash())
 	corruptBuf = append(corruptBuf, corruptNoteSig...)
-	corruptSubSigLine := []byte(fmt.Sprintf("— %s %s\n", signer1.Name(), base64.StdEncoding.EncodeToString(corruptBuf)))
+	corruptSubSigLine := fmt.Appendf(nil, "— %s %s\n", signer1.Name(), base64.StdEncoding.EncodeToString(corruptBuf))
 
 	u1, _ := url.Parse("https://wit1.example.com")
-	w1, err := tessera.NewWitness(vkey1, u1)
-	if err != nil {
-		t.Fatalf("NewWitness: %v", err)
+	policy1 := policy.TLogPolicy{
+		Witnesses: []policy.Witness{
+			{
+				Name:     ver1.Name(),
+				URL:      u1,
+				VKey:     vkey1,
+				Verifier: ver1,
+			},
+		},
+		Quorum: ver1.Name(),
 	}
-	policy1 := tessera.NewWitnessGroup(1, w1)
 
 	tests := []struct {
 		name       string
 		witnesses  map[witnessKey]witness
-		policy     tessera.WitnessGroup
+		policy     policy.TLogPolicy
 		rawCp      []byte
 		wantSigs   int
 		wantSubSig []byte
@@ -288,28 +331,28 @@ func TestGateway_CosignSubtree(t *testing.T) {
 		{
 			name:      "empty policy satisfied with empty gateway",
 			witnesses: map[witnessKey]witness{},
-			policy:    tessera.WitnessGroup{},
+			policy:    policy.TLogPolicy{Quorum: "none"},
 			rawCp:     rawCpNoWit,
 			wantSigs:  0,
 			wantErr:   nil,
 		},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
 			gw := &Gateway{
-				witnesses: tc.witnesses,
-				policy:    tc.policy,
+				witnesses: test.witnesses,
+				policy:    test.policy,
 			}
-			verified, err := gw.CosignSubtree(context.Background(), origin, start, end, root, nil, tc.rawCp)
-			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("got error %v, want %v", err, tc.wantErr)
+			verified, err := gw.CosignSubtree(context.Background(), origin, start, end, root, nil, test.rawCp)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("got error %v, want %v", err, test.wantErr)
 			}
-			if len(verified) != tc.wantSigs {
-				t.Fatalf("got %d verified sigs, want %d", len(verified), tc.wantSigs)
+			if len(verified) != test.wantSigs {
+				t.Fatalf("got %d verified sigs, want %d", len(verified), test.wantSigs)
 			}
-			if tc.wantSigs > 0 && !bytes.Equal(verified[0].Signature, tc.wantSubSig) {
-				t.Errorf("got signature %x, want %x", verified[0].Signature, tc.wantSubSig)
+			if test.wantSigs > 0 && !bytes.Equal(verified[0].Signature, test.wantSubSig) {
+				t.Errorf("got signature %x, want %x", verified[0].Signature, test.wantSubSig)
 			}
 		})
 	}
