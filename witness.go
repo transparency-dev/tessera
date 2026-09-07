@@ -44,6 +44,8 @@ type policyComponent interface {
 // which can be passed to the WithWitnesses appender lifecycle option.
 //
 // The policy structure is as described at https://c2sp.org/tlog-policy.
+//
+// Deprecated: Use [github.com/transparency-dev/formats/policy] directly instead.
 func NewWitnessGroupFromPolicy(p []byte) (WitnessGroup, error) {
 	ret := policy.TLogPolicy{}
 	if err := ret.Unmarshal(p); err != nil {
@@ -103,6 +105,8 @@ func fromPolicy(p policy.TLogPolicy) (WitnessGroup, error) {
 
 // NewWitness returns a Witness given a verifier key and the root URL for where this
 // witness can be reached.
+//
+// Deprecated: Use [github.com/transparency-dev/formats/policy] directly instead.
 func NewWitness(vkey string, witnessRoot *url.URL) (Witness, error) {
 	if witnessRoot == nil {
 		return Witness{}, fmt.Errorf("witness root URL cannot be nil")
@@ -129,6 +133,8 @@ func NewWitness(vkey string, witnessRoot *url.URL) (Witness, error) {
 // Witness represents a single witness that can be reached in order to perform a witnessing operation.
 // The URLs() method returns the URL where it can be reached for witnessing, and the Satisfied method
 // provides a predicate to check whether this witness has signed a checkpoint.
+//
+// Deprecated: Use [github.com/transparency-dev/formats/policy] directly instead.
 type Witness struct {
 	witName string
 	vkey    string
@@ -175,6 +181,8 @@ var anonGroupNameCounter atomic.Int64
 //
 // The threshold should only be set to less than the number of sub-components if these are
 // considered fungible.
+//
+// Deprecated: Use [github.com/transparency-dev/formats/policy] directly instead.
 func NewWitnessGroup(n int, children ...policyComponent) WitnessGroup {
 	if n < 0 || n > len(children) {
 		panic(fmt.Errorf("threshold of %d outside bounds for children %s", n, children))
@@ -280,6 +288,8 @@ func (wg WitnessGroup) toPolicy() (policy.TLogPolicy, error) {
 // represent a threshold of the quorum. For some users this will be a
 // simple majority, but other strategies are available.
 // N must be <= len(WitnessKeys).
+//
+// Deprecated: Use [github.com/transparency-dev/formats/policy] directly instead.
 type WitnessGroup struct {
 	grpName    string
 	Components []policyComponent
