@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/client"
@@ -100,15 +101,15 @@ const (
 
 // Options holds settings for configuring MTCLog instances.
 type Options struct {
-	reader           tessera.LogReader
-	pollPeriod       time.Duration
-	landmarkStorage  landmark.LandmarksStorage
-	landmarkInterval time.Duration
-	maxCertLifetime  time.Duration
-	origin           string
-	subtreeSigner    note.SubtreeSigner
-	subtreeWitnesses tessera.WitnessGroup
-	httpClient       *http.Client
+	reader               tessera.LogReader
+	pollPeriod           time.Duration
+	landmarkStorage      landmark.LandmarksStorage
+	landmarkInterval     time.Duration
+	maxCertLifetime      time.Duration
+	origin               string
+	subtreeSigner        note.SubtreeSigner
+	subtreeWitnessPolicy policy.TLogPolicy
+	httpClient           *http.Client
 }
 
 // NewOptions creates a new options struct for configuring MTCLog instances.
@@ -212,10 +213,10 @@ func (o *Options) WithHTTPClient(client *http.Client) *Options {
 	return o
 }
 
-// WithSubtreeWitnesses configures the witness group policy and endpoints used
+// WithSubtreeWitnessPolicy configures the witness policy and endpoints used
 // to obtain subtree cosignatures for MTC proofs.
-func (o *Options) WithSubtreeWitnesses(witnesses tessera.WitnessGroup) *Options {
-	o.subtreeWitnesses = witnesses
+func (o *Options) WithSubtreeWitnessPolicy(policy policy.TLogPolicy) *Options {
+	o.subtreeWitnessPolicy = policy
 	return o
 }
 
@@ -437,8 +438,8 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 	}
 
 	var gateway *subtreewitness.Gateway
-	if len(opts.subtreeWitnesses.Components) > 0 {
-		gw, err := subtreewitness.New(opts.httpClient, opts.subtreeWitnesses)
+	if len(opts.subtreeWitnessPolicy.Witnesses) > 0 {
+		gw, err := subtreewitness.New(opts.httpClient, opts.subtreeWitnessPolicy)
 		if err != nil {
 			return nil, fmt.Errorf("creating subtree witness gateway: %w", err)
 		}

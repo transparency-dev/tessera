@@ -23,12 +23,11 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
-	"net/url"
 	"slices"
 	"sync"
 
 	f_note "github.com/transparency-dev/formats/note"
-	"github.com/transparency-dev/tessera"
+	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/mtcproof"
 	wc "github.com/transparency-dev/witness/client/http"
 	"golang.org/x/mod/sumdb/note"
@@ -57,7 +56,7 @@ type SubtreeWitnessClient interface {
 // Gateway manages concurrent requests to subtree witnesses and evaluates policy satisfaction.
 type Gateway struct {
 	witnesses map[witnessKey]witness
-	policy    tessera.WitnessGroup
+	policy    policy.TLogPolicy
 }
 
 // New creates a new subtree witness Gateway.
@@ -65,39 +64,46 @@ type Gateway struct {
 // use ML-DSA signatures.
 // SPEC: [DRAFT] Chrome Quantum-resistant Root Program Policy, Version 0.3.0, Section 3.1.
 // "Mirroring Cosigner Keys MUST be ML-DSA-44"
-func New(httpClient *http.Client, policy tessera.WitnessGroup) (*Gateway, error) {
+func New(httpClient *http.Client, pol policy.TLogPolicy) (*Gateway, error) {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 
 	witnesses := make(map[witnessKey]witness)
-	for uStr, vs := range policy.WitnessEndpoints() {
-		u, err := url.Parse(uStr)
+	for _, w := range pol.Witnesses {
+		if w.URL == nil {
+			return nil, fmt.Errorf("missing URL for subtree witness %q", w.Name)
+		}
+		v := w.Verifier
+		if v == nil {
+			return nil, fmt.Errorf("missing Verifier for witness %q", w.Name)
+		}
+		var sv f_note.SubtreeVerifier
+		sv, ok := v.(f_note.SubtreeVerifier)
+		if !ok {
+			// Ignore witnesses that do not implement SubtreeVerifier.
+			slog.WarnContext(context.Background(), "witness verifier does not implement SubtreeVerifier", slog.String("name", w.Name))
+			continue
+		}
+		cosignerID, err := mtcproof.ParseCosignerID(sv.Name())
 		if err != nil {
-			return nil, fmt.Errorf("invalid witness URL %q: %w", uStr, err)
+			return nil, fmt.Errorf("invalid cosigner ID for witness %s: %w", sv.Name(), err)
 		}
-		if len(vs) == 0 {
-			return nil, fmt.Errorf("no verifiers for witness %s", uStr)
+		k := witnessKey{name: sv.Name(), keyHash: sv.KeyHash()}
+		if _, exists := witnesses[k]; exists {
+			return nil, fmt.Errorf("duplicate witness %q with key hash %x", k.name, k.keyHash)
 		}
-		client := wc.NewWitness(u, httpClient)
-		for _, v := range vs {
-			if sv, ok := v.(f_note.SubtreeVerifier); ok {
-				cosignerID, err := mtcproof.ParseCosignerID(sv.Name())
-				if err != nil {
-					return nil, fmt.Errorf("invalid cosigner ID for witness %s: %w", sv.Name(), err)
-				}
-				witnesses[witnessKey{name: sv.Name(), keyHash: sv.KeyHash()}] = witness{
-					client:     client,
-					verifier:   sv,
-					cosignerID: cosignerID,
-				}
-			}
+		client := wc.NewWitness(w.URL, httpClient)
+		witnesses[k] = witness{
+			client:     client,
+			verifier:   sv,
+			cosignerID: cosignerID,
 		}
 	}
 
 	return &Gateway{
 		witnesses: witnesses,
-		policy:    policy,
+		policy:    pol,
 	}, nil
 }
 
