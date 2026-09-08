@@ -207,19 +207,6 @@ func TestPopulatePolicy(t *testing.T) {
 }
 
 func TestNewWitnessGroupFromPolicy(t *testing.T) {
-	wit1CoSigVKey, err := f_note.VKeyToCosignatureV1(testWit1VKey)
-	if err != nil {
-		t.Fatalf("failed to convert witness 1 vkey: %v", err)
-	}
-	wit2CoSigVKey, err := f_note.VKeyToCosignatureV1(testWit2VKey)
-	if err != nil {
-		t.Fatalf("failed to convert witness 2 vkey: %v", err)
-	}
-	wit3CoSigVKey, err := f_note.VKeyToCosignatureV1(testWit3VKey)
-	if err != nil {
-		t.Fatalf("failed to convert witness 3 vkey: %v", err)
-	}
-
 	w1Signer, err := f_note.NewSignerForCosignatureV1(testWit1SKey)
 	if err != nil {
 		t.Fatalf("failed to create witness 1 signer: %v", err)
@@ -250,7 +237,7 @@ func TestNewWitnessGroupFromPolicy(t *testing.T) {
 			policy: fmt.Sprintf(`witness w1 %s https://wit1.example.com
 group q 1 w1
 quorum q
-`, wit1CoSigVKey),
+`, testWit1VKey),
 			wantN:        1,
 			wantChildren: 1,
 			checkGroup: func(t *testing.T, wg WitnessGroup) {
@@ -261,7 +248,7 @@ quorum q
 				if got, want := w.URL, "https://wit1.example.com"; got != want {
 					t.Errorf("w.URL = %q, want %q", got, want)
 				}
-				if got, want := w.vkey, wit1CoSigVKey; got != want {
+				if got, want := w.vkey, testWit1VKey; got != want {
 					t.Errorf("w.vkey = %q, want %q", got, want)
 				}
 				if got, want := w.Key.Name(), "Wit1"; got != want {
@@ -281,7 +268,7 @@ quorum q
 			desc: "single witness direct quorum",
 			policy: fmt.Sprintf(`witness w1 %s https://wit1.example.com
 quorum w1
-`, wit1CoSigVKey),
+`, testWit1VKey),
 			wantN:        1,
 			wantChildren: 1,
 			checkGroup: func(t *testing.T, wg WitnessGroup) {
@@ -292,7 +279,7 @@ quorum w1
 				if got, want := w.URL, "https://wit1.example.com"; got != want {
 					t.Errorf("w.URL = %q, want %q", got, want)
 				}
-				if got, want := w.vkey, wit1CoSigVKey; got != want {
+				if got, want := w.vkey, testWit1VKey; got != want {
 					t.Errorf("w.vkey = %q, want %q", got, want)
 				}
 				if got, want := w.Key.Name(), "Wit1"; got != want {
@@ -328,7 +315,7 @@ witness w2 %s https://wit2.example.com
 witness w3 %s https://wit3.example.com
 group q 2 w1 w2 w3
 quorum q
-`, wit1CoSigVKey, wit2CoSigVKey, wit3CoSigVKey),
+`, testWit1VKey, testWit2VKey, testWit3VKey),
 			wantN:        2,
 			wantChildren: 3,
 			satisfyTests: []struct {
@@ -351,7 +338,7 @@ witness w3 %s https://wit3.example.com
 group sub 1 w2 w3
 group q 2 w1 sub
 quorum q
-`, wit1CoSigVKey, wit2CoSigVKey, wit3CoSigVKey),
+`, testWit1VKey, testWit2VKey, testWit3VKey),
 			wantN:        2,
 			wantChildren: 2,
 			checkGroup: func(t *testing.T, wg WitnessGroup) {
@@ -388,7 +375,7 @@ witness w2 %s https://wit2.example.com
 group sub any w1 w2
 group q all sub
 quorum q
-`, wit1CoSigVKey, wit2CoSigVKey),
+`, testWit1VKey, testWit2VKey),
 			wantN:        1,
 			wantChildren: 1,
 			satisfyTests: []struct {
@@ -418,7 +405,7 @@ quorum q
 			policy: fmt.Sprintf(`witness w1 %s https://wit1.example.com
 group q 1 undefined
 quorum q
-`, wit1CoSigVKey),
+`, testWit1VKey),
 			wantErr: true,
 		},
 		{
@@ -426,7 +413,7 @@ quorum q
 			policy: fmt.Sprintf(`witness w1 %s https://wit1.example.com
 group q 1 w1
 quorum unknown
-`, wit1CoSigVKey),
+`, testWit1VKey),
 			wantErr: true,
 		},
 	} {

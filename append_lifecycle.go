@@ -1185,7 +1185,11 @@ func (o *AppendOptions) WithWitnessPolicy(witnessPolicy policy.TLogPolicy, opts 
 // WithWitnesses configures the set of witnesses that Tessera will contact in order to cosign
 // a checkpoint before publishing it.
 func (o *AppendOptions) WithWitnesses(witnesses WitnessGroup, opts *WitnessOptions) *AppendOptions {
-	return o.WithWitnessPolicy(witnesses.toPolicy(), opts)
+	p, err := witnesses.toPolicy()
+	if err != nil {
+		panic(fmt.Sprintf("invalid WitnessGroup: %v", err))
+	}
+	return o.WithWitnessPolicy(p, opts)
 }
 
 // WithMirrorPolicy configures the set of tlog-mirror servers that Tessera will contact in order to obtain
@@ -1212,7 +1216,11 @@ func (o *AppendOptions) WithMirrorPolicy(mirrorPolicy policy.TLogPolicy, opts *M
 // WithMirrors configures the set of tlog-mirror servers that Tessera will contact in order to obtain
 // mirror cosignatures on a checkpoint before publishing it.
 func (o *AppendOptions) WithMirrors(mirrors WitnessGroup, opts *MirroringOptions) *AppendOptions {
-	return o.WithMirrorPolicy(mirrors.toPolicy(), opts)
+	p, err := mirrors.toPolicy()
+	if err != nil {
+		panic(fmt.Sprintf("invalid WitnessGroup: %v", err))
+	}
+	return o.WithMirrorPolicy(p, opts)
 }
 
 // WitnessOptions contains extra optional configuration for how Tessera should use/interact with
