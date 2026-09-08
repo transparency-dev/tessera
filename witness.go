@@ -89,6 +89,10 @@ func fromPolicy(p policy.TLogPolicy) (WitnessGroup, error) {
 				return WitnessGroup{}, fmt.Errorf("invalid policy: member %q not defined", m)
 			}
 		}
+		// This can only happen if the policy is invalid/malformed, but in the case that it does turns a panic into an error.
+		if int(g.Threshold) > len(members) {
+			return WitnessGroup{}, fmt.Errorf("group %q has threshold %d > %d members", g.Name, g.Threshold, len(members))
+		}
 		wg := NewWitnessGroup(int(g.Threshold), members...)
 		wg.grpName = g.Name
 		groups[g.Name] = wg
@@ -198,6 +202,10 @@ func populatePolicy(p *policy.TLogPolicy, wg WitnessGroup) (string, error) {
 	if grpName == "" {
 		grpName = fmt.Sprintf("anonGrp-%d", anonGroupNameCounter.Add(1))
 	}
+	// Loop through groups until we've found a name that doesn't exist
+	for groupExists(p, grpName) {
+		return "", fmt.Errorf("group %q already exists", grpName)
+	}
 	me := &policy.Group{
 		Name:      grpName,
 		Threshold: uint(wg.N),
@@ -207,22 +215,21 @@ func populatePolicy(p *policy.TLogPolicy, wg WitnessGroup) (string, error) {
 		switch c := c.(type) {
 		case Witness:
 			witName := c.name()
+			if witName == "" {
+				return "", fmt.Errorf("witness with vkey %q has no name", c.vkey)
+			}
 			u, err := url.Parse(c.URL)
 			if err != nil {
 				return "", fmt.Errorf("failed to parse witness URL %q: %w", c.URL, err)
 			}
-			if witName == "" {
-				witName = fmt.Sprintf("anonWit-%d", anonGroupNameCounter.Add(1))
-			}
 			alreadyAdded := false
 			for _, existing := range p.Witnesses {
 				if existing.Name == witName {
-					if existing.Verifier == c.Key && (existing.VKey == c.vkey || c.vkey == "") {
+					if existing.VKey == c.vkey {
 						alreadyAdded = true
 						break
 					}
-					witName = fmt.Sprintf("%s-%d", witName, anonGroupNameCounter.Add(1))
-					break
+					return "", fmt.Errorf("found duplicate witness %q with different vkey %q", witName, existing.VKey)
 				}
 			}
 			if !alreadyAdded {
@@ -248,13 +255,25 @@ func populatePolicy(p *policy.TLogPolicy, wg WitnessGroup) (string, error) {
 	return grpName, nil
 }
 
+func groupExists(p *policy.TLogPolicy, grpName string) bool {
+	for _, g := range p.Groups {
+		if g.Name == grpName {
+			return true
+		}
+	}
+	return false
+}
+
 // ToPolicy converts a [WitnessGroup] to a [policy.TLogPolicy].
 func (wg WitnessGroup) ToPolicy() (policy.TLogPolicy, error) {
 	return wg.toPolicy()
 }
 
 func (wg WitnessGroup) toPolicy() (policy.TLogPolicy, error) {
-	if wg.N == 0 || len(wg.Components) == 0 {
+	if wg.N > len(wg.Components) {
+		return policy.TLogPolicy{}, fmt.Errorf("threshold %d is larger than number of components %d", wg.N, len(wg.Components))
+	}
+	if len(wg.Components) == 0 {
 		return policy.TLogPolicy{
 			Quorum: "none",
 		}, nil
