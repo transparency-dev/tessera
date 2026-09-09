@@ -4,13 +4,15 @@ updates:
   directory: /
   ignore:
     - dependency-name: "go"
-      versions: ["> 1.25"]
+      versions: ["> 1.26"]
   groups:
     all-go-deps:
       patterns:
         - "*"
   schedule:
     interval: weekly
+  cooldown:
+      default-days: 7
 
 - package-ecosystem: github-actions
   directory: /
@@ -20,3 +22,6 @@ updates:
         - "*"
   schedule:
     interval: weekly
+  cooldown:
+      default-days: 7
+
