@@ -28,8 +28,8 @@ import (
 	"log/slog"
 	"os"
 
-	mexporter "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric"
-	texporter "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace"
+	mexporter "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric" //nolint:staticcheck // https://github.com/transparency-dev/tessera/issues/1167
+	texporter "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace" //nolint:staticcheck // https://github.com/transparency-dev/tessera/issues/1167
 )
 
 // initOTel initialises the open telemetry support for metrics and tracing.
@@ -66,7 +66,7 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 		os.Exit(1)
 	}
 
-	me, err := mexporter.New()
+	me, err := mexporter.New() //nolint:staticcheck // https://github.com/transparency-dev/tessera/issues/1167
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create metric exporter", slog.Any("error", err))
 		os.Exit(1)
@@ -80,7 +80,7 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 	shutdownFuncs = append(shutdownFuncs, mp.Shutdown)
 	otel.SetMeterProvider(mp)
 
-	te, err := texporter.New()
+	te, err := texporter.New() //nolint:staticcheck // https://github.com/transparency-dev/tessera/issues/1167
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create trace exporter", slog.Any("error", err))
 		os.Exit(1)

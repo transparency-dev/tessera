@@ -1,4 +1,4 @@
-FROM golang:1.25.13-alpine3.23@sha256:4ce6af6747b07e99ca3a57eadb77565787390a41b0039dcc8e09ec4c57cfa125 AS builder
+FROM golang:1.26.8-alpine3.24@sha256:ce864e7223ac17b1775e6fd0b4c0db580c2eb50e7953a427916379e4b92a1628 AS builder
 
 ARG GOFLAGS="-trimpath -buildvcs=false -buildmode=exe"
 ENV GOFLAGS=$GOFLAGS
@@ -18,7 +18,7 @@ COPY . .
 RUN go build -o bin/conformance-gcp ./cmd/conformance/gcp
 
 # Build release image
-FROM alpine:3.20.2@sha256:0a4eaa0eecf5f8c050e5bba433f58c052be7587ee8af3e8b3910ef9ab5fbe9f5
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 COPY --from=builder /build/bin/conformance-gcp /bin/conformance-gcp
 ENTRYPOINT ["/bin/conformance-gcp"]
