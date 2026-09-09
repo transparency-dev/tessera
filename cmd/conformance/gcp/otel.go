@@ -20,16 +20,17 @@ import (
 
 	"go.opentelemetry.io/contrib/detectors/gcp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/oauth"
 
 	"log/slog"
 	"os"
-
-	mexporter "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric" //nolint:staticcheck // https://github.com/transparency-dev/tessera/issues/1167
-	texporter "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace" //nolint:staticcheck // https://github.com/transparency-dev/tessera/issues/1167
 )
 
 // initOTel initialises the open telemetry support for metrics and tracing.
@@ -66,7 +67,17 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 		os.Exit(1)
 	}
 
-	me, err := mexporter.New() //nolint:staticcheck // https://github.com/transparency-dev/tessera/issues/1167
+	creds, err := oauth.NewApplicationDefault(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to load application default credentials", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	me, err := otlpmetricgrpc.New(
+		ctx,
+		otlpmetricgrpc.WithEndpoint("telemetry.googleapis.com:443"),
+		otlpmetricgrpc.WithDialOption(grpc.WithPerRPCCredentials(creds)),
+	)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create metric exporter", slog.Any("error", err))
 		os.Exit(1)
@@ -80,7 +91,11 @@ func initOTel(ctx context.Context, traceFraction float64) func(context.Context) 
 	shutdownFuncs = append(shutdownFuncs, mp.Shutdown)
 	otel.SetMeterProvider(mp)
 
-	te, err := texporter.New() //nolint:staticcheck // https://github.com/transparency-dev/tessera/issues/1167
+	te, err := otlptracegrpc.New(
+		ctx,
+		otlptracegrpc.WithEndpoint("telemetry.googleapis.com:443"),
+		otlptracegrpc.WithDialOption(grpc.WithPerRPCCredentials(creds)),
+	)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create trace exporter", slog.Any("error", err))
 		os.Exit(1)
