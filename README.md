@@ -140,7 +140,7 @@ and
 and performs the following steps:
   1. Create a new Checkpoint and sign it with the signer provided by [WithCheckpointSigner](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithCheckpointSigner)
   2. Contact witnesses and collect enough cosignatures to satisfy any witness policy configured by [WithWitnessPolicy](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithWitnessPolicy)
-  3. If the witness policy is satisfied, make this new Checkpoint public available
+  3. If the witness policy is satisfied, make this new Checkpoint publicly available
 
 An entry is considered published once it is committed to by a published Checkpoint (i.e. a published Checkpoint's size is larger than the entry's assigned index).
 Due to the nature of append-only logs, all Checkpoints issued after this point will also commit to inclusion of this entry.

@@ -494,7 +494,7 @@ func TestGatherCosignatures(t *testing.T) {
 		},
 		{
 			desc: "non-greedy stops after quorum is satisfied (1 of 2)",
-			policy: makeGroupPolicy(t, 1, []keyUrl{
+			policy: makeGroupPolicy(t, 1, []keyURL{
 				{key: testWit1VKey, url: "https://wit1.example.com"},
 				{key: testWit2VKey, url: "https://wit2.example.com"}}),
 			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
@@ -508,7 +508,7 @@ func TestGatherCosignatures(t *testing.T) {
 		},
 		{
 			desc: "greedy gathers surplus signatures (2 of 3 required, 3 provided)",
-			policy: makeGroupPolicy(t, 2, []keyUrl{
+			policy: makeGroupPolicy(t, 2, []keyURL{
 				{key: testWit1VKey, url: "https://wit1.example.com"},
 				{key: testWit2VKey, url: "https://wit2.example.com"},
 				{key: testWit3VKey, url: "https://wit3.example.com"}}),
@@ -525,7 +525,7 @@ func TestGatherCosignatures(t *testing.T) {
 		},
 		{
 			desc: "greedy succeeds when quorum is met and channel closes without further signatures (1 of 2 required, 1 provided)",
-			policy: makeGroupPolicy(t, 1, []keyUrl{
+			policy: makeGroupPolicy(t, 1, []keyURL{
 				{key: testWit1VKey, url: "https://wit1.example.com"},
 				{key: testWit2VKey, url: "https://wit2.example.com"}}),
 			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
@@ -539,7 +539,7 @@ func TestGatherCosignatures(t *testing.T) {
 		},
 		{
 			desc: "greedy fails when quorum is not met and channel closes (failOpen=false)",
-			policy: makeGroupPolicy(t, 2, []keyUrl{
+			policy: makeGroupPolicy(t, 2, []keyURL{
 				{key: testWit1VKey, url: "https://wit1.example.com"},
 				{key: testWit2VKey, url: "https://wit2.example.com"}}),
 			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
@@ -554,7 +554,7 @@ func TestGatherCosignatures(t *testing.T) {
 		},
 		{
 			desc: "greedy fails open when quorum is not met and channel closes (failOpen=true)",
-			policy: makeGroupPolicy(t, 2, []keyUrl{
+			policy: makeGroupPolicy(t, 2, []keyURL{
 				{key: testWit1VKey, url: "https://wit1.example.com"},
 				{key: testWit2VKey, url: "https://wit2.example.com"}}),
 			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
@@ -570,7 +570,7 @@ func TestGatherCosignatures(t *testing.T) {
 		},
 		{
 			desc: "greedy fails when quorum is not met on timeout (failOpen=false)",
-			policy: makeGroupPolicy(t, 2, []keyUrl{
+			policy: makeGroupPolicy(t, 2, []keyURL{
 				{key: testWit1VKey, url: "https://wit1.example.com"},
 				{key: testWit2VKey, url: "https://wit2.example.com"}}),
 			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
@@ -584,7 +584,7 @@ func TestGatherCosignatures(t *testing.T) {
 		},
 		{
 			desc: "greedy fails open when quorum is not met on timeout (failOpen=true)",
-			policy: makeGroupPolicy(t, 2, []keyUrl{
+			policy: makeGroupPolicy(t, 2, []keyURL{
 				{key: testWit1VKey, url: "https://wit1.example.com"},
 				{key: testWit2VKey, url: "https://wit2.example.com"}}),
 			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
@@ -680,7 +680,7 @@ func TestCheckpointPublisher(t *testing.T) {
 		t.Fatalf("failed to create witness 1 verifier: %v", err)
 	}
 
-	witnessPolicy := makeGroupPolicy(t, 1, []keyUrl{{key: testWit1VKey, url: witnessServerURL1.String()}})
+	witnessPolicy := makeGroupPolicy(t, 1, []keyURL{{key: testWit1VKey, url: witnessServerURL1.String()}})
 
 	witnessServer2 := httptest.NewServer(newWitnessHandler(t, logVerifier, testWit2SKey))
 	t.Cleanup(witnessServer2.Close)
@@ -694,7 +694,7 @@ func TestCheckpointPublisher(t *testing.T) {
 		t.Fatalf("failed to create witness 2 verifier: %v", err)
 	}
 
-	multiWitnessPolicy := makeGroupPolicy(t, 1, []keyUrl{
+	multiWitnessPolicy := makeGroupPolicy(t, 1, []keyURL{
 		{key: testWit1VKey, url: witnessServerURL1.String()},
 		{key: testWit2VKey, url: witnessServerURL2.String()}})
 
@@ -710,7 +710,7 @@ func TestCheckpointPublisher(t *testing.T) {
 		t.Fatalf("failed to create mirror verifier: %v", err)
 	}
 
-	mirrorPolicy := makeGroupPolicy(t, 1, []keyUrl{{testMirrorVKey, mirrorServerURL.String()}})
+	mirrorPolicy := makeGroupPolicy(t, 1, []keyURL{{testMirrorVKey, mirrorServerURL.String()}})
 
 	for _, test := range []struct {
 		desc                  string
@@ -777,7 +777,7 @@ func TestCheckpointPublisher(t *testing.T) {
 				defer failingWitnessServer.Close()
 
 				failingURL, _ := url.Parse(failingWitnessServer.URL)
-				failingWitnessPolicy := makeGroupPolicy(t, 1, []keyUrl{{
+				failingWitnessPolicy := makeGroupPolicy(t, 1, []keyURL{{
 					key: testWit1VKey,
 					url: failingURL.String()},
 				})
@@ -792,7 +792,7 @@ func TestCheckpointPublisher(t *testing.T) {
 				defer failingWitnessServer.Close()
 
 				failingURL, _ := url.Parse(failingWitnessServer.URL)
-				partiallyFailingPolicy := makeGroupPolicy(t, 1, []keyUrl{
+				partiallyFailingPolicy := makeGroupPolicy(t, 1, []keyURL{
 					{key: testWit1VKey, url: witnessServerURL1.String()},
 					{key: testWit2VKey, url: failingURL.String()},
 				})
@@ -976,12 +976,12 @@ func mustNewWitness(t *testing.T, vkey, urlStr string) Witness {
 	return wit
 }
 
-type keyUrl struct {
+type keyURL struct {
 	key string
 	url string
 }
 
-func makeGroupPolicy(t *testing.T, N int, ws []keyUrl) policy.TLogPolicy {
+func makeGroupPolicy(t *testing.T, N int, ws []keyURL) policy.TLogPolicy {
 	t.Helper()
 
 	b := []byte{}

@@ -841,12 +841,18 @@ func (o AppendOptions) witnessGateway(ctx context.Context, lr LogReader, httpCli
 		if w.URL == nil {
 			return nil, fmt.Errorf("invalid witness policy: witness %q has no URL", w.Name)
 		}
+		if w.Verifier == nil {
+			return nil, fmt.Errorf("invalid witness policy: witness %q verifier is nil", w.Name)
+		}
 		witnesses = append(witnesses, witness.Witness{
 			URL:       w.URL,
 			Verifiers: []note.Verifier{w.Verifier},
 		})
 	}
 	if len(witnesses) == 0 {
+		if o.witnessPolicy.Quorum != "" && o.witnessPolicy.Quorum != "none" {
+			return nil, fmt.Errorf("invalid witness policy: invalid quorum %q for zero witnesses", o.witnessPolicy.Quorum)
+		}
 		return nil, nil
 	}
 	witnessGateway, err := witness.NewGateway(ctx, witness.Options{
