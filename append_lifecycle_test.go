@@ -383,6 +383,25 @@ func TestWithWitnesses_BackwardsCompatibility(t *testing.T) {
 	if got, want := len(opts.witnessPolicy.Witnesses), 1; got != want {
 		t.Errorf("expected 1 witness in policy, got %d", got)
 	}
+	if opts.witnessPolicy.Quorum == "" || opts.witnessPolicy.Quorum == "none" {
+		t.Fatalf("expected non-empty quorum in policy, got %q", opts.witnessPolicy.Quorum)
+	}
+	wit1Sign, err := f_note.NewSignerForCosignatureV1(testWit1SKey)
+	if err != nil {
+		t.Fatalf("NewSignerForCosignatureV1: %v", err)
+	}
+	n := &note.Note{Text: "sign me\nI'm a\nnote\n"}
+	signedCP, err := note.Sign(n, wit1Sign)
+	if err != nil {
+		t.Fatalf("note.Sign: %v", err)
+	}
+	if !opts.witnessPolicy.Satisfied(signedCP) {
+		t.Errorf("expected witness policy to be satisfied by witness signature")
+	}
+	unsignedCP, _ := note.Sign(n)
+	if opts.witnessPolicy.Satisfied(unsignedCP) {
+		t.Errorf("expected witness policy to fail without witness signature")
+	}
 }
 
 func TestWithMirrors_BackwardsCompatibility(t *testing.T) {
@@ -395,6 +414,21 @@ func TestWithMirrors_BackwardsCompatibility(t *testing.T) {
 	}
 	if got, want := len(opts.mirrorPolicy.Witnesses), 1; got != want {
 		t.Errorf("expected 1 mirror in policy, got %d", got)
+	}
+	if opts.mirrorPolicy.Quorum == "" || opts.mirrorPolicy.Quorum == "none" {
+		t.Fatalf("expected non-empty quorum in mirror policy, got %q", opts.mirrorPolicy.Quorum)
+	}
+	mirrorSign, err := f_note.NewSignerForCosignatureV1(testWit1SKey)
+	if err != nil {
+		t.Fatalf("NewSignerForCosignatureV1: %v", err)
+	}
+	n := &note.Note{Text: "sign me\nI'm a\nnote\n"}
+	signedCP, err := note.Sign(n, mirrorSign)
+	if err != nil {
+		t.Fatalf("note.Sign: %v", err)
+	}
+	if !opts.mirrorPolicy.Satisfied(signedCP) {
+		t.Errorf("expected mirror policy to be satisfied by mirror signature")
 	}
 }
 
