@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/log"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/handler"
@@ -67,19 +68,25 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 	ctx := context.Background()
 
-	var policy tessera.WitnessGroup
+	var mPol policy.TLogPolicy
+	var witGroup tessera.WitnessGroup
 	if *mirrorPolicyFile != "" {
 		b, err := os.ReadFile(*mirrorPolicyFile)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to read mirror policy", slog.Any("error", err), slog.String("path", *mirrorPolicyFile))
 			os.Exit(1)
 		}
-		policy, err = tessera.NewWitnessGroupFromPolicy(b)
-		if err != nil {
+		if err := mPol.Unmarshal(b); err != nil {
 			slog.ErrorContext(ctx, "Failed to parse mirror policy", slog.Any("error", err), slog.String("path", *mirrorPolicyFile))
 			os.Exit(1)
 		}
-		slog.InfoContext(ctx, "Mirroring enabled", slog.Any("policy", policy), slog.String("path", *mirrorPolicyFile))
+		var gErr error
+		witGroup, gErr = tessera.FromPolicy(mPol)
+		if gErr != nil {
+			slog.ErrorContext(ctx, "Failed to convert mirror policy to witness group", slog.Any("error", gErr), slog.String("path", *mirrorPolicyFile))
+			os.Exit(1)
+		}
+		slog.InfoContext(ctx, "Mirroring enabled", slog.Any("policy", mPol), slog.String("path", *mirrorPolicyFile))
 	}
 
 	origin, signer, err := log.CreateSignerAndOrigin(*caID, *logNumber, mustGetPrivateKey())
@@ -97,7 +104,7 @@ func main() {
 		Timeout: *clientHTTPTimeout,
 	}
 
-	appender, shutdown, reader := newAppenderFromFlags(ctx, origin, signer, policy, httpClient)
+	appender, shutdown, reader := newAppenderFromFlags(ctx, origin, signer, mPol, httpClient)
 	opts := log.NewOptions().
 		WithTesseraReader(reader).
 		WithAwaiterPollInterval(*awaiterPollInterval).
@@ -106,7 +113,7 @@ func main() {
 		WithMaxCertLifetime(*maxCertLifetime).
 		WithOrigin(origin).
 		WithSubtreeSigner(signer).
-		WithSubtreeWitnesses(policy).
+		WithSubtreeWitnesses(witGroup).
 		WithHTTPClient(httpClient)
 	mtcLog, err := log.NewMTCLog(ctx, appender, opts)
 	if err != nil {
@@ -167,7 +174,7 @@ func getKeyFile(path string) (string, error) {
 	return string(k), nil
 }
 
-func newAppenderFromFlags(ctx context.Context, origin string, signer note.SubtreeSigner, policy tessera.WitnessGroup, httpClient *http.Client) (*tessera.Appender, func(ctx context.Context) error, tessera.LogReader) {
+func newAppenderFromFlags(ctx context.Context, origin string, signer note.SubtreeSigner, mirrorPolicy policy.TLogPolicy, httpClient *http.Client) (*tessera.Appender, func(ctx context.Context) error, tessera.LogReader) {
 	if *storageDir == "" {
 		slog.ErrorContext(ctx, "flag --storage_dir is required")
 		os.Exit(1)
@@ -192,7 +199,7 @@ func newAppenderFromFlags(ctx context.Context, origin string, signer note.Subtre
 		// checkpoints MUST be served with a minimum of 2 cosignatures. One of these
 		// MUST be from the MTC CA Operator and one MUST be from a Mirroring Cosigner
 		// recognized by Chrome and not operated by the MTC CA Operator."
-		opts = opts.WithMirrors(policy, nil)
+		opts = opts.WithMirrorPolicy(mirrorPolicy, nil)
 	}
 
 	cfg := posix.Config{
