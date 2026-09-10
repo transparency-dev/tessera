@@ -19,7 +19,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,6 +30,7 @@ import (
 	"log/slog"
 
 	f_log "github.com/transparency-dev/formats/log"
+	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api/layout"
 	m_gateway "github.com/transparency-dev/tessera/internal/mirror/gateway"
@@ -677,11 +677,11 @@ type AppendOptions struct {
 	checkpointRepublishInterval  time.Duration
 	checkpointPublicationTimeout time.Duration
 
-	witnesses   WitnessGroup
-	witnessOpts WitnessOptions
+	witnessPolicy policy.TLogPolicy
+	witnessOpts   WitnessOptions
 
-	mirrors    WitnessGroup
-	mirrorOpts MirroringOptions
+	mirrorPolicy policy.TLogPolicy
+	mirrorOpts   MirroringOptions
 
 	addDecorators []func(AddFn) AddFn
 	followers     []Follower
@@ -772,19 +772,6 @@ func (o *AppendOptions) WithAntispam(inMemEntries uint, as Antispam) *AppendOpti
 	return o
 }
 
-// parseURLs converts a list of URL strings to a list of *url.URL, failing if any cannot be parsed.
-func parseURLs(us []string) ([]*url.URL, error) {
-	ret := make([]*url.URL, 0, len(us))
-	for _, s := range us {
-		u, err := url.Parse(s)
-		if err != nil {
-			return nil, err
-		}
-		ret = append(ret, u)
-	}
-	return ret, nil
-}
-
 // CheckpointPublisher should not be used.
 // Deprecated: Use CheckpointPublisherContext.
 func (o AppendOptions) CheckpointPublisher(lr LogReader, httpClient *http.Client) func(context.Context, uint64, []byte) ([]byte, error) {
@@ -821,7 +808,7 @@ func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogRea
 					defer cancel()
 
 					var err error
-					ws, err = witnessCheckpoint(ctx, witnessGateway.CosignCheckpoint, &o.witnesses, cp, cpSize, o.witnessOpts.FailOpen, o.witnessOpts.Greedy)
+					ws, err = witnessCheckpoint(ctx, witnessGateway.CosignCheckpoint, o.witnessPolicy, cp, cpSize, o.witnessOpts.FailOpen, o.witnessOpts.Greedy)
 					return err
 				})
 			}
@@ -832,7 +819,7 @@ func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogRea
 					defer cancel()
 
 					var err error
-					ms, err = mirrorCheckpoint(ctx, mirrorGateway.CosignCheckpoint, &o.mirrors, cp, cpSize, o.mirrorOpts.FailOpen, false)
+					ms, err = mirrorCheckpoint(ctx, mirrorGateway.CosignCheckpoint, o.mirrorPolicy, cp, cpSize, o.mirrorOpts.FailOpen, false)
 					return err
 				})
 			}
@@ -850,17 +837,22 @@ func (o AppendOptions) CheckpointPublisherContext(ctx context.Context, lr LogRea
 // witnessGateway creates and returns a witnessGateway instance, or nil if no witnesses are configured.
 func (o AppendOptions) witnessGateway(ctx context.Context, lr LogReader, httpClient *http.Client) (*witness.WitnessGateway, error) {
 	witnesses := []witness.Witness{}
-	for uStr, vs := range o.witnesses.WitnessEndpoints() {
-		u, err := url.Parse(uStr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse witness URL: %w", err)
+	for _, w := range o.witnessPolicy.Witnesses {
+		if w.URL == nil {
+			return nil, fmt.Errorf("invalid witness policy: witness %q has no URL", w.Name)
+		}
+		if w.Verifier == nil {
+			return nil, fmt.Errorf("invalid witness policy: witness %q verifier is nil", w.Name)
 		}
 		witnesses = append(witnesses, witness.Witness{
-			URL:       u,
-			Verifiers: vs,
+			URL:       w.URL,
+			Verifiers: []note.Verifier{w.Verifier},
 		})
 	}
 	if len(witnesses) == 0 {
+		if o.witnessPolicy.Quorum != "" && o.witnessPolicy.Quorum != "none" {
+			return nil, fmt.Errorf("invalid witness policy: invalid quorum %q for zero witnesses", o.witnessPolicy.Quorum)
+		}
 		return nil, nil
 	}
 	witnessGateway, err := witness.NewGateway(ctx, witness.Options{
@@ -873,9 +865,17 @@ func (o AppendOptions) witnessGateway(ctx context.Context, lr LogReader, httpCli
 
 // mirrorGateway creates and returns a mirrorGateway instance, or nil if no mirrors are configured.
 func (o AppendOptions) mirrorGateway(ctx context.Context, lr LogReader, httpClient *http.Client) (*m_gateway.Gateway, error) {
-	mirrorURLs, err := parseURLs(slices.Collect(maps.Keys(o.mirrors.WitnessEndpoints())))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse mirror URLs: %w", err)
+	mirrorURLs := []*url.URL{}
+	seen := make(map[string]bool)
+	for _, m := range o.mirrorPolicy.Witnesses {
+		if m.URL == nil {
+			return nil, fmt.Errorf("invalid mirror policy: mirror %q has no URL", m.Name)
+		}
+		uStr := m.URL.String()
+		if !seen[uStr] {
+			seen[uStr] = true
+			mirrorURLs = append(mirrorURLs, m.URL)
+		}
 	}
 	if len(mirrorURLs) == 0 {
 		return nil, nil
@@ -894,12 +894,12 @@ func (o AppendOptions) mirrorGateway(ctx context.Context, lr LogReader, httpClie
 
 // witnessCheckpoint takes care of witnessing the given checkpoint with the provided witness policy.
 // Returns signatures from witnesses, ready to append to the checkpoint, or an error.
-func witnessCheckpoint(ctx context.Context, cosign cosigSource, policy *WitnessGroup, cp []byte, cpSize uint64, failOpen bool, greedy bool) ([]byte, error) {
+func witnessCheckpoint(ctx context.Context, cosign cosigSource, wPol policy.TLogPolicy, cp []byte, cpSize uint64, failOpen bool, greedy bool) ([]byte, error) {
 	return otel.Trace(ctx, "tessera.CheckpointPublisher.Witness", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
 		start := time.Now()
 		witAttr := []attribute.KeyValue{}
 
-		sigs, err := gatherCosignatures(ctx, "witness", cosign, policy, cp, cpSize, failOpen, greedy)
+		sigs, err := gatherCosignatures(ctx, "witness", cosign, wPol, cp, cpSize, failOpen, greedy)
 		if err != nil {
 			if !errors.Is(err, errFailedOpen) {
 				appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(attribute.String("error.type", "failed")))
@@ -918,9 +918,9 @@ func witnessCheckpoint(ctx context.Context, cosign cosigSource, policy *WitnessG
 
 // mirrorCheckpoint takes care of mirroring the given checkpoint with the provided mirror policy.
 // Returns signatures from mirrors, ready to append to the checkpoint, or an error.
-func mirrorCheckpoint(ctx context.Context, cosign cosigSource, policy *WitnessGroup, cp []byte, cpSize uint64, failOpen bool, greedy bool) ([]byte, error) {
+func mirrorCheckpoint(ctx context.Context, cosign cosigSource, mPol policy.TLogPolicy, cp []byte, cpSize uint64, failOpen bool, greedy bool) ([]byte, error) {
 	return otel.Trace(ctx, "tessera.CheckpointPublisher.Mirror", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
-		sigs, err := gatherCosignatures(ctx, "mirror", cosign, policy, cp, cpSize, failOpen, greedy)
+		sigs, err := gatherCosignatures(ctx, "mirror", cosign, mPol, cp, cpSize, failOpen, greedy)
 		if err != nil {
 			if !errors.Is(err, errFailedOpen) {
 				slog.WarnContext(ctx, "Failed to collect mirror signatures", slog.Any("error", err))
@@ -932,6 +932,8 @@ func mirrorCheckpoint(ctx context.Context, cosign cosigSource, policy *WitnessGr
 }
 
 // cosigSource defines a function that can be called to fetch cosignatures.
+// Implementations should send cosignatures via the returned channel as they become available, and MUST
+// close the channel once no further signatures will be sent, or the context is cancelled.
 type cosigSource func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte
 
 // errFailedOpen is returned by gatherCosignatures if it did not get sufficient cosignatures to satisfy
@@ -940,13 +942,11 @@ var errFailedOpen = errors.New("failed-open")
 
 // gatherCosignatures gathers signatures from a source, applying a policy to determine if the signatures are sufficient.
 // It returns a set of signatures which satisfy the policy (potentially more than required if greedy is true), or an error if the policy is not met and failOpen is false.
-func gatherCosignatures(ctx context.Context, name string, fetcher cosigSource, policy *WitnessGroup, cp []byte, cpSize uint64, failOpen bool, greedy bool) ([]byte, error) {
-	maxExpectedResponses := len(policy.WitnessEndpoints())
-
+func gatherCosignatures(ctx context.Context, name string, fetcher cosigSource, pol policy.TLogPolicy, cp []byte, cpSize uint64, failOpen bool, greedy bool) ([]byte, error) {
 	// checkPolicy checks if the provided signatures satisfy the given policy.
 	checkPolicy := func(sigs []byte, failOpen bool) ([]byte, error) {
 		newCP := append(slices.Clone(cp), sigs...)
-		if policy.Satisfied(newCP) {
+		if pol.Satisfied(newCP) {
 			return sigs, nil
 		}
 		if failOpen {
@@ -961,7 +961,6 @@ func gatherCosignatures(ctx context.Context, name string, fetcher cosigSource, p
 	// or the context is done.
 	collectSigs := func(ctx context.Context, sigCh <-chan []byte) ([]byte, error) {
 		var sigBlock bytes.Buffer
-		gotResponses := 0
 		for {
 			select {
 			case <-ctx.Done():
@@ -972,19 +971,20 @@ func gatherCosignatures(ctx context.Context, name string, fetcher cosigSource, p
 				return sigs, pErr
 			case sig, ok := <-sigCh:
 				if !ok {
-					// No more signatures are coming.
+					// The source has closed the channel, no more signatures will be coming.
+					// So check what we have against the policy, and return accordingly.
 					sigs, pErr := checkPolicy(sigBlock.Bytes(), failOpen)
 					if pErr != nil {
 						pErr = fmt.Errorf("%w: no more signatures available", pErr)
 					}
 					return sigs, pErr
 				}
-				gotResponses++
+
 				sigBlock.Write(sig)
 				// If we're greedy, we need to keep collecting until we've got all the responses
 				// (or the context is cancelled).
 				// Otherwise we can return as soon as we've met the policy.
-				if !greedy || gotResponses == maxExpectedResponses {
+				if !greedy {
 					// Don't allow failOpen here, or we'll break out of the collection loop prematurely.
 					sigs, err := checkPolicy(sigBlock.Bytes(), false)
 					if err == nil {
@@ -996,7 +996,19 @@ func gatherCosignatures(ctx context.Context, name string, fetcher cosigSource, p
 	}
 
 	return otel.Trace(ctx, "tessera.gatherCosignatures", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
-		if len(policy.Components) == 0 {
+		if len(pol.Witnesses) == 0 {
+			return nil, nil
+		}
+
+		// A policy can name witnesses and yet be satisfied by the empty set of cosignatures,
+		// e.g. one whose quorum is "none". There's nothing to wait for in that case, so publish
+		// straight away rather than delaying every checkpoint by a witness round-trip (or, if
+		// the witnesses are unreachable, by the full timeout).
+		//
+		// Greedy is the exception: there we've been explicitly asked to collect whatever surplus
+		// cosignatures we can within the time available.
+		if !greedy && pol.Satisfied(cp) {
+			span.AddEvent("Policy satisfied with no cosignatures")
 			return nil, nil
 		}
 
@@ -1157,14 +1169,13 @@ func (o *AppendOptions) WithCheckpointPublicationTimeout(timeout time.Duration) 
 	return o
 }
 
-// WithWitnesses configures the set of witnesses that Tessera will contact in order to cosign
-// a checkpoint before publishing it. A request will be sent to every witness referenced by the group
-// using the URLs method. The checkpoint will be accepted for publishing when a sufficient number of
-// witnesses to Satisfy the group have responded.
+// WithWitnessPolicy configures the set of witnesses that Tessera will contact in order to cosign
+// a checkpoint before publishing it. A request will be sent to every witness referenced by the policy.
+// The checkpoint will be accepted for publishing when a sufficient number of witnesses to satisfy
+// the policy have responded.
 //
-// If this method is not called, then the default empty WitnessGroup will be used, which contacts zero
-// witnesses and requires zero witnesses in order to publish.
-func (o *AppendOptions) WithWitnesses(witnesses WitnessGroup, opts *WitnessOptions) *AppendOptions {
+// If this method is not called, then witnessing will not be performed.
+func (o *AppendOptions) WithWitnessPolicy(witnessPolicy policy.TLogPolicy, opts *WitnessOptions) *AppendOptions {
 	if opts == nil {
 		opts = &WitnessOptions{}
 	}
@@ -1172,20 +1183,30 @@ func (o *AppendOptions) WithWitnesses(witnesses WitnessGroup, opts *WitnessOptio
 		opts.Timeout = DefaultWitnessTimeout
 	}
 
-	o.witnesses = witnesses
+	o.witnessPolicy = witnessPolicy
 	o.witnessOpts = *opts
 	return o
 }
 
-// WithMirrors configures the set of tlog-mirror servers that Tessera will contact in order to obtain
+// WithWitnesses configures the set of witnesses that Tessera will contact in order to cosign
+// a checkpoint before publishing it.
+func (o *AppendOptions) WithWitnesses(witnesses WitnessGroup, opts *WitnessOptions) *AppendOptions {
+	p, err := witnesses.toPolicy()
+	if err != nil {
+		panic(fmt.Sprintf("invalid WitnessGroup: %v", err))
+	}
+	return o.WithWitnessPolicy(p, opts)
+}
+
+// WithMirrorPolicy configures the set of tlog-mirror servers that Tessera will contact in order to obtain
 // mirror cosignatures on a checkpoint before publishing it.
 //
-// Requests will be sent to every mirror referenced by the group using the tlog-mirror API at the configured URL.
-// The checkpoint will be accepted for publishing when a sufficient number of mirrors to satisfy the group
+// Requests will be sent to every mirror referenced by the policy using the tlog-mirror API at the configured URL.
+// The checkpoint will be accepted for publishing when a sufficient number of mirrors to satisfy the policy
 // have responded.
 //
-// If this method is not called, then no mirror cosignatures will be required to publish.
-func (o *AppendOptions) WithMirrors(mirrors WitnessGroup, opts *MirroringOptions) *AppendOptions {
+// If this method is not called, then mirroring will not be performed.
+func (o *AppendOptions) WithMirrorPolicy(mirrorPolicy policy.TLogPolicy, opts *MirroringOptions) *AppendOptions {
 	if opts == nil {
 		opts = &MirroringOptions{}
 	}
@@ -1193,9 +1214,19 @@ func (o *AppendOptions) WithMirrors(mirrors WitnessGroup, opts *MirroringOptions
 		opts.Timeout = DefaultMirrorTimeout
 	}
 
-	o.mirrors = mirrors
+	o.mirrorPolicy = mirrorPolicy
 	o.mirrorOpts = *opts
 	return o
+}
+
+// WithMirrors configures the set of tlog-mirror servers that Tessera will contact in order to obtain
+// mirror cosignatures on a checkpoint before publishing it.
+func (o *AppendOptions) WithMirrors(mirrors WitnessGroup, opts *MirroringOptions) *AppendOptions {
+	p, err := mirrors.toPolicy()
+	if err != nil {
+		panic(fmt.Sprintf("invalid WitnessGroup: %v", err))
+	}
+	return o.WithMirrorPolicy(p, opts)
 }
 
 // WitnessOptions contains extra optional configuration for how Tessera should use/interact with
@@ -1290,14 +1321,29 @@ func (o *AppendOptions) LogValue() slog.Value {
 		attrs = append(attrs, slog.Any("additionalSigners", names))
 	}
 
-	if len(o.witnesses.Components) > 0 {
-		endpoints := o.witnesses.WitnessEndpoints()
-		urls := make([]string, 0, len(endpoints))
-		for u := range endpoints {
-			urls = append(urls, u)
+	if len(o.witnessPolicy.Witnesses) > 0 {
+		urls := make([]string, 0, len(o.witnessPolicy.Witnesses))
+		for _, w := range o.witnessPolicy.Witnesses {
+			if w.URL != nil {
+				urls = append(urls, w.URL.String())
+			}
 		}
 		attrs = append(attrs, slog.Group("witnesses",
-			slog.Int("threshold", o.witnesses.N),
+			slog.Int("groups", len(o.witnessPolicy.Groups)),
+			slog.Any("quorum", o.witnessPolicy.Quorum),
+			slog.Any("endpoints", urls),
+		))
+	}
+	if len(o.mirrorPolicy.Witnesses) > 0 {
+		urls := make([]string, 0, len(o.mirrorPolicy.Witnesses))
+		for _, w := range o.mirrorPolicy.Witnesses {
+			if w.URL != nil {
+				urls = append(urls, w.URL.String())
+			}
+		}
+		attrs = append(attrs, slog.Group("mirrors",
+			slog.Int("groups", len(o.mirrorPolicy.Groups)),
+			slog.Any("quorum", o.mirrorPolicy.Quorum),
 			slog.Any("endpoints", urls),
 		))
 	}

@@ -32,6 +32,7 @@ import (
 	"time"
 
 	f_note "github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/witness/config"
 	"github.com/transparency-dev/witness/persistence/inmemory"
@@ -97,23 +98,23 @@ func TestAppendOptionsValid(t *testing.T) {
 			name: "Valid: CheckpointPublicationTimeout < WitnessTimeout adjusts publication timeout",
 			opts: NewAppendOptions().
 				WithCheckpointSigner(mustCreateSigner(t, testSignerKey)).
-				WithCheckpointPublicationTimeout(1 * time.Second).
-				WithWitnesses(NewWitnessGroup(0), &WitnessOptions{Timeout: 10 * time.Second}),
+				WithCheckpointPublicationTimeout(1*time.Second).
+				WithWitnessPolicy(policy.TLogPolicy{Quorum: "none"}, &WitnessOptions{Timeout: 10 * time.Second}),
 			wantPublicationTimeout: 10 * time.Second,
 		}, {
 			name: "Valid: CheckpointPublicationTimeout < MirrorTimeout adjusts publication timeout",
 			opts: NewAppendOptions().
 				WithCheckpointSigner(mustCreateSigner(t, testSignerKey)).
-				WithCheckpointPublicationTimeout(1 * time.Second).
-				WithMirrors(NewWitnessGroup(0), &MirroringOptions{Timeout: 15 * time.Second}),
+				WithCheckpointPublicationTimeout(1*time.Second).
+				WithMirrorPolicy(policy.TLogPolicy{Quorum: "none"}, &MirroringOptions{Timeout: 15 * time.Second}),
 			wantPublicationTimeout: 15 * time.Second,
 		}, {
 			name: "Valid: CheckpointPublicationTimeout adjusts to max of WitnessTimeout and MirrorTimeout",
 			opts: NewAppendOptions().
 				WithCheckpointSigner(mustCreateSigner(t, testSignerKey)).
-				WithCheckpointPublicationTimeout(1 * time.Second).
-				WithWitnesses(NewWitnessGroup(0), &WitnessOptions{Timeout: 10 * time.Second}).
-				WithMirrors(NewWitnessGroup(0), &MirroringOptions{Timeout: 20 * time.Second}),
+				WithCheckpointPublicationTimeout(1*time.Second).
+				WithWitnessPolicy(policy.TLogPolicy{Quorum: "none"}, &WitnessOptions{Timeout: 10 * time.Second}).
+				WithMirrorPolicy(policy.TLogPolicy{Quorum: "none"}, &MirroringOptions{Timeout: 20 * time.Second}),
 			wantPublicationTimeout: 20 * time.Second,
 		}, {
 			name: "Error: CheckpointRepublishInterval < CheckpointInterval",
@@ -268,7 +269,7 @@ func TestWithMirrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create witness: %v", err)
 	}
-	mirrors := NewWitnessGroup(1, wit)
+	mirrorGrp := NewWitnessGroup(1, wit)
 
 	for _, test := range []struct {
 		desc           string
@@ -302,10 +303,7 @@ func TestWithMirrors(t *testing.T) {
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
-			opts := NewAppendOptions().WithMirrors(mirrors, test.mirrorOpts)
-			if len(opts.mirrors.Components) != 1 {
-				t.Errorf("expected 1 mirror component, got %d", len(opts.mirrors.Components))
-			}
+			opts := NewAppendOptions().WithMirrors(mirrorGrp, test.mirrorOpts)
 			if got, want := opts.mirrorOpts.Timeout, test.expectTimeout; got != want {
 				t.Errorf("expected timeout %v, got %v", want, got)
 			}
@@ -316,9 +314,12 @@ func TestWithMirrors(t *testing.T) {
 	}
 }
 
-func TestWithWitnesses(t *testing.T) {
-	wit := mustNewWitness(t, testWit1VKey, "https://witness.example.com")
-	witnesses := NewWitnessGroup(1, wit)
+func TestWithWitnessPolicy(t *testing.T) {
+	witnesses := policy.TLogPolicy{}
+	policy := fmt.Appendf(nil, "witness w1 %s %s\nquorum w1\n", testWit1VKey, "https://witness.example.com")
+	if err := witnesses.Unmarshal(policy); err != nil {
+		t.Fatalf("failed to unmarshal witness policy: %v", err)
+	}
 
 	for _, test := range []struct {
 		desc           string
@@ -358,10 +359,7 @@ func TestWithWitnesses(t *testing.T) {
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
-			opts := NewAppendOptions().WithWitnesses(witnesses, test.witnessOpts)
-			if len(opts.witnesses.Components) != 1 {
-				t.Errorf("expected 1 witness component, got %d", len(opts.witnesses.Components))
-			}
+			opts := NewAppendOptions().WithWitnessPolicy(witnesses, test.witnessOpts)
 			if got, want := opts.witnessOpts.Timeout, test.expectTimeout; got != want {
 				t.Errorf("expected timeout %v, got %v", want, got)
 			}
@@ -375,16 +373,62 @@ func TestWithWitnesses(t *testing.T) {
 	}
 }
 
-const (
-	testWit1VKey = "Wit1+55ee4561+AVhZSmQj9+SoL+p/nN0Hh76xXmF7QcHfytUrI1XfSClk"
-	testWit1SKey = "PRIVATE+KEY+Wit1+55ee4561+AeadRiG7XM4XiieCHzD8lxysXMwcViy5nYsoXURWGrlE"
-	testWit2VKey = "Wit2+85ecc407+AWVbwFJte9wMQIPSnEnj4KibeO6vSIOEDUTDp3o63c2x"
-	testWit2SKey = "PRIVATE+KEY+Wit2+85ecc407+AfPTvxw5eUcqSgivo2vaiC7JPOMUZ/9baHPSDrWqgdGm"
-	testWit3VKey = "Wit3+d3ed3be7+ASb6Uz1+fxAcXkMvDd7nGa3FjDce7LxIKmbbTCT0MpVn"
-	testWit3SKey = "PRIVATE+KEY+Wit3+d3ed3be7+AR2Kg8k6ccBr5QXz5SHtnkOS4UGQGEQaWi6Gfr6Mm3X5"
+func TestWithWitnesses_BackwardsCompatibility(t *testing.T) {
+	wit := mustNewWitness(t, testWit1VKey, "https://witness.example.com")
+	wg := NewWitnessGroup(1, wit)
+	opts := NewAppendOptions().WithWitnesses(wg, &WitnessOptions{Timeout: 5 * time.Second})
+	if got, want := opts.witnessOpts.Timeout, 5*time.Second; got != want {
+		t.Errorf("expected timeout %v, got %v", want, got)
+	}
+	if got, want := len(opts.witnessPolicy.Witnesses), 1; got != want {
+		t.Errorf("expected 1 witness in policy, got %d", got)
+	}
+}
 
-	testMirrorVKey = "Mirror1+66ee4561+AVhZSmQj9+SoL+p/nN0Hh76xXmF7QcHfytUrI1XfSClk"
-	testMirrorSKey = "PRIVATE+KEY+Mirror1+66ee4561+AeadRiG7XM4XiieCHzD8lxysXMwcViy5nYsoXURWGrlE"
+func TestWithMirrors_BackwardsCompatibility(t *testing.T) {
+	u, _ := url.Parse("https://mirror.example.com")
+	wit, _ := NewWitness(testWit1VKey, u)
+	wg := NewWitnessGroup(1, wit)
+	opts := NewAppendOptions().WithMirrors(wg, &MirroringOptions{Timeout: 5 * time.Second})
+	if got, want := opts.mirrorOpts.Timeout, 5*time.Second; got != want {
+		t.Errorf("expected timeout %v, got %v", want, got)
+	}
+	if got, want := len(opts.mirrorPolicy.Witnesses), 1; got != want {
+		t.Errorf("expected 1 mirror in policy, got %d", got)
+	}
+}
+
+func TestMirrorGateway_DeduplicateURLs(t *testing.T) {
+	mURL, _ := url.Parse("https://mirror.example.com")
+	lr := newFakeLogReaderForTest(t)
+
+	pol := policy.TLogPolicy{
+		Witnesses: []policy.Witness{
+			{Name: "m1", URL: mURL, VKey: testMirrorVKey},
+			{Name: "m2", URL: mURL, VKey: testMirrorVKey},
+		},
+		Quorum: "m1",
+	}
+	opts := NewAppendOptions().WithMirrorPolicy(pol, nil)
+	gw, err := opts.mirrorGateway(t.Context(), lr, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gw == nil {
+		t.Fatal("expected non-nil mirror gateway")
+	}
+}
+
+const (
+	testWit1VKey = "Wit1+4dd489c8+BDd/u4KCwMnyfkbOqopYZJIGSuMxMnjGav6Pjb9W8Y3c"
+	testWit1SKey = "PRIVATE+KEY+Wit1+362a3b47+AVq3ou1kOLb/aTkJLoMwbMULJQNr8EQVGbpyZxMEZMyT"
+	testWit2VKey = "Wit2+ef71459d+BJ1w/MdWovBzZtRD4pNwmb9SHl1U+hZzCMsgx6MmMJ0L"
+	testWit2SKey = "PRIVATE+KEY+Wit2+4bf908f8+AXLjVp1/sY1o5exVavpVt8zWIVFAD7ejqaMBU38CoYgg"
+	testWit3VKey = "Wit3+e1fc6196+BO1XsCjtkV0G56JUYj7n6LykElL1GcNo1BytsQMsRjyZ"
+	testWit3SKey = "PRIVATE+KEY+Wit3+86588ce7+AS6qbV1WaGUoVgAz3CajG9iCm1pLZ5eUTKBD6XxJVl5x"
+
+	testMirrorVKey = "Mirror1+e2466b7b+BECHU/Mq/HN+4Nmsxw/NxmRTZ1dvOkgf3IkAS/+XJ9Za"
+	testMirrorSKey = "PRIVATE+KEY+Mirror1+eccc0fa7+ATLe/CQcL8aCY0TofdnDKFX43pZj6NOY8BNQIgqJ885A"
 )
 
 func createCosignature(t *testing.T, baseNote *note.Note, witnessSKey string) []byte {
@@ -411,9 +455,6 @@ func TestGatherCosignatures(t *testing.T) {
 		t.Fatalf("failed to create log verifier: %v", err)
 	}
 
-	wit1 := mustNewWitness(t, testWit1VKey, "https://wit1.example.com")
-	wit2 := mustNewWitness(t, testWit2VKey, "https://wit2.example.com")
-	wit3 := mustNewWitness(t, testWit3VKey, "https://wit3.example.com")
 	wit1Verifier, _ := f_note.NewVerifierForCosignatureV1(testWit1VKey)
 	wit2Verifier, _ := f_note.NewVerifierForCosignatureV1(testWit2VKey)
 	wit3Verifier, _ := f_note.NewVerifierForCosignatureV1(testWit3VKey)
@@ -430,11 +471,12 @@ func TestGatherCosignatures(t *testing.T) {
 	sig2 := createCosignature(t, n, testWit2SKey)
 	sig3 := createCosignature(t, n, testWit3SKey)
 
+	timeout := time.Second
+
 	for _, test := range []struct {
 		desc               string
-		policy             WitnessGroup
+		policy             policy.TLogPolicy
 		fetcher            func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte
-		timeout            time.Duration
 		failOpen           bool
 		greedy             bool
 		expectCosignatures []note.Verifier
@@ -443,16 +485,18 @@ func TestGatherCosignatures(t *testing.T) {
 	}{
 		{
 			desc:   "empty policy",
-			policy: WitnessGroup{},
+			policy: policy.TLogPolicy{},
 			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
 				ch := make(chan []byte)
-				close(ch)
+				defer close(ch)
 				return ch
 			},
 		},
 		{
-			desc:   "non-greedy stops after quorum is satisfied (1 of 2)",
-			policy: NewWitnessGroup(1, wit1, wit2),
+			desc: "non-greedy stops after quorum is satisfied (1 of 2)",
+			policy: makeGroupPolicy(t, 1, []keyURL{
+				{key: testWit1VKey, url: "https://wit1.example.com"},
+				{key: testWit2VKey, url: "https://wit2.example.com"}}),
 			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
 				ch := make(chan []byte, 2)
 				ch <- sig1
@@ -463,10 +507,14 @@ func TestGatherCosignatures(t *testing.T) {
 			expectCosignatures: []note.Verifier{wit1Verifier},
 		},
 		{
-			desc:   "greedy gathers surplus signatures (2 of 3 required, 3 provided)",
-			policy: NewWitnessGroup(2, wit1, wit2, wit3),
+			desc: "greedy gathers surplus signatures (2 of 3 required, 3 provided)",
+			policy: makeGroupPolicy(t, 2, []keyURL{
+				{key: testWit1VKey, url: "https://wit1.example.com"},
+				{key: testWit2VKey, url: "https://wit2.example.com"},
+				{key: testWit3VKey, url: "https://wit3.example.com"}}),
 			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
 				ch := make(chan []byte, 3)
+				defer close(ch)
 				ch <- sig1
 				ch <- sig2
 				ch <- sig3
@@ -476,24 +524,28 @@ func TestGatherCosignatures(t *testing.T) {
 			expectCosignatures: []note.Verifier{wit1Verifier, wit2Verifier, wit3Verifier},
 		},
 		{
-			desc:   "greedy succeeds when quorum is met and channel closes without further signatures (1 of 2 required, 1 provided)",
-			policy: NewWitnessGroup(1, wit1, wit2),
+			desc: "greedy succeeds when quorum is met and channel closes without further signatures (1 of 2 required, 1 provided)",
+			policy: makeGroupPolicy(t, 1, []keyURL{
+				{key: testWit1VKey, url: "https://wit1.example.com"},
+				{key: testWit2VKey, url: "https://wit2.example.com"}}),
 			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
 				ch := make(chan []byte, 1)
+				defer close(ch)
 				ch <- sig1
-				close(ch)
 				return ch
 			},
 			greedy:             true,
 			expectCosignatures: []note.Verifier{wit1Verifier},
 		},
 		{
-			desc:   "greedy fails when quorum is not met and channel closes (failOpen=false)",
-			policy: NewWitnessGroup(2, wit1, wit2),
+			desc: "greedy fails when quorum is not met and channel closes (failOpen=false)",
+			policy: makeGroupPolicy(t, 2, []keyURL{
+				{key: testWit1VKey, url: "https://wit1.example.com"},
+				{key: testWit2VKey, url: "https://wit2.example.com"}}),
 			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
 				ch := make(chan []byte, 1)
+				defer close(ch)
 				ch <- sig1
-				close(ch)
 				return ch
 			},
 			greedy:    true,
@@ -501,12 +553,14 @@ func TestGatherCosignatures(t *testing.T) {
 			expectErr: true,
 		},
 		{
-			desc:   "greedy fails open when quorum is not met and channel closes (failOpen=true)",
-			policy: NewWitnessGroup(2, wit1, wit2),
+			desc: "greedy fails open when quorum is not met and channel closes (failOpen=true)",
+			policy: makeGroupPolicy(t, 2, []keyURL{
+				{key: testWit1VKey, url: "https://wit1.example.com"},
+				{key: testWit2VKey, url: "https://wit2.example.com"}}),
 			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
 				ch := make(chan []byte, 1)
+				defer close(ch)
 				ch <- sig1
-				close(ch)
 				return ch
 			},
 			greedy:             true,
@@ -515,27 +569,29 @@ func TestGatherCosignatures(t *testing.T) {
 			expectCosignatures: []note.Verifier{wit1Verifier},
 		},
 		{
-			desc:   "greedy fails when quorum is not met on timeout (failOpen=false)",
-			policy: NewWitnessGroup(2, wit1, wit2),
+			desc: "greedy fails when quorum is not met on timeout (failOpen=false)",
+			policy: makeGroupPolicy(t, 2, []keyURL{
+				{key: testWit1VKey, url: "https://wit1.example.com"},
+				{key: testWit2VKey, url: "https://wit2.example.com"}}),
 			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
 				ch := make(chan []byte, 1)
 				ch <- sig1
 				return ch
 			},
-			timeout:   50 * time.Millisecond,
 			greedy:    true,
 			failOpen:  false,
 			expectErr: true,
 		},
 		{
-			desc:   "greedy fails open when quorum is not met on timeout (failOpen=true)",
-			policy: NewWitnessGroup(2, wit1, wit2),
+			desc: "greedy fails open when quorum is not met on timeout (failOpen=true)",
+			policy: makeGroupPolicy(t, 2, []keyURL{
+				{key: testWit1VKey, url: "https://wit1.example.com"},
+				{key: testWit2VKey, url: "https://wit2.example.com"}}),
 			fetcher: func(ctx context.Context, cp []byte, cpSize uint64) <-chan []byte {
 				ch := make(chan []byte, 1)
 				ch <- sig1
 				return ch
 			},
-			timeout:            50 * time.Millisecond,
 			greedy:             true,
 			failOpen:           true,
 			expectFailedOpen:   true,
@@ -543,13 +599,9 @@ func TestGatherCosignatures(t *testing.T) {
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
-			ctx := t.Context()
-			if test.timeout > 0 {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, test.timeout)
-				defer cancel()
-			}
-			sigs, err := gatherCosignatures(ctx, "witness", test.fetcher, &test.policy, signedCP, 5, test.failOpen, test.greedy)
+			ctx, cancel := context.WithTimeout(t.Context(), timeout)
+			defer cancel()
+			sigs, err := gatherCosignatures(ctx, "witness", test.fetcher, test.policy, signedCP, 5, test.failOpen, test.greedy)
 			switch {
 			case test.expectFailedOpen:
 				if !errors.Is(err, errFailedOpen) {
@@ -623,16 +675,12 @@ func TestCheckpointPublisher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to parse witness server 1 url: %v", err)
 	}
-
-	wit1, err := NewWitness(testWit1VKey, witnessServerURL1)
-	if err != nil {
-		t.Fatalf("failed to create witness 1: %v", err)
-	}
-	witnesses := NewWitnessGroup(1, wit1)
 	wit1Verifier, err := f_note.NewVerifierForCosignatureV1(testWit1VKey)
 	if err != nil {
 		t.Fatalf("failed to create witness 1 verifier: %v", err)
 	}
+
+	witnessPolicy := makeGroupPolicy(t, 1, []keyURL{{key: testWit1VKey, url: witnessServerURL1.String()}})
 
 	witnessServer2 := httptest.NewServer(newWitnessHandler(t, logVerifier, testWit2SKey))
 	t.Cleanup(witnessServer2.Close)
@@ -641,17 +689,14 @@ func TestCheckpointPublisher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to parse witness server 2 url: %v", err)
 	}
-
-	wit2, err := NewWitness(testWit2VKey, witnessServerURL2)
-	if err != nil {
-		t.Fatalf("failed to create witness 2: %v", err)
-	}
 	wit2Verifier, err := f_note.NewVerifierForCosignatureV1(testWit2VKey)
 	if err != nil {
 		t.Fatalf("failed to create witness 2 verifier: %v", err)
 	}
 
-	multiWitnesses := NewWitnessGroup(1, wit1, wit2)
+	multiWitnessPolicy := makeGroupPolicy(t, 1, []keyURL{
+		{key: testWit1VKey, url: witnessServerURL1.String()},
+		{key: testWit2VKey, url: witnessServerURL2.String()}})
 
 	mirrorServer := httptest.NewServer(newMirrorHandler(t, testMirrorSKey))
 	t.Cleanup(mirrorServer.Close)
@@ -660,16 +705,12 @@ func TestCheckpointPublisher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to parse mirror server url: %v", err)
 	}
-
-	m, err := NewWitness(testMirrorVKey, mirrorServerURL)
-	if err != nil {
-		t.Fatalf("failed to create mirror: %v", err)
-	}
-	mirrors := NewWitnessGroup(1, m)
 	mirrorVerifier, err := f_note.NewVerifierForCosignatureV1(testMirrorVKey)
 	if err != nil {
 		t.Fatalf("failed to create mirror verifier: %v", err)
 	}
+
+	mirrorPolicy := makeGroupPolicy(t, 1, []keyURL{{testMirrorVKey, mirrorServerURL.String()}})
 
 	for _, test := range []struct {
 		desc                  string
@@ -686,43 +727,43 @@ func TestCheckpointPublisher(t *testing.T) {
 		},
 		{
 			desc:               "witnesses only",
-			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, &WitnessOptions{Timeout: time.Second}),
+			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnessPolicy(witnessPolicy, &WitnessOptions{Timeout: time.Second}),
 			expectCosignatures: []note.Verifier{wit1Verifier},
 		},
 		{
 			desc:               "mirrors only",
-			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithMirrors(mirrors, &MirroringOptions{Timeout: time.Second}),
+			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithMirrorPolicy(mirrorPolicy, &MirroringOptions{Timeout: time.Second}),
 			expectCosignatures: []note.Verifier{mirrorVerifier},
 		},
 		{
 			desc:               "witnesses and mirrors",
-			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, &WitnessOptions{Timeout: time.Second}).WithMirrors(mirrors, &MirroringOptions{Timeout: time.Second}),
+			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnessPolicy(witnessPolicy, &WitnessOptions{Timeout: time.Second}).WithMirrorPolicy(mirrorPolicy, &MirroringOptions{Timeout: time.Second}),
 			expectCosignatures: []note.Verifier{wit1Verifier, mirrorVerifier},
 		},
 		{
 			desc:         "witness fails, failOpen=false",
-			opts:         NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, &WitnessOptions{FailOpen: false, Timeout: time.Second}),
+			opts:         NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnessPolicy(witnessPolicy, &WitnessOptions{FailOpen: false, Timeout: time.Second}),
 			witnessFails: true,
 			expectErr:    true,
 		},
 		{
 			desc:         "witness fails, failOpen=true",
-			opts:         NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(witnesses, &WitnessOptions{FailOpen: true, Timeout: time.Second}),
+			opts:         NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnessPolicy(witnessPolicy, &WitnessOptions{FailOpen: true, Timeout: time.Second}),
 			witnessFails: true,
 		},
 		{
 			desc:                  "multi witnesses greedy=false",
-			opts:                  NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(multiWitnesses, &WitnessOptions{Timeout: time.Second, Greedy: false}),
+			opts:                  NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnessPolicy(multiWitnessPolicy, &WitnessOptions{Timeout: time.Second, Greedy: false}),
 			expectNumCosignatures: 1,
 		},
 		{
 			desc:               "multi witnesses greedy=true",
-			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(multiWitnesses, &WitnessOptions{Timeout: time.Second, Greedy: true}),
+			opts:               NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnessPolicy(multiWitnessPolicy, &WitnessOptions{Timeout: time.Second, Greedy: true}),
 			expectCosignatures: []note.Verifier{wit1Verifier, wit2Verifier},
 		},
 		{
 			desc:                "multi witnesses greedy=true with one failing witness",
-			opts:                NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnesses(multiWitnesses, &WitnessOptions{Timeout: time.Second, Greedy: true}),
+			opts:                NewAppendOptions().WithCheckpointSigner(logSigner).WithWitnessPolicy(multiWitnessPolicy, &WitnessOptions{Timeout: time.Second, Greedy: true}),
 			partialWitnessFails: true,
 			expectCosignatures:  []note.Verifier{wit1Verifier},
 		},
@@ -736,11 +777,13 @@ func TestCheckpointPublisher(t *testing.T) {
 				defer failingWitnessServer.Close()
 
 				failingURL, _ := url.Parse(failingWitnessServer.URL)
-				failingWit, _ := NewWitness(testWit1VKey, failingURL)
-				failingWitnesses := NewWitnessGroup(1, failingWit)
+				failingWitnessPolicy := makeGroupPolicy(t, 1, []keyURL{{
+					key: testWit1VKey,
+					url: failingURL.String()},
+				})
 
 				// Re-configure option to use failing witnesses
-				test.opts.WithWitnesses(failingWitnesses, &test.opts.witnessOpts)
+				test.opts.WithWitnessPolicy(failingWitnessPolicy, &test.opts.witnessOpts)
 			}
 			if test.partialWitnessFails {
 				failingWitnessServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -749,10 +792,12 @@ func TestCheckpointPublisher(t *testing.T) {
 				defer failingWitnessServer.Close()
 
 				failingURL, _ := url.Parse(failingWitnessServer.URL)
-				failingWit, _ := NewWitness(testWit2VKey, failingURL)
-				partiallyFailingWitnesses := NewWitnessGroup(1, wit1, failingWit)
+				partiallyFailingPolicy := makeGroupPolicy(t, 1, []keyURL{
+					{key: testWit1VKey, url: witnessServerURL1.String()},
+					{key: testWit2VKey, url: failingURL.String()},
+				})
 
-				test.opts.WithWitnesses(partiallyFailingWitnesses, &test.opts.witnessOpts)
+				test.opts.WithWitnessPolicy(partiallyFailingPolicy, &test.opts.witnessOpts)
 			}
 
 			lr := newFakeLogReaderForTest(t)
@@ -929,4 +974,29 @@ func mustNewWitness(t *testing.T, vkey, urlStr string) Witness {
 		t.Fatalf("failed to create witness: %v", err)
 	}
 	return wit
+}
+
+type keyURL struct {
+	key string
+	url string
+}
+
+func makeGroupPolicy(t *testing.T, N int, ws []keyURL) policy.TLogPolicy {
+	t.Helper()
+
+	b := []byte{}
+	grpMembers := []string{}
+	for i, w := range ws {
+		wName := fmt.Sprintf("w%d", i)
+		b = fmt.Appendf(b, "witness %s %s %s\n", wName, w.key, w.url)
+		grpMembers = append(grpMembers, wName)
+	}
+	b = fmt.Appendf(b, "group g1 %d %s\n", N, strings.Join(grpMembers, " "))
+	b = fmt.Appendf(b, "quorum g1\n")
+
+	r := policy.TLogPolicy{}
+	if err := r.Unmarshal(b); err != nil {
+		t.Fatalf("failed to unmarshal policy %q: %v", string(b), err)
+	}
+	return r
 }

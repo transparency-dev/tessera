@@ -139,8 +139,8 @@ and
 [WithCheckpointRepublishInterval](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithCheckpointRepublishInterval))
 and performs the following steps:
   1. Create a new Checkpoint and sign it with the signer provided by [WithCheckpointSigner](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithCheckpointSigner)
-  2. Contact witnesses and collect enough cosignatures to satisfy any witness policy configured by [WithWitnesses](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithWitnesses)
-  3. If the witness policy is satisfied, make this new Checkpoint public available
+  2. Contact witnesses and collect enough cosignatures to satisfy any witness policy configured by [WithWitnessPolicy](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithWitnessPolicy)
+  3. If the witness policy is satisfied, make this new Checkpoint publicly available
 
 An entry is considered published once it is committed to by a published Checkpoint (i.e. a published Checkpoint's size is larger than the entry's assigned index).
 Due to the nature of append-only logs, all Checkpoints issued after this point will also commit to inclusion of this entry.
@@ -325,17 +325,11 @@ Logs are required to be append-only data structures.
 This property can be verified by witnesses, and signatures from witnesses can be provided in the published checkpoint to increase confidence for users of the log.
 
 Personalities can configure Tessera with options that specify witnesses compatible with the [C2SP Witness Protocol](https://github.com/C2SP/C2SP/blob/main/tlog-witness.md).
-Configuring the witnesses is done by either using the [`NewWitnessGroupFromPolicy`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#NewWitnessGroupFromPolicy)
-helper, or programatically creating a top-level [`WitnessGroup`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#WitnessGroup) that contains either
-sub `WitnessGroup`s, or [`Witness`es](https://pkg.go.dev/github.com/transparency-dev/tessera@main#Witness).
+Configuring the witnesses is done by defining a witness policy using [`github.com/transparency-dev/formats/policy`](https://pkg.go.dev/github.com/transparency-dev/formats/policy), typically parsed from a policy file adhering to the [C2SP tlog-policy specification](https://c2sp.org/tlog-policy).
 
-Each `Witness` is configured with a URL at which the witness can be reached, and a `Verifier` for the key that it must sign with.
-`WitnessGroup`s are configured with their sub-components, and a number of these components that must be satisfied in order for the group to be satisfied.
-
-These primitives allow arbitrarily complex witness policies to be specified.
-
-Once a top-level `WitnessGroup` is configured, it is passed in to the `Appender` lifecycle options using
-[AppendOptions#WithWitnesses](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithWitnesses).
+The configured policy is passed to the `Appender` lifecycle options using
+[`AppendOptions#WithWitnessPolicy`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithWitnessPolicy).
+(For backwards compatibility, [`AppendOptions#WithWitnesses`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithWitnesses) is also supported with legacy `WitnessGroup`s).
 If this option is not set, no witnessing will be configured.
 
 > [!Note]
