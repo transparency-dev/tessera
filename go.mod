@@ -6,7 +6,7 @@ toolchain go1.26.8
 
 require (
 	cloud.google.com/go/spanner v1.95.0
-	cloud.google.com/go/storage v1.66.0
+	cloud.google.com/go/storage v1.67.0
 	github.com/RobinUS2/golang-moving-average v1.0.0
 	github.com/avast/retry-go/v4 v4.7.0
 	github.com/aws/aws-sdk-go-v2 v1.45.1
