@@ -52,15 +52,6 @@ func NewWitnessGroupFromPolicy(p []byte) (WitnessGroup, error) {
 	return fromPolicy(ret)
 }
 
-// FromPolicy converts a [policy.TLogPolicy] to a [WitnessGroup].
-//
-// This is only needed while we're in the process of migrating this codebase to
-// TLogPolicy, and can be removed once the migration is complete and before
-// we cut a new release.
-func FromPolicy(p policy.TLogPolicy) (WitnessGroup, error) {
-	return fromPolicy(p)
-}
-
 func fromPolicy(p policy.TLogPolicy) (WitnessGroup, error) {
 	groups := make(map[string]WitnessGroup, len(p.Groups))
 	witnesses := make(map[string]Witness, len(p.Witnesses))
@@ -262,11 +253,6 @@ func groupExists(p *policy.TLogPolicy, grpName string) bool {
 		}
 	}
 	return false
-}
-
-// ToPolicy converts a [WitnessGroup] to a [policy.TLogPolicy].
-func (wg WitnessGroup) ToPolicy() (policy.TLogPolicy, error) {
-	return wg.toPolicy()
 }
 
 func (wg WitnessGroup) toPolicy() (policy.TLogPolicy, error) {

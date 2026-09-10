@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera"
@@ -678,14 +679,24 @@ func TestNewMTCLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateMLDSAKey: %v", err)
 	}
-	witURL, _ := url.Parse("http://wit1.example.com")
-	w1, err := tessera.NewWitness(vkey1, witURL)
+	ver1, err := note.NewMLDSAVerifier(vkey1)
 	if err != nil {
-		t.Fatalf("NewWitness: %v", err)
+		t.Fatalf("NewMLDSAVerifier: %v", err)
 	}
-	witnessGroup := tessera.NewWitnessGroup(1, w1)
+	witURL, _ := url.Parse("http://wit1.example.com")
+	witPolicy := policy.TLogPolicy{
+		Witnesses: []policy.Witness{
+			{
+				Name:     ver1.Name(),
+				URL:      witURL,
+				VKey:     vkey1,
+				Verifier: ver1,
+			},
+		},
+		Quorum: ver1.Name(),
+	}
 
-	tests := []struct {
+	for _, tc := range []struct {
 		name        string
 		appender    *tessera.Appender
 		opts        *Options
@@ -721,14 +732,14 @@ func TestNewMTCLog(t *testing.T) {
 		{
 			name:        "valid with single witness policy",
 			appender:    &tessera.Appender{},
-			opts:        newDummyOptions().WithSubtreeWitnesses(witnessGroup),
+			opts:        newDummyOptions().WithSubtreeWitnessPolicy(witPolicy),
 			wantGateway: true,
 			wantErr:     false,
 		},
 		{
-			name:        "valid with empty witness group",
+			name:        "valid with empty witness policy",
 			appender:    &tessera.Appender{},
-			opts:        newDummyOptions().WithSubtreeWitnesses(tessera.WitnessGroup{}),
+			opts:        newDummyOptions().WithSubtreeWitnessPolicy(policy.TLogPolicy{}),
 			wantGateway: false,
 			wantErr:     false,
 		},
@@ -756,9 +767,7 @@ func TestNewMTCLog(t *testing.T) {
 			opts:     newDummyOptions().WithOrigin("oid/1.3.6.1.4.1.99999.0.1"),
 			wantErr:  true,
 		},
-	}
-
-	for _, tc := range tests {
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l, err := NewMTCLog(ctx, tc.appender, tc.opts)
 			if (err != nil) != tc.wantErr {
@@ -854,7 +863,7 @@ func unmarshalMTCProof(data []byte) (*parsedMTCProof, error) {
 	return &p, nil
 }
 
-func setupTestWitness(t *testing.T) (tessera.WitnessGroup, note.SubtreeVerifier) {
+func setupTestWitness(t *testing.T) (policy.TLogPolicy, note.SubtreeVerifier) {
 	t.Helper()
 	sKey, vKey, err := note.GenerateMLDSAKey("oid/1.3.6.1.4.1.32473.106.1")
 	if err != nil {
@@ -907,11 +916,18 @@ func setupTestWitness(t *testing.T) (tessera.WitnessGroup, note.SubtreeVerifier)
 	t.Cleanup(ts.Close)
 
 	witURL, _ := url.Parse(ts.URL)
-	w, err := tessera.NewWitness(vKey, witURL)
-	if err != nil {
-		t.Fatalf("NewWitness: %v", err)
+	pol := policy.TLogPolicy{
+		Witnesses: []policy.Witness{
+			{
+				Name:     verifier.Name(),
+				URL:      witURL,
+				VKey:     vKey,
+				Verifier: verifier,
+			},
+		},
+		Quorum: verifier.Name(),
 	}
-	return tessera.NewWitnessGroup(1, w), verifier
+	return pol, verifier
 }
 
 func setupTestMTCLog(t *testing.T) (*MTCLog, note.SubtreeVerifier) {
@@ -930,13 +946,13 @@ func setupTestMTCLog(t *testing.T) (*MTCLog, note.SubtreeVerifier) {
 		t.Fatalf("Failed to create test signer: %v", err)
 	}
 
-	witGroup, witVerifier := setupTestWitness(t)
+	witPolicy, witVerifier := setupTestWitness(t)
 
 	opts := tessera.NewAppendOptions().
 		WithCheckpointSigner(signer).
 		WithBatching(4, 500*time.Millisecond).
-		WithCheckpointInterval(500 * time.Millisecond).
-		WithWitnesses(witGroup, &tessera.WitnessOptions{Timeout: time.Second})
+		WithCheckpointInterval(500*time.Millisecond).
+		WithWitnessPolicy(witPolicy, &tessera.WitnessOptions{Timeout: time.Second})
 	appender, _, reader, err := tessera.NewAppender(ctx, driver, opts)
 	if err != nil {
 		t.Fatalf("Failed to initialize Tessera appender: %v", err)
@@ -949,7 +965,7 @@ func setupTestMTCLog(t *testing.T) (*MTCLog, note.SubtreeVerifier) {
 		WithMaxCertLifetime(7*24*time.Hour).
 		WithOrigin(testOrigin).
 		WithSubtreeSigner(mustTestSigner()).
-		WithSubtreeWitnesses(witGroup))
+		WithSubtreeWitnessPolicy(witPolicy))
 	if err != nil {
 		t.Fatalf("Failed to initialize MTC log: %v", err)
 	}

@@ -69,7 +69,6 @@ func main() {
 	ctx := context.Background()
 
 	var mPol policy.TLogPolicy
-	var witGroup tessera.WitnessGroup
 	if *mirrorPolicyFile != "" {
 		b, err := os.ReadFile(*mirrorPolicyFile)
 		if err != nil {
@@ -78,12 +77,6 @@ func main() {
 		}
 		if err := mPol.Unmarshal(b); err != nil {
 			slog.ErrorContext(ctx, "Failed to parse mirror policy", slog.Any("error", err), slog.String("path", *mirrorPolicyFile))
-			os.Exit(1)
-		}
-		var gErr error
-		witGroup, gErr = tessera.FromPolicy(mPol)
-		if gErr != nil {
-			slog.ErrorContext(ctx, "Failed to convert mirror policy to witness group", slog.Any("error", gErr), slog.String("path", *mirrorPolicyFile))
 			os.Exit(1)
 		}
 		slog.InfoContext(ctx, "Mirroring enabled", slog.Any("policy", mPol), slog.String("path", *mirrorPolicyFile))
@@ -113,7 +106,7 @@ func main() {
 		WithMaxCertLifetime(*maxCertLifetime).
 		WithOrigin(origin).
 		WithSubtreeSigner(signer).
-		WithSubtreeWitnesses(witGroup).
+		WithSubtreeWitnessPolicy(mPol).
 		WithHTTPClient(httpClient)
 	mtcLog, err := log.NewMTCLog(ctx, appender, opts)
 	if err != nil {
