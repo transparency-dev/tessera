@@ -108,7 +108,7 @@ func main() {
 		}
 		var wPol policy.TLogPolicy
 		if err := wPol.Unmarshal(f); err != nil {
-			slog.ErrorContext(ctx, "Failed to create witness group from policy", slog.Any("error", err))
+			slog.ErrorContext(ctx, "Failed to parse witness policy", slog.Any("error", err))
 			os.Exit(1)
 		}
 

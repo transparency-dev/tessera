@@ -1234,7 +1234,7 @@ func (o *AppendOptions) WithMirrors(mirrors WitnessGroup, opts *MirroringOptions
 }
 
 // WitnessOptions contains extra optional configuration for how Tessera should use/interact with
-// a user-provided WitnessGroup policy.
+// a user-provided witness policy.
 type WitnessOptions struct {
 	// Timeout is the maximum time to wait while attempting to satisfy the configured witness policy.
 	//
@@ -1326,10 +1326,15 @@ func (o *AppendOptions) LogValue() slog.Value {
 	}
 
 	if len(o.witnessPolicy.Witnesses) > 0 {
+		seen := make(map[string]bool)
 		urls := make([]string, 0, len(o.witnessPolicy.Witnesses))
 		for _, w := range o.witnessPolicy.Witnesses {
 			if w.URL != nil {
-				urls = append(urls, w.URL.String())
+				u := w.URL.String()
+				if !seen[u] {
+					seen[u] = true
+					urls = append(urls, u)
+				}
 			}
 		}
 		attrs = append(attrs, slog.Group("witnesses",
@@ -1339,10 +1344,15 @@ func (o *AppendOptions) LogValue() slog.Value {
 		))
 	}
 	if len(o.mirrorPolicy.Witnesses) > 0 {
+		seen := make(map[string]bool)
 		urls := make([]string, 0, len(o.mirrorPolicy.Witnesses))
 		for _, w := range o.mirrorPolicy.Witnesses {
 			if w.URL != nil {
-				urls = append(urls, w.URL.String())
+				u := w.URL.String()
+				if !seen[u] {
+					seen[u] = true
+					urls = append(urls, u)
+				}
 			}
 		}
 		attrs = append(attrs, slog.Group("mirrors",
