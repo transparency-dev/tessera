@@ -7,8 +7,6 @@ toolchain go1.26.8
 require (
 	cloud.google.com/go/spanner v1.95.0
 	cloud.google.com/go/storage v1.66.0
-	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.61.0
-	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace v1.37.0
 	github.com/RobinUS2/golang-moving-average v1.0.0
 	github.com/avast/retry-go/v4 v4.7.0
 	github.com/aws/aws-sdk-go-v2 v1.45.1
@@ -47,9 +45,9 @@ require (
 require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/monitoring v1.30.0 // indirect
-	cloud.google.com/go/trace v1.16.0 // indirect
 	filippo.io/mldsa v0.0.0-20260215214346-43d0283efc3e // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.36.0 // indirect
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.61.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.61.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.20 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.19.1 // indirect
