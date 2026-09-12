@@ -255,7 +255,7 @@ func (s *Storage) Appender(ctx context.Context, opts *tessera.AppendOptions) (*t
 	table := func(t string) string {
 		return s.cfg.SpannerTablePrefix + t
 	}
-	if err := initDB(ctx, s.cfg.Spanner, table); err != nil {
+	if err := initDB(ctx, s.cfg.Spanner, s.cfg.SpannerClient, table); err != nil {
 		return nil, nil, fmt.Errorf("failed to verify/init Spanner schema: %v", err)
 	}
 
@@ -820,7 +820,11 @@ func newSpannerCoordinator(ctx context.Context, dbPool *spanner.Client, table fu
 //   - GCCoord
 //     This table coordinates garbage collection of unneeded partial tiles
 //     and entry bundles.
-func initDB(ctx context.Context, spannerDB string, table func(string) string) error {
+func initDB(ctx context.Context, spannerDB string, dbPool *spanner.Client, table func(string) string) error {
+	// Skip the (slow, even when no-op) DDL if the schema is already present. Keep schemaInitialised in sync with this.
+	if schemaInitialised(ctx, dbPool, table) {
+		return nil
+	}
 	return createAndPrepareTables(ctx, spannerDB,
 		[]string{
 			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INT64 NOT NULL, compatibilityVersion INT64 NOT NULL) PRIMARY KEY (id)", table("Tessera")),
@@ -840,6 +844,38 @@ func initDB(ctx context.Context, spannerDB string, table func(string) string) er
 			{spanner.Insert(table("PubCoord"), []string{"id", "publishedAt", "size"}, []any{0, time.Unix(0, 0), 0})},
 			{spanner.Insert(table("GCCoord"), []string{"id", "fromSize"}, []any{0, 0})},
 		})
+}
+
+// schemaInitialised reports whether everything initDB creates is present (tables, PubCoord.size,
+// seed rows) at this SchemaCompatibilityVersion. Any error reads as false, so initDB runs as before.
+func schemaInitialised(ctx context.Context, dbPool *spanner.Client, table func(string) string) bool {
+	row, err := dbPool.Single().ReadRow(ctx, table("Tessera"), spanner.Key{0}, []string{"compatibilityVersion"})
+	if err != nil {
+		return false
+	}
+	var compat int64
+	if err := row.Columns(&compat); err != nil || compat != SchemaCompatibilityVersion {
+		return false
+	}
+	// Reading each seed row proves the table, columns, and row exist.
+	for _, seed := range []struct {
+		table string
+		cols  []string
+	}{
+		{table: "SeqCoord", cols: []string{"id", "next"}},
+		{table: "IntCoord", cols: []string{"id", "seq", "rootHash"}},
+		{table: "PubCoord", cols: []string{"id", "publishedAt", "size"}},
+		{table: "GCCoord", cols: []string{"id", "fromSize"}},
+	} {
+		if _, err := dbPool.Single().ReadRow(ctx, table(seed.table), spanner.Key{0}, seed.cols); err != nil {
+			return false
+		}
+	}
+	// Seq has no seed row; just check the table exists.
+	if err := dbPool.Single().ReadWithOptions(ctx, table("Seq"), spanner.AllKeys(), []string{"id", "seq"}, &spanner.ReadOptions{Limit: 1}).Do(func(*spanner.Row) error { return nil }); err != nil {
+		return false
+	}
+	return true
 }
 
 // checkDataCompatibility compares the Tessera library SchemaCompatibilityVersion with the one stored in the
@@ -1470,7 +1506,7 @@ func (s *Storage) MigrationWriter(ctx context.Context, opts *tessera.MigrationOp
 	table := func(t string) string {
 		return s.cfg.SpannerTablePrefix + t
 	}
-	if err := initDB(ctx, s.cfg.Spanner, table); err != nil {
+	if err := initDB(ctx, s.cfg.Spanner, s.cfg.SpannerClient, table); err != nil {
 		return nil, nil, fmt.Errorf("failed to verify/init Spanner schema: %v", err)
 	}
 
