@@ -1589,7 +1589,7 @@ func (m *MigrationStorage) fetchLeafHashes(ctx context.Context, from, to, source
 		return nil, err
 	}
 
-	lh := make([][]byte, 0, maxBundles)
+	lh := make([][]byte, 0, maxBundles*layout.EntryBundleWidth)
 	for i := from / layout.EntryBundleWidth; ; i++ {
 		v, ok := toBeAdded.LoadAndDelete(i)
 		if !ok {
