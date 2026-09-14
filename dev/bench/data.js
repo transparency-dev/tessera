@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789405359380,
+  "lastUpdate": 1789406075263,
   "repoUrl": "https://github.com/transparency-dev/tessera",
   "entries": {
     "Benchmark": [
@@ -129480,6 +129480,294 @@ window.BENCHMARK_DATA = {
             "value": 14405,
             "unit": "allocs/op",
             "extra": "1660 times\n4 procs"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "rogerng@google.com",
+            "name": "Roger Ng",
+            "username": "roger2hk"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ba5f669427d3cc2ccd9ca80d475aa3e76022c29b",
+          "message": "Fix leaf hash slice capacity in AWS/GCP `fetchLeafHashes` (#1175)",
+          "timestamp": "2026-09-14T18:13:44+01:00",
+          "tree_id": "996275d0cbf58086d4a75659196e08ddc80c8c80",
+          "url": "https://github.com/transparency-dev/tessera/commit/ba5f669427d3cc2ccd9ca80d475aa3e76022c29b"
+        },
+        "date": 1789406072025,
+        "tool": "go",
+        "benches": [
+          {
+            "name": "BenchmarkDedup (github.com/transparency-dev/tessera)",
+            "value": 3008304,
+            "unit": "ns/op\t  903833 B/op\t   18804 allocs/op",
+            "extra": "420 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedup (github.com/transparency-dev/tessera) - ns/op",
+            "value": 3008304,
+            "unit": "ns/op",
+            "extra": "420 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedup (github.com/transparency-dev/tessera) - B/op",
+            "value": 903833,
+            "unit": "B/op",
+            "extra": "420 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkDedup (github.com/transparency-dev/tessera) - allocs/op",
+            "value": 18804,
+            "unit": "allocs/op",
+            "extra": "420 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait (github.com/transparency-dev/tessera)",
+            "value": 1497658,
+            "unit": "ns/op\t    1236 B/op\t      21 allocs/op",
+            "extra": "771 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait (github.com/transparency-dev/tessera) - ns/op",
+            "value": 1497658,
+            "unit": "ns/op",
+            "extra": "771 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait (github.com/transparency-dev/tessera) - B/op",
+            "value": 1236,
+            "unit": "B/op",
+            "extra": "771 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAwait (github.com/transparency-dev/tessera) - allocs/op",
+            "value": 21,
+            "unit": "allocs/op",
+            "extra": "771 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction (github.com/transparency-dev/tessera)",
+            "value": 138147,
+            "unit": "ns/op\t    3697 B/op\t      46 allocs/op",
+            "extra": "8599 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction (github.com/transparency-dev/tessera) - ns/op",
+            "value": 138147,
+            "unit": "ns/op",
+            "extra": "8599 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction (github.com/transparency-dev/tessera) - B/op",
+            "value": 3697,
+            "unit": "B/op",
+            "extra": "8599 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWitnessGroupSatisfaction (github.com/transparency-dev/tessera) - allocs/op",
+            "value": 46,
+            "unit": "allocs/op",
+            "extra": "8599 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText (github.com/transparency-dev/tessera/api)",
+            "value": 6213,
+            "unit": "ns/op\t    6528 B/op\t       1 allocs/op",
+            "extra": "224696 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText (github.com/transparency-dev/tessera/api) - ns/op",
+            "value": 6213,
+            "unit": "ns/op",
+            "extra": "224696 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText (github.com/transparency-dev/tessera/api) - B/op",
+            "value": 6528,
+            "unit": "B/op",
+            "extra": "224696 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLeafBundle_UnmarshalText (github.com/transparency-dev/tessera/api) - allocs/op",
+            "value": 1,
+            "unit": "allocs/op",
+            "extra": "224696 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/InclusionProof/WarmCache (github.com/transparency-dev/tessera/client)",
+            "value": 55387,
+            "unit": "ns/op\t   15320 B/op\t     180 allocs/op",
+            "extra": "24286 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/InclusionProof/WarmCache (github.com/transparency-dev/tessera/client) - ns/op",
+            "value": 55387,
+            "unit": "ns/op",
+            "extra": "24286 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/InclusionProof/WarmCache (github.com/transparency-dev/tessera/client) - B/op",
+            "value": 15320,
+            "unit": "B/op",
+            "extra": "24286 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/InclusionProof/WarmCache (github.com/transparency-dev/tessera/client) - allocs/op",
+            "value": 180,
+            "unit": "allocs/op",
+            "extra": "24286 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/InclusionProof/ColdCache (github.com/transparency-dev/tessera/client)",
+            "value": 412810,
+            "unit": "ns/op\t  689105 B/op\t    3555 allocs/op",
+            "extra": "2707 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/InclusionProof/ColdCache (github.com/transparency-dev/tessera/client) - ns/op",
+            "value": 412810,
+            "unit": "ns/op",
+            "extra": "2707 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/InclusionProof/ColdCache (github.com/transparency-dev/tessera/client) - B/op",
+            "value": 689105,
+            "unit": "B/op",
+            "extra": "2707 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/InclusionProof/ColdCache (github.com/transparency-dev/tessera/client) - allocs/op",
+            "value": 3555,
+            "unit": "allocs/op",
+            "extra": "2707 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/ConsistencyProof/WarmCache (github.com/transparency-dev/tessera/client)",
+            "value": 44852,
+            "unit": "ns/op\t   15376 B/op\t     180 allocs/op",
+            "extra": "25281 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/ConsistencyProof/WarmCache (github.com/transparency-dev/tessera/client) - ns/op",
+            "value": 44852,
+            "unit": "ns/op",
+            "extra": "25281 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/ConsistencyProof/WarmCache (github.com/transparency-dev/tessera/client) - B/op",
+            "value": 15376,
+            "unit": "B/op",
+            "extra": "25281 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/ConsistencyProof/WarmCache (github.com/transparency-dev/tessera/client) - allocs/op",
+            "value": 180,
+            "unit": "allocs/op",
+            "extra": "25281 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/ConsistencyProof/ColdCache (github.com/transparency-dev/tessera/client)",
+            "value": 460537,
+            "unit": "ns/op\t  688076 B/op\t    3549 allocs/op",
+            "extra": "2503 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/ConsistencyProof/ColdCache (github.com/transparency-dev/tessera/client) - ns/op",
+            "value": 460537,
+            "unit": "ns/op",
+            "extra": "2503 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/ConsistencyProof/ColdCache (github.com/transparency-dev/tessera/client) - B/op",
+            "value": 688076,
+            "unit": "B/op",
+            "extra": "2503 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkProofBuilder/ConsistencyProof/ColdCache (github.com/transparency-dev/tessera/client) - allocs/op",
+            "value": 3549,
+            "unit": "allocs/op",
+            "extra": "2503 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe (github.com/transparency-dev/tessera/internal/parse)",
+            "value": 177.9,
+            "unit": "ns/op\t     224 B/op\t       5 allocs/op",
+            "extra": "6296944 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe (github.com/transparency-dev/tessera/internal/parse) - ns/op",
+            "value": 177.9,
+            "unit": "ns/op",
+            "extra": "6296944 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe (github.com/transparency-dev/tessera/internal/parse) - B/op",
+            "value": 224,
+            "unit": "B/op",
+            "extra": "6296944 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkCheckpointUnsafe (github.com/transparency-dev/tessera/internal/parse) - allocs/op",
+            "value": 5,
+            "unit": "allocs/op",
+            "extra": "6296944 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate (github.com/transparency-dev/tessera/storage/internal)",
+            "value": 218954,
+            "unit": "ns/op\t  276707 B/op\t    3099 allocs/op",
+            "extra": "5594 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate (github.com/transparency-dev/tessera/storage/internal) - ns/op",
+            "value": 218954,
+            "unit": "ns/op",
+            "extra": "5594 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate (github.com/transparency-dev/tessera/storage/internal) - B/op",
+            "value": 276707,
+            "unit": "B/op",
+            "extra": "5594 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkIntegrate (github.com/transparency-dev/tessera/storage/internal) - allocs/op",
+            "value": 3099,
+            "unit": "allocs/op",
+            "extra": "5594 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue (github.com/transparency-dev/tessera/storage/internal)",
+            "value": 687354,
+            "unit": "ns/op\t  540533 B/op\t   14405 allocs/op",
+            "extra": "1720 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue (github.com/transparency-dev/tessera/storage/internal) - ns/op",
+            "value": 687354,
+            "unit": "ns/op",
+            "extra": "1720 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue (github.com/transparency-dev/tessera/storage/internal) - B/op",
+            "value": 540533,
+            "unit": "B/op",
+            "extra": "1720 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkQueue (github.com/transparency-dev/tessera/storage/internal) - allocs/op",
+            "value": 14405,
+            "unit": "allocs/op",
+            "extra": "1720 times\n4 procs"
           }
         ]
       }
