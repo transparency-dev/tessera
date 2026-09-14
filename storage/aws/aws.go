@@ -614,6 +614,7 @@ func (m *MigrationStorage) IntegratedSize(ctx context.Context) (uint64, error) {
 	return sz, err
 }
 
+// fetchLeafHashes returns the leaf hashes for the entries in the range [from, to).
 func (m *MigrationStorage) fetchLeafHashes(ctx context.Context, from, to, sourceSize uint64) ([][]byte, error) {
 	// TODO(al): Make this configurable.
 	const maxBundles = 300
@@ -621,7 +622,7 @@ func (m *MigrationStorage) fetchLeafHashes(ctx context.Context, from, to, source
 	toBeAdded := sync.Map{}
 	eg := errgroup.Group{}
 	n := 0
-	for ri := range layout.Range(from, to, sourceSize) {
+	for ri := range layout.Range(from, to-from, sourceSize) {
 		eg.Go(func() error {
 			b, err := m.logStore.getEntryBundle(ctx, ri.Index, ri.Partial)
 			if err != nil {
