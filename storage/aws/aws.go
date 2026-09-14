@@ -1217,6 +1217,9 @@ func (s *mySQLSequencer) consumeEntries(ctx context.Context, limit uint64, f con
 		seqsConsumed = append(seqsConsumed, seq)
 		orderCheck += uint64(len(b))
 	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("failed to iterate over Seq rows: %v", err)
+	}
 	if len(seqsConsumed) == 0 && !forceUpdate {
 		slog.DebugContext(ctx, "Found no rows to sequence")
 		return false, nil
