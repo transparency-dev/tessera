@@ -904,3 +904,27 @@ func mustReadEntryBundle(t *testing.T, lr tessera.LogReader, idx uint64, p uint8
 	}
 	return eb
 }
+
+func BenchmarkMarshalTlogEntryBundle(b *testing.B) {
+	for _, entrySize := range []int{32, 128, 1024} {
+		b.Run(fmt.Sprintf("entrySize=%dB", entrySize), func(b *testing.B) {
+			bundle := &api.EntryBundle{
+				Entries: make([][]byte, layout.EntryBundleWidth),
+			}
+			for i := range bundle.Entries {
+				bundle.Entries[i] = bytes.Repeat([]byte("a"), entrySize)
+			}
+			b.ReportAllocs()
+			b.SetBytes(int64(layout.EntryBundleWidth * entrySize))
+			b.ResetTimer()
+			for b.Loop() {
+				res, err := marshalTlogEntryBundle(bundle)
+				if err != nil {
+					b.Fatal(err)
+				}
+				_ = res
+			}
+		})
+	}
+}
+

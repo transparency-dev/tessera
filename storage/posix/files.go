@@ -26,7 +26,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -1218,19 +1217,20 @@ func (m *MirrorWriter) initialise(ctx context.Context) error {
 
 // marshalTlogEntryBundle returns a tlog-tiles compatible serialization of the provided entry bundle.
 func marshalTlogEntryBundle(b *api.EntryBundle) ([]byte, error) {
-	// Prealloc the max size we could possibly write out (about 16MB for a full bundle of max size entries).
-	// If this causes problems we may want to default this to some lower
-	// "reasonable" intermediate size, but not going to worry about that for now.
-	data := make([]byte, 0, len(b.Entries)*(2+1<<16))
+	total := 0
 	for i, e := range b.Entries {
 		l := len(e)
 		if l >= 1<<16 {
 			return nil, fmt.Errorf("entry #%d has length %d >= 1<<16", i, l)
 		}
-		data = binary.BigEndian.AppendUint16(data, uint16(l))
+		total += 2 + l
+	}
+	data := make([]byte, 0, total)
+	for _, e := range b.Entries {
+		data = binary.BigEndian.AppendUint16(data, uint16(len(e)))
 		data = append(data, e...)
 	}
-	return slices.Clip(data), nil
+	return data, nil
 }
 
 // IntegrateBundles integrates a sequence of entry bundles into the tree, starting at the provided bundle index bundleIdx.
