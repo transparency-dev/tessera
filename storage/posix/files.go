@@ -1388,6 +1388,9 @@ func (m *MirrorWriter) UpdateCheckpoint(ctx context.Context, fn func(old []byte)
 // If an implied partial resource is not already present, this function will attempt to create
 // it from a strictly larger resource whose presence is implied by treeSize.
 func (m *MirrorWriter) ensureGeometry(ctx context.Context, cpSize, treeSize uint64) error {
+	// If cpSize is zero then no tree exists.
+	// If cpSize == treeSize the resources are guaranteed present by integration.
+	// In both cases there's nothing to do.
 	if cpSize == 0 || cpSize == treeSize {
 		return nil
 	}
@@ -1399,6 +1402,12 @@ func (m *MirrorWriter) ensureGeometry(ctx context.Context, cpSize, treeSize uint
 	for l := uint64(0); l <= uint64(ml); l, idx = l+1, idx>>layout.TileHeight {
 		treeP := layout.PartialTileSize(l, idx, treeSize)
 		cpP := layout.PartialTileSize(l, idx, cpSize)
+
+		if cpP == treeP {
+			// Nothing to be done at this level.
+			continue
+		}
+
 		if l == 0 {
 			if err := m.ensurePartialBundle(ctx, idx, cpP, treeP); err != nil {
 				return err
@@ -1425,7 +1434,7 @@ func maxLevel(sz uint64) int {
 // If the implied partial entry bundle is not already present, this function will attempt to create
 // it from the entry bundle implied by treeSize.
 func (m *MirrorWriter) ensurePartialBundle(ctx context.Context, idx uint64, cpP, treeP uint8) error {
-	if cpP == 0 || cpP == treeP {
+	if cpP == 0 {
 		return nil
 	}
 
@@ -1468,7 +1477,7 @@ func (m *MirrorWriter) ensurePartialBundle(ctx context.Context, idx uint64, cpP,
 // If the implied partial tile is not already present, this function will attempt to create
 // it from the tile implied by treeSize.
 func (m *MirrorWriter) ensurePartialTile(ctx context.Context, l uint64, idx uint64, cpP, treeP uint8) error {
-	if cpP == 0 || cpP == treeP {
+	if cpP == 0 {
 		return nil
 	}
 

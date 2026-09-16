@@ -870,7 +870,7 @@ func TestMirrorWriter_UpdateCheckpointGeometry(t *testing.T) {
 				} else {
 					tile := mustReadTile(t, lr, uint64(level), idx, uint8(wantNodes))
 					if len(tile.Nodes) != wantNodes {
-						t.Errorf("Expected %d nodes in partial tile %d/%d.%d, got %d", wantNodes, level, idx, wantNodes, len(tile.Nodes))
+						t.Errorf("Expected %d nodes in partial tile %d/%d.%d, got %d", wantNodes, level, idx, uint8(wantNodes), len(tile.Nodes))
 					}
 					// If the integrated tree does not have a full tile at this position (treeP > 0),
 					// no full tile file should have been written.
@@ -942,17 +942,19 @@ func generateBundles(t *testing.T, totalEntries int) iter.Seq2[*api.EntryBundle,
 
 	return func(yield func(*api.EntryBundle, error) bool) {
 		remaining := totalEntries
-		dummyEntry := []byte("a")
+
+		N := 0
 		for remaining > 0 {
 			count := min(remaining, layout.EntryBundleWidth)
 			entries := make([][]byte, count)
 			for i := range entries {
-				entries[i] = dummyEntry
+				entries[i] = fmt.Appendf(nil, "entry %d", N+i)
 			}
 			if !yield(&api.EntryBundle{Entries: entries}, nil) {
 				return
 			}
 			remaining -= count
+			N += count
 		}
 	}
 }
