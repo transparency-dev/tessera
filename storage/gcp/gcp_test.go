@@ -30,6 +30,8 @@ import (
 	"time"
 
 	"cloud.google.com/go/spanner"
+	database "cloud.google.com/go/spanner/admin/database/apiv1"
+	adminpb "cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
 	"cloud.google.com/go/spanner/spannertest"
 	gcs "cloud.google.com/go/storage"
 	"github.com/google/go-cmp/cmp"
@@ -46,6 +48,9 @@ func init() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 }
 
+// testSpannerDB is the database served by the spannertest emulator.
+const testSpannerDB = "projects/p/instances/i/databases/d"
+
 func newSpannerDB(t *testing.T) (*spanner.Client, func()) {
 	t.Helper()
 	return newSpannerDBWithPrefix(t, "")
@@ -58,7 +63,8 @@ func prefixTable(prefix string) func(string) string {
 	}
 }
 
-func newSpannerDBWithPrefix(t *testing.T, tablePrefix string) (*spanner.Client, func()) {
+// newEmptySpannerDB starts a schemaless spannertest emulator and returns a client and a shutdown func.
+func newEmptySpannerDB(t *testing.T) (*spanner.Client, func()) {
 	t.Helper()
 	srv, err := spannertest.NewServer("localhost:0")
 	if err != nil {
@@ -68,17 +74,44 @@ func newSpannerDBWithPrefix(t *testing.T, tablePrefix string) (*spanner.Client, 
 		t.Fatalf("Setenv: %v", err)
 	}
 
-	id := "projects/p/instances/i/databases/d"
-	if err := initDB(t.Context(), id, prefixTable(tablePrefix)); err != nil {
-		t.Fatalf("initDB: %v", err)
-	}
-
-	c, err := spanner.NewClient(t.Context(), id)
+	c, err := spanner.NewClient(t.Context(), testSpannerDB)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
 	return c, srv.Close
+}
 
+func newSpannerDBWithPrefix(t *testing.T, tablePrefix string) (*spanner.Client, func()) {
+	t.Helper()
+	c, close := newEmptySpannerDB(t)
+	if err := initDB(t.Context(), testSpannerDB, c, prefixTable(tablePrefix)); err != nil {
+		t.Fatalf("initDB: %v", err)
+	}
+	return c, close
+}
+
+// applyDDL applies DDL directly to testSpannerDB.
+func applyDDL(t *testing.T, statements ...string) {
+	t.Helper()
+	adminClient, err := database.NewDatabaseAdminClient(t.Context())
+	if err != nil {
+		t.Fatalf("NewDatabaseAdminClient: %v", err)
+	}
+	defer func() {
+		if err := adminClient.Close(); err != nil {
+			t.Logf("adminClient.Close: %v", err)
+		}
+	}()
+	op, err := adminClient.UpdateDatabaseDdl(t.Context(), &adminpb.UpdateDatabaseDdlRequest{
+		Database:   testSpannerDB,
+		Statements: statements,
+	})
+	if err != nil {
+		t.Fatalf("UpdateDatabaseDdl(%q): %v", statements, err)
+	}
+	if err := op.Wait(t.Context()); err != nil {
+		t.Fatalf("UpdateDatabaseDdl(%q): %v", statements, err)
+	}
 }
 
 func TestSpannerSequencerAssignEntries(t *testing.T) {
@@ -165,7 +198,7 @@ func TestSpannerTablePrefixValidation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := New(ctx, Config{
 				Bucket:             "bucket",
-				Spanner:            "projects/p/instances/i/databases/d",
+				Spanner:            testSpannerDB,
 				SpannerTablePrefix: test.prefix,
 			})
 			if gotErr := err != nil; gotErr != test.wantErr {
@@ -322,6 +355,137 @@ func TestCheckDataCompatibility(t *testing.T) {
 				t.Fatalf("checkDataCompatibility: %v, wantErr %t", err, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestSchemaInitialised(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		// prep modifies a DB in which initDB has created the unprefixed schema.
+		prep func(ctx context.Context, t *testing.T, db *spanner.Client)
+		// table defaults to unprefixed.
+		table func(string) string
+		want  bool
+	}{
+		{
+			name: "initialised",
+			want: true,
+		}, {
+			name: "initialised: NULL PubCoord.size as left by the ADD COLUMN migration",
+			prep: func(ctx context.Context, t *testing.T, db *spanner.Client) {
+				if _, err := db.Apply(ctx, []*spanner.Mutation{spanner.Update("PubCoord", []string{"id", "size"}, []any{0, spanner.NullInt64{}})}); err != nil {
+					t.Fatalf("Apply: %v", err)
+				}
+			},
+			want: true,
+		}, {
+			name:  "not initialised: no tables with this prefix",
+			table: prefixTable("Other_"),
+			want:  false,
+		}, {
+			name: "missing compatibilityVersion row",
+			prep: func(ctx context.Context, t *testing.T, db *spanner.Client) {
+				if _, err := db.Apply(ctx, []*spanner.Mutation{spanner.Delete("Tessera", spanner.Key{0})}); err != nil {
+					t.Fatalf("Apply: %v", err)
+				}
+			},
+			want: false,
+		}, {
+			name: "different compatibilityVersion",
+			prep: func(ctx context.Context, t *testing.T, db *spanner.Client) {
+				if _, err := db.Apply(ctx, []*spanner.Mutation{spanner.Update("Tessera", []string{"id", "compatibilityVersion"}, []any{0, SchemaCompatibilityVersion + 1})}); err != nil {
+					t.Fatalf("Apply: %v", err)
+				}
+			},
+			want: false,
+		}, {
+			name: "missing seed row",
+			prep: func(ctx context.Context, t *testing.T, db *spanner.Client) {
+				if _, err := db.Apply(ctx, []*spanner.Mutation{spanner.Delete("GCCoord", spanner.Key{0})}); err != nil {
+					t.Fatalf("Apply: %v", err)
+				}
+			},
+			want: false,
+		}, {
+			name: "missing PubCoord.size column: older schema in need of migration",
+			prep: func(ctx context.Context, t *testing.T, db *spanner.Client) {
+				applyDDL(t, "ALTER TABLE PubCoord DROP COLUMN size")
+			},
+			want: false,
+		}, {
+			name: "missing unseeded table",
+			prep: func(ctx context.Context, t *testing.T, db *spanner.Client) {
+				applyDDL(t, "DROP TABLE Seq")
+			},
+			want: false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			db, close := newSpannerDB(t)
+			defer close()
+			if test.prep != nil {
+				test.prep(ctx, t, db)
+			}
+			if test.table == nil {
+				test.table = prefixTable("")
+			}
+			if got := schemaInitialised(ctx, db, test.table); got != test.want {
+				t.Fatalf("schemaInitialised: got %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestInitDBExistingSchema(t *testing.T) {
+	ctx := t.Context()
+	db, close := newEmptySpannerDB(t)
+	defer close()
+
+	if schemaInitialised(ctx, db, prefixTable("")) {
+		t.Fatal("schemaInitialised: got true on empty DB, want false")
+	}
+	if err := initDB(ctx, testSpannerDB, db, prefixTable("")); err != nil {
+		t.Fatalf("initDB on empty DB: %v", err)
+	}
+	if !schemaInitialised(ctx, db, prefixTable("")) {
+		t.Fatal("schemaInitialised: got false after initDB, want true")
+	}
+
+	// spannertest rejects CREATE TABLE IF NOT EXISTS on an existing table, so a re-open that ran DDL
+	// would fail below; guard against the emulator changing and this passing vacuously.
+	if err := createAndPrepareTables(ctx, testSpannerDB, []string{"CREATE TABLE IF NOT EXISTS Tessera (id INT64 NOT NULL, compatibilityVersion INT64 NOT NULL) PRIMARY KEY (id)"}, nil, nil); err == nil {
+		t.Skip("spannertest now honours CREATE TABLE IF NOT EXISTS, so this test can no longer tell whether initDB applied DDL")
+	}
+
+	seq, err := newSpannerCoordinator(ctx, db, prefixTable(""), 1000)
+	if err != nil {
+		t.Fatalf("newSpannerCoordinator: %v", err)
+	}
+	entries := []*tessera.Entry{}
+	for i := range 5 {
+		entries = append(entries, tessera.NewEntry(fmt.Appendf(nil, "item %d", i)))
+	}
+	if err := seq.assignEntries(ctx, entries); err != nil {
+		t.Fatalf("assignEntries: %v", err)
+	}
+
+	// Re-running initDB must apply no DDL (see above) and leave existing state alone.
+	for i := range 2 {
+		if err := initDB(ctx, testSpannerDB, db, prefixTable("")); err != nil {
+			t.Fatalf("initDB on existing schema (attempt %d): %v", i, err)
+		}
+	}
+	seq2, err := newSpannerCoordinator(ctx, db, prefixTable(""), 1000)
+	if err != nil {
+		t.Fatalf("newSpannerCoordinator after re-init: %v", err)
+	}
+	next, err := seq2.nextIndex(ctx)
+	if err != nil {
+		t.Fatalf("nextIndex: %v", err)
+	}
+	if want := uint64(len(entries)); next != want {
+		t.Errorf("nextIndex after re-init: got %d, want %d", next, want)
 	}
 }
 
