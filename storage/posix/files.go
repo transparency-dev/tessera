@@ -1388,7 +1388,7 @@ func (m *MirrorWriter) UpdateCheckpoint(ctx context.Context, fn func(old []byte)
 // If an implied partial resource is not already present, this function will attempt to create
 // it from a strictly larger resource whose presence is implied by treeSize.
 func (m *MirrorWriter) ensureGeometry(ctx context.Context, cpSize, treeSize uint64) error {
-	if cpSize == 0 {
+	if cpSize == 0 || cpSize == treeSize {
 		return nil
 	}
 	if cpSize > treeSize {
@@ -1425,7 +1425,7 @@ func maxLevel(sz uint64) int {
 // If the implied partial entry bundle is not already present, this function will attempt to create
 // it from the entry bundle implied by treeSize.
 func (m *MirrorWriter) ensurePartialBundle(ctx context.Context, idx uint64, cpP, treeP uint8) error {
-	if cpP == treeP {
+	if cpP == 0 || cpP == treeP {
 		return nil
 	}
 
@@ -1451,12 +1451,7 @@ func (m *MirrorWriter) ensurePartialBundle(ctx context.Context, idx uint64, cpP,
 		return fmt.Errorf("failed to unmarshal entry bundle @%d.%d: %v", idx, treeP, err)
 	}
 
-	// Then trim it down to the size implied by the checkpoint, and write it out.
-	// Handle cpP == 0 where a full-bundle is implied - we should never actually hit this case since cpP must
-	// equal treeP in this case, but it doesn't hurt to be defensive.
-	if cpP > 0 {
-		eb.Entries = eb.Entries[:cpP]
-	}
+	eb.Entries = eb.Entries[:cpP]
 	d, err = marshalTlogEntryBundle(eb)
 	if err != nil {
 		return fmt.Errorf("failed to marshal entry bundle @%d.%d: %v", idx, cpP, err)
@@ -1473,7 +1468,7 @@ func (m *MirrorWriter) ensurePartialBundle(ctx context.Context, idx uint64, cpP,
 // If the implied partial tile is not already present, this function will attempt to create
 // it from the tile implied by treeSize.
 func (m *MirrorWriter) ensurePartialTile(ctx context.Context, l uint64, idx uint64, cpP, treeP uint8) error {
-	if cpP == treeP {
+	if cpP == 0 || cpP == treeP {
 		return nil
 	}
 
@@ -1499,12 +1494,7 @@ func (m *MirrorWriter) ensurePartialTile(ctx context.Context, l uint64, idx uint
 		return fmt.Errorf("failed to unmarshal tile @%d/%d.%d: %v", l, idx, treeP, err)
 	}
 
-	// Then trim it down to the size implied by the checkpoint, and write it out.
-	// Handle cpP == 0 where a full-tile is implied - we should never actually hit this case since cpP must
-	// equal treeP in this case, but it doesn't hurt to be defensive.
-	if cpP > 0 {
-		t.Nodes = t.Nodes[:cpP]
-	}
+	t.Nodes = t.Nodes[:cpP]
 	d, err = t.MarshalText()
 	if err != nil {
 		return fmt.Errorf("failed to marshal tile @%d/%d.%d: %v", l, idx, cpP, err)
