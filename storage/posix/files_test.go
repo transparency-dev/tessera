@@ -20,10 +20,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"iter"
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -802,48 +802,33 @@ func TestMirrorWriter_UpdateCheckpointGeometry(t *testing.T) {
 		t.Fatalf("MirrorWriter: %v", err)
 	}
 
-	// Create 600 entries to span multiple tile levels.
-	entries := make([][]byte, 600)
-	for i := range 600 {
-		entries[i] = fmt.Appendf(nil, "entry %d", i)
-	}
-
-	bundles := []*api.EntryBundle{
-		{Entries: entries[0:256]},
-		{Entries: entries[256:512]},
-		{Entries: entries[512:600]},
-	}
-	bundlesIter := func(yield func(*api.EntryBundle, error) bool) {
-		for _, b := range bundles {
-			if !yield(b, nil) {
-				return
-			}
-		}
-	}
-
-	// Integrate to size 600.
-	// Tiles layout should then be:
-	// Level 1: [2]
-	// Level 0: [256] [256] [88]
-	// Entries: [256] [256] [88]
-	size, _, err := mw.IntegrateBundles(ctx, 0, bundlesIter)
+	// Create 66000 entries to span multiple tile levels and multiple tiles at level 1.
+	const treeSize = 66000
+	size, _, err := mw.IntegrateBundles(ctx, 0, generateBundles(t, treeSize))
 	if err != nil {
 		t.Fatalf("IntegrateBundles: %v", err)
 	}
-	if size != 600 {
-		t.Fatalf("expected integrated size 600, got %d", size)
+	if size != treeSize {
+		t.Fatalf("expected integrated size %d, got %d", treeSize, size)
 	}
 
 	for _, test := range []struct {
-		size        uint64
+		size uint64
+		// wantRHSizes[l] is the expected node count for the rightmost tile at level l:
+		//   - 1..255: partial tile with that many nodes (read via .p/N)
+		//   - 256:    full tile (read via p=0, asserting 256 nodes)
+		//   - 0:      no tile exists at this coordinate for this checkpoint (asserts full tile file is absent)
 		wantRHSizes []int
 	}{
 		{0, []int{}},
 		{1, []int{1}},
 		{129, []int{129}},
 		{256, []int{256, 1}},
-		{300, []int{44, 2}},
+		{300, []int{44, 1}},
 		{600, []int{88, 2}},
+		{65536, []int{256, 256, 1}},
+		{65537, []int{1, 0, 1}},
+		{66000, []int{208, 1, 1}},
 	} {
 		t.Run(fmt.Sprintf("size_%d", test.size), func(t *testing.T) {
 			h := make([]byte, 32)
@@ -864,14 +849,38 @@ func TestMirrorWriter_UpdateCheckpointGeometry(t *testing.T) {
 			if l := len(eb.Entries); l != test.wantRHSizes[0] {
 				t.Fatalf("expected %d entries in partial bundle %d.%d, got %d", test.wantRHSizes[0], idx, p, l)
 			}
-			if got, want := eb.Entries, bundles[idx].Entries[:test.wantRHSizes[0]]; !slices.EqualFunc(got, want, bytes.Equal) {
-				t.Errorf("entrybundle doesn't match:\ngot %v\nwant %v", got, want)
-			}
-			// Verify the existence/correctness of the partial tiles for the given size.
-			for level, p := range test.wantRHSizes {
-				tile := mustReadTile(t, lr, uint64(level), idx, uint8(p))
-				if len(tile.Nodes) != p {
-					t.Errorf("expected %d nodes in partial tile %d/%d.%d, got %d", p, level, idx, p, len(tile.Nodes))
+
+			// Verify the existence/correctness of the partial tiles for the given size,
+			// and ensure that full tiles whose range extends beyond the tree are not created.
+			for level, wantNodes := range test.wantRHSizes {
+				fullTilePath := layout.TilePath(uint64(level), idx, 0)
+				treeP := layout.PartialTileSize(uint64(level), idx, treeSize)
+
+				if wantNodes == 0 {
+					// Tile does not exist at this checkpoint size.
+					// A full tile _may_ legitimately exist in the tree if it's large enough.
+					// However, since our treeSize is 66000 we know that one cannot be present for
+					// these test cases, so we'll assert that it doesn't exist in order to verify that we
+					// haven't incorrectly created one.
+					if fi, err := os.Stat(filepath.Join(s.cfg.Path, fullTilePath)); err == nil {
+						t.Fatalf("Level %d tile %d: full tile %s should not exist for size %d (found %d bytes)", level, idx, fullTilePath, test.size, fi.Size())
+					} else if !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("Failed to stat %s: %v", fullTilePath, err)
+					}
+				} else {
+					tile := mustReadTile(t, lr, uint64(level), idx, uint8(wantNodes))
+					if len(tile.Nodes) != wantNodes {
+						t.Errorf("Expected %d nodes in partial tile %d/%d.%d, got %d", wantNodes, level, idx, uint8(wantNodes), len(tile.Nodes))
+					}
+					// If the integrated tree does not have a full tile at this position (treeP > 0),
+					// no full tile file should have been written.
+					if treeP > 0 {
+						if fi, err := os.Stat(filepath.Join(s.cfg.Path, fullTilePath)); err == nil {
+							t.Errorf("Level %d tile %d: full tile %s should not exist for size %d (found %d bytes)", level, idx, fullTilePath, test.size, fi.Size())
+						} else if !errors.Is(err, os.ErrNotExist) {
+							t.Fatalf("Failed to stat %s: %v", fullTilePath, err)
+						}
+					}
 				}
 				idx >>= layout.TileHeight
 			}
@@ -928,3 +937,24 @@ func BenchmarkMarshalTlogEntryBundle(b *testing.B) {
 	}
 }
 
+func generateBundles(t *testing.T, totalEntries int) iter.Seq2[*api.EntryBundle, error] {
+	t.Helper()
+
+	return func(yield func(*api.EntryBundle, error) bool) {
+		remaining := totalEntries
+
+		N := 0
+		for remaining > 0 {
+			count := min(remaining, layout.EntryBundleWidth)
+			entries := make([][]byte, count)
+			for i := range entries {
+				entries[i] = fmt.Appendf(nil, "entry %d", N+i)
+			}
+			if !yield(&api.EntryBundle{Entries: entries}, nil) {
+				return
+			}
+			remaining -= count
+			N += count
+		}
+	}
+}
