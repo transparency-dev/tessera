@@ -839,7 +839,7 @@ func unmarshalMTCProof(data []byte) (*parsedMTCProof, error) {
 	}
 
 	var sigs cryptobyte.String
-	if !s.ReadUint16LengthPrefixed(&sigs) {
+	if !s.ReadUint24LengthPrefixed(&sigs) {
 		return nil, errors.New("malformed signatures")
 	}
 	for !sigs.Empty() {
