@@ -1007,21 +1007,8 @@ func TestMirrorTarget_SignSubtree(t *testing.T) {
 				if len(got) == 0 {
 					t.Fatalf("got empty cosig, want non-empty")
 				}
-				sigLine := strings.TrimSpace(string(got))
-				parts := strings.Split(sigLine, " ")
-				if len(parts) != 3 || parts[0] != "—" {
-					t.Fatalf("unexpected cosig format: %q", sigLine)
-				}
-				sigWithHash, err := base64.StdEncoding.DecodeString(parts[2])
-				if err != nil {
-					t.Fatalf("failed to decode sig base64: %v", err)
-				}
-				if len(sigWithHash) < 4 {
-					t.Fatalf("sig too short: %d bytes", len(sigWithHash))
-				}
-				sig := sigWithHash[4:]
-				if !testMirrorVerifier.VerifySubtree(0, testPendingCPOrigin, test.start, test.end, test.subRoot, sig) {
-					t.Errorf("VerifySubtree failed for generated cosignature")
+				if !testMirrorVerifier.VerifySubtree(testPendingCPOrigin, test.start, test.end, test.subRoot, got) {
+					t.Errorf("VerifySubtree failed for generated cosignature(got %q)", got)
 				}
 			} else {
 				if len(got) != 0 {

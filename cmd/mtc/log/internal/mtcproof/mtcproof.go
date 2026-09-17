@@ -19,6 +19,8 @@ import (
 	"cmp"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"slices"
 	"strings"
@@ -58,15 +60,39 @@ type SubtreeSignature struct {
 //	       case ml-dsa-44: opaque ml_dsa_44_signature[2420];
 //	   } signature;
 //	 } timestamped_signature;"
-func NewSubtreeSignatureFromCosig(cosignerID []byte, cosig []byte) (SubtreeSignature, error) {
-	s := cryptobyte.String(cosig)
-	var timestamp uint64
-	if !s.ReadUint64(&timestamp) {
-		return SubtreeSignature{}, fmt.Errorf("cosignature too short (%d bytes, missing u64 timestamp)", len(cosig))
+func NewSubtreeSignatureFromCosig(cosig []byte) (SubtreeSignature, error) {
+	l, ok := strings.CutPrefix(string(cosig), "— ")
+	if !ok {
+		return SubtreeSignature{}, fmt.Errorf("invalid cosignature format")
 	}
+	l, ok = strings.CutSuffix(l, "\n")
+	if !ok {
+		return SubtreeSignature{}, fmt.Errorf("invalid cosignature format")
+	}
+	name, sigB64, ok := strings.Cut(l, " ")
+	if !ok {
+		return SubtreeSignature{}, fmt.Errorf("invalid cosignature format")
+	}
+	cID, err := ParseCosignerID(name)
+	if err != nil {
+		return SubtreeSignature{}, fmt.Errorf("invalid cosigner ID: %v", err)
+	}
+	sigRaw, err := base64.StdEncoding.DecodeString(sigB64)
+	if err != nil {
+		return SubtreeSignature{}, fmt.Errorf("invalid cosignature base64: %v", err)
+	}
+	// Chomp 4 bytes of KeyHash
+	sigRaw = sigRaw[4:]
+	// Assert that timestamp is zero, otherwise client will never be able to verify the signature.
+	if t := binary.BigEndian.Uint64(sigRaw[:8]); t != 0 {
+		return SubtreeSignature{}, fmt.Errorf("invalid cosignature: timestamp (%d) is not zero", t)
+	}
+	// Remove timestamp
+	sigRaw = sigRaw[8:]
+
 	return SubtreeSignature{
-		CosignerID: cosignerID,
-		Signature:  s,
+		CosignerID: cID,
+		Signature:  sigRaw,
 	}, nil
 }
 

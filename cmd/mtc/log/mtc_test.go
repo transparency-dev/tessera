@@ -902,7 +902,7 @@ func setupTestWitness(t *testing.T) (policy.TLogPolicy, note.SubtreeVerifier) {
 				http.Error(w, fmt.Sprintf("decode subRoot: %v", err), http.StatusBadRequest)
 				return
 			}
-			rawSig, err := signer.SignSubtree(0, testOrigin, start, end, subRoot)
+			rawSig, err := signer.SignSubtree(testOrigin, start, end, subRoot)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("sign subtree: %v", err), http.StatusInternalServerError)
 				return
@@ -1092,16 +1092,22 @@ func TestMTCLog_AddTBS(t *testing.T) {
 			// SubtreeSignature.Signature contains the raw signature.
 			// SPEC: https://c2sp.org/tlog-cosignature
 			// note.SubtreeVerifier expects a C2SP timestamped_signature prefixed with the 8-byte u64 timestamp.
-			reconstructCosig := func(rawSig []byte) []byte {
-				return append(make([]byte, 8), rawSig...)
+			reconstructCosig := func(v note.SubtreeVerifier, rawSig []byte) []byte {
+				s := make([]byte, 4+8+len(rawSig))
+				binary.BigEndian.PutUint32(s[0:], v.KeyHash())
+				binary.BigEndian.PutUint64(s[4:], 0)
+				copy(s[12:], rawSig)
+				r := fmt.Appendf(nil, "— %s %s\n", v.Name(), base64.StdEncoding.EncodeToString(s))
+				t.Logf("reconstructed sig: %s", r)
+				return r
 			}
-			if !mtcLog.subtreeSigner.Verifier().VerifySubtree(0, mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, reconstructCosig(proofData.Signatures[0].Signature)) {
+			if !mtcLog.subtreeSigner.Verifier().VerifySubtree(mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, reconstructCosig(mtcLog.subtreeSigner.Verifier(), proofData.Signatures[0].Signature)) {
 				t.Errorf("VerifySubtree failed for log signature on entry%d", tc.entryIdx)
 			}
 			if !bytes.Equal(proofData.Signatures[0].CosignerID, mtcLog.logCosignerID) {
 				t.Errorf("CosignerID = %x, want %x", proofData.Signatures[0].CosignerID, mtcLog.logCosignerID)
 			}
-			if !witVerifier.VerifySubtree(0, mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, reconstructCosig(proofData.Signatures[1].Signature)) {
+			if !witVerifier.VerifySubtree(mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, reconstructCosig(witVerifier, proofData.Signatures[1].Signature)) {
 				t.Errorf("VerifySubtree failed for witness signature on entry%d", tc.entryIdx)
 			}
 		})
