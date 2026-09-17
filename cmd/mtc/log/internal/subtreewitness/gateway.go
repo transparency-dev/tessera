@@ -223,7 +223,7 @@ func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end 
 				continue
 			}
 
-			if !w.verifier.VerifySubtree(0, origin, start, end, subRoot, sigBytes) {
+			if !w.verifier.VerifySubtree(origin, start, end, subRoot, sigBytes) {
 				slog.ErrorContext(ctx, "Subtree signature verification failed",
 					slog.String("witness", s.Name),
 					slog.Uint64("start", start),

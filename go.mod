@@ -25,9 +25,9 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/muesli/termenv v0.16.0
 	github.com/rivo/tview v0.42.0
-	github.com/transparency-dev/formats v0.1.2-0.20260805102052-38e6e69c4152
+	github.com/transparency-dev/formats v0.1.2-0.20260916152522-091ce41666c0
 	github.com/transparency-dev/merkle v0.0.3-0.20260727102338-4491f478b7dc
-	github.com/transparency-dev/witness v0.0.0-20260814155820-ed55fd2d54a0
+	github.com/transparency-dev/witness v0.0.0-20260917140356-67c4b6b76572
 	go.opentelemetry.io/contrib/detectors/aws/ec2/v2 v2.5.3
 	go.opentelemetry.io/contrib/detectors/aws/ecs v1.46.0
 	go.opentelemetry.io/contrib/detectors/gcp v1.46.0
@@ -93,7 +93,7 @@ require (
 	modernc.org/libc v1.74.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.56.0 // indirect
+	modernc.org/sqlite v1.57.0 // indirect
 	mvdan.cc/sh/v3 v3.7.0 // indirect
 )
 
@@ -127,13 +127,13 @@ require (
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/metric v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
-	golang.org/x/crypto v0.56.0
+	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.58.0
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.23.0
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/term v0.45.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/term v0.46.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.16.0
 	google.golang.org/genproto v0.0.0-20260715232425-e75dac1f907d // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 // indirect
