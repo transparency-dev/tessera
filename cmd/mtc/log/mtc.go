@@ -46,7 +46,7 @@ const (
 	// DefaultAwaiterPollInterval is the fallback polling period for the publication awaiter.
 	DefaultAwaiterPollInterval = 200 * time.Millisecond
 
-	// SPEC: CQRP Policy v0.2.0
+	// SPEC: CQRP v0.3.0 Section 2.6.2
 	// "MTC CA Operators MUST NOT issue Subscriber certificates with a
 	// validity period exceeding 47 days."
 	DefaultMaxCertLifetime = 47 * 24 * time.Hour
@@ -70,24 +70,20 @@ var (
 )
 
 // RecommendedLandmarkInterval returns the recommended landmark publication interval
-// for a given maximum certificate lifetime, based on CQRP Policy v0.2.0 values.
+// for a given maximum certificate lifetime, based on CQRP v0.3.0 Section 2.6.2 values:
 //
-// - Up to 15 days: 1 hour (CQRP recommendation for 7-day certs)
-// - Up to 30 days: 2 hours
-// - Up to 47 days: 4 hours (CQRP recommendation for 47-day certs)
+// - Up to 7 days: 1 hour (CQRP Active CA Cosigner #1 recommendation)
+// - Greater than 7 days (up to 47 days): 4 hours (CQRP Active CA Cosigners #2, #3, #4 recommendation)
 func RecommendedLandmarkInterval(maxCertLifetime time.Duration) time.Duration {
-	// SPEC: CQRP Policy v0.2.0
+	// SPEC: CQRP v0.3.0 Section 2.6.2
 	// "For CA Cosigners with a maximum permitted certificate validity of up to
 	// 7 days, MTC CA landmarks SHOULD be generated approximately every hour"
-	if maxCertLifetime <= 15*24*time.Hour {
+	if maxCertLifetime <= 7*24*time.Hour {
 		return 1 * time.Hour
 	}
-	if maxCertLifetime <= 30*24*time.Hour {
-		return 2 * time.Hour
-	}
-	// SPEC: CQRP Policy v0.2.0
-	// "For CA Cosigners with a maximum permitted certificate validity of up to
-	// 47 days, MTC CA landmarks SHOULD be generated approximately 4 hour"
+	// SPEC: CQRP v0.3.0 Section 2.6.2
+	// "For CA Cosigners with a maximum permitted certificate validity of up to 47
+	// days, MTC CA landmarks SHOULD be generated approximately every 4 hours"
 	return 4 * time.Hour
 }
 
@@ -181,7 +177,7 @@ func (o *Options) WithLandmarkInterval(duration time.Duration) *Options {
 // WithMaxCertLifetime configures a maximum validity duration for incoming certificates.
 // duration MUST be strictly positive and smaller than or equal to 47 days.
 //
-// SPEC: CQRP Policy v0.2.0
+// SPEC: CQRP v0.3.0 Section 2.6.2
 // "MTC CA Operators MUST NOT issue Subscriber certificates with a
 // validity period exceeding 47 days."
 func (o *Options) WithMaxCertLifetime(duration time.Duration) *Options {

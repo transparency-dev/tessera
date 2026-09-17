@@ -501,22 +501,23 @@ func TestMTCOptionsValid(t *testing.T) {
 
 func TestRecommendedLandmarkInterval(t *testing.T) {
 	tests := []struct {
+		name     string
 		lifetime time.Duration
 		want     time.Duration
 	}{
-		{lifetime: 1 * time.Hour, want: 1 * time.Hour},
-		{lifetime: 7 * 24 * time.Hour, want: 1 * time.Hour},
-		{lifetime: 15 * 24 * time.Hour, want: 1 * time.Hour},
-		{lifetime: 16 * 24 * time.Hour, want: 2 * time.Hour},
-		{lifetime: 25 * 24 * time.Hour, want: 2 * time.Hour},
-		{lifetime: 30 * 24 * time.Hour, want: 2 * time.Hour},
-		{lifetime: 31 * 24 * time.Hour, want: 4 * time.Hour},
-		{lifetime: 47 * 24 * time.Hour, want: 4 * time.Hour},
+		{name: "1 hour", lifetime: 1 * time.Hour, want: 1 * time.Hour},
+		{name: "7 days", lifetime: 7 * 24 * time.Hour, want: 1 * time.Hour},
+		{name: "7 days plus 1 minute", lifetime: 7*24*time.Hour + time.Minute, want: 4 * time.Hour},
+		{name: "15 days", lifetime: 15 * 24 * time.Hour, want: 4 * time.Hour},
+		{name: "30 days", lifetime: 30 * 24 * time.Hour, want: 4 * time.Hour},
+		{name: "47 days", lifetime: 47 * 24 * time.Hour, want: 4 * time.Hour},
 	}
 	for _, tc := range tests {
-		if got := RecommendedLandmarkInterval(tc.lifetime); got != tc.want {
-			t.Errorf("RecommendedLandmarkInterval(%v) = %v, want %v", tc.lifetime, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RecommendedLandmarkInterval(tc.lifetime); got != tc.want {
+				t.Errorf("RecommendedLandmarkInterval(%v) = %v, want %v", tc.lifetime, got, tc.want)
+			}
+		})
 	}
 }
 
