@@ -212,7 +212,7 @@ func new(extensions []byte, start, end uint64, inclusionProof [][]byte, signatur
 //	    uint48 start;
 //	    uint48 end;
 //	    HashValue inclusion_proof<0..2^16-1>;
-//	    SubtreeSignature signatures<0..2^16-1>;
+//	    SubtreeSignature signatures<0..2^24-1>;
 //	} MTCProof;
 func (p *mtcProof) marshal() ([]byte, error) {
 	var b cryptobyte.Builder
@@ -235,8 +235,8 @@ func (p *mtcProof) marshal() ([]byte, error) {
 		}
 	})
 
-	// SubtreeSignature signatures<0..2^16-1>
-	b.AddUint16LengthPrefixed(func(child *cryptobyte.Builder) {
+	// SubtreeSignature signatures<0..2^24-1>
+	b.AddUint24LengthPrefixed(func(child *cryptobyte.Builder) {
 		for _, sig := range p.signatures {
 			// TrustAnchorID cosigner_id<1..2^8-1>
 			child.AddUint8LengthPrefixed(func(c *cryptobyte.Builder) {

@@ -41,6 +41,7 @@ func readUint48(s *cryptobyte.String, out *uint64) bool {
 	return true
 }
 
+// TODO: export and use in mtc_test.go directly.
 func (p *mtcProof) unmarshal(data []byte) error {
 	s := cryptobyte.String(data)
 
@@ -71,7 +72,7 @@ func (p *mtcProof) unmarshal(data []byte) error {
 	}
 
 	var sigs cryptobyte.String
-	if !s.ReadUint16LengthPrefixed(&sigs) {
+	if !s.ReadUint24LengthPrefixed(&sigs) {
 		return errors.New("malformed signatures")
 	}
 	p.signatures = nil
