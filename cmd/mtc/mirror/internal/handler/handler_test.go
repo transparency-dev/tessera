@@ -484,13 +484,13 @@ func TestSignSubtree_StatusCodes(t *testing.T) {
 			wantStatus: http.StatusInternalServerError,
 		},
 		{
-			name: "500 malformed checkpoint in request",
+			name: "400 malformed checkpoint in request",
 			body: func() io.Reader {
 				badCP := []byte("not a checkpoint")
 				return bytes.NewReader(formatReqBody(testStart, testEnd, testSubRoot, testProof, badCP))
 			},
 			mockTarget: &mockTarget{},
-			wantStatus: http.StatusInternalServerError,
+			wantStatus: http.StatusBadRequest,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -531,7 +531,6 @@ func TestMirrorMux_SignSubtree(t *testing.T) {
 		target2Func func(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, cp []byte) ([]byte, error)
 		wantCosig   string
 		wantErr     error
-		wantAnyErr  bool
 	}{
 		{
 			name: "dispatches to target 1",
@@ -563,9 +562,9 @@ func TestMirrorMux_SignSubtree(t *testing.T) {
 			wantErr: ErrUnknownLog,
 		},
 		{
-			name:       "malformed checkpoint returns error",
-			cp:         []byte("not a valid checkpoint"),
-			wantAnyErr: true,
+			name:    "malformed checkpoint returns ErrInvalidCheckpoint",
+			cp:      []byte("not a valid checkpoint"),
+			wantErr: witness.ErrInvalidCheckpoint,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -574,12 +573,6 @@ func TestMirrorMux_SignSubtree(t *testing.T) {
 			_ = mux.AddTarget(origin2, &mockTarget{signSubtreeFunc: test.target2Func})
 
 			got, err := mux.SignSubtree(t.Context(), 0, 4, subRoot, proof, test.cp)
-			if test.wantAnyErr {
-				if err == nil {
-					t.Fatalf("got nil error, want non-nil error")
-				}
-				return
-			}
 			if test.wantErr != nil {
 				if !errors.Is(err, test.wantErr) {
 					t.Fatalf("got error %v, want %v", err, test.wantErr)
