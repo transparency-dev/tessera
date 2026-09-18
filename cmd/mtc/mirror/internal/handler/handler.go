@@ -121,7 +121,7 @@ func addEntries(m *MirrorMux) http.HandlerFunc {
 			http.Error(w, "Failed to add entries", http.StatusInternalServerError)
 			return
 
-		case nextEntry == pendingSize:
+		case nextEntry >= req.uploadEnd:
 			// SPEC: If next_entry == upload_end, and no cosignatures are provided by the mirror,
 			// the mirror MUST respond with a "200 OK" status code and an empty response body.
 			// If next_entry == upload_end, and cosignatures are provided by the mirror,
