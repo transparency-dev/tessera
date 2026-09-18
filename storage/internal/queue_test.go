@@ -154,6 +154,76 @@ func TestNotify(t *testing.T) {
 	}
 }
 
+func TestQueueCancel(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		maxSize   uint
+		numItems  int
+		blockWork bool
+	}{
+		{
+			name:      "partial batch waiting in items",
+			maxSize:   10,
+			numItems:  5,
+			blockWork: false,
+		},
+		{
+			name:      "worker blocked in flush and batches full",
+			maxSize:   2,
+			numItems:  2 + 2 + 2 + 1, // 2 in doFlush (flushFunc below), 2 in batches chan, 2 blocked in flush() (on batches<-), 1 blocked in Add() (on inputs<-).
+			blockWork: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			qCtx, cancel := context.WithCancel(t.Context())
+
+			inFlush := make(chan struct{})
+			var once sync.Once
+			flushFunc := func(ctx context.Context, entries []*tessera.Entry) error {
+				if test.blockWork {
+					once.Do(func() {
+						close(inFlush)
+					})
+					<-ctx.Done()
+					return ctx.Err()
+				}
+				for i, e := range entries {
+					_ = e.MarshalBundleData(uint64(i))
+				}
+				return nil
+			}
+
+			q := storage.NewQueue(qCtx, time.Hour, test.maxSize, flushFunc)
+
+			futures := make([]tessera.IndexFuture, test.numItems+1)
+			var addWg sync.WaitGroup
+			for i := range test.numItems {
+				addWg.Go(func() {
+					futures[i] = q.Add(t.Context(), tessera.NewEntry(fmt.Appendf(nil, "item %d", i)))
+				})
+			}
+
+			if test.blockWork {
+				<-inFlush
+			} else {
+				addWg.Wait()
+			}
+
+			cancel()
+			addWg.Wait()
+
+			// Also test calling Add with a valid request context after the queue's context is cancelled.
+			futures[test.numItems] = q.Add(t.Context(), tessera.NewEntry([]byte("after cancel")))
+
+			for i, f := range futures {
+				if _, err := f(); !errors.Is(err, context.Canceled) {
+					t.Errorf("future[%d]: got err %v, want %v", i, err, context.Canceled)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkQueue(b *testing.B) {
 	ctx := b.Context()
 	const count = 1024

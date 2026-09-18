@@ -80,7 +80,6 @@ func NewQueue(ctx context.Context, maxAge time.Duration, maxSize uint, f FlushFu
 		}
 
 		flush := func() {
-
 			if len(items) == 0 {
 				return
 			}
