@@ -91,7 +91,7 @@ func EntryBundles(ctx context.Context, numWorkers uint, getSize TreeSizeFunc, ge
 
 		// For each bundle, pop a future into the bundles channel and kick off an async request
 		// to resolve it.
-		for ri := range layout.Range(fromEntry, fromEntry+N, treeSize) {
+		for ri := range layout.Range(fromEntry, N, treeSize) {
 			select {
 			case <-exit:
 				return
