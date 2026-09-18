@@ -69,8 +69,6 @@ func NewQueue(ctx context.Context, maxAge time.Duration, maxSize uint, f FlushFu
 		// call Stop() to avoid a spurious trigger on the first iteration.
 		timer := time.NewTimer(time.Hour)
 		timer.Stop()
-		// Ensure timer is stopped once ctx is done and we return.
-		defer timer.Stop()
 
 		cancelItems := func() {
 			for _, i := range items {

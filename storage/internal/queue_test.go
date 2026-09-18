@@ -170,7 +170,7 @@ func TestQueueCancel(t *testing.T) {
 		{
 			name:      "worker blocked in flush and batches full",
 			maxSize:   2,
-			numItems:  2 + 2 + 2 + 1, // 2 in doFlush (flushFunc below), 2 in batches chan, 2 blocked in flush() (on batches<-), 1 blocked in Add() (on inputs<-).
+			numItems:  2 + 2 + 2, // 2 in doFlush (flushFunc below), 2 in batches chan, 2 blocked in flush() (on batches<-).
 			blockWork: true,
 		},
 	} {
@@ -195,25 +195,31 @@ func TestQueueCancel(t *testing.T) {
 
 			q := storage.NewQueue(qCtx, time.Hour, test.maxSize, flushFunc)
 
-			futures := make([]tessera.IndexFuture, test.numItems+1)
-			var addWg sync.WaitGroup
+			futures := []tessera.IndexFuture{}
 			for i := range test.numItems {
-				addWg.Go(func() {
-					futures[i] = q.Add(t.Context(), tessera.NewEntry(fmt.Appendf(nil, "item %d", i)))
-				})
+				futures = append(futures, q.Add(t.Context(), tessera.NewEntry(fmt.Appendf(nil, "item %d", i))))
 			}
 
+			var addWg sync.WaitGroup
 			if test.blockWork {
 				<-inFlush
-			} else {
-				addWg.Wait()
+				// With the worker blocked in flushFunc, batches full, and flush() blocked on batches<-,
+				// one more Add() will block on inputs<- until cancel() is called.
+				// Use an empty channel here to ensure that the async Add has had a chance to block
+				// before we cancel()
+				started := make(chan struct{})
+				addWg.Go(func() {
+					close(started)
+					futures = append(futures, q.Add(t.Context(), tessera.NewEntry([]byte("blocked in Add"))))
+				})
+				<-started
 			}
 
 			cancel()
 			addWg.Wait()
 
 			// Also test calling Add with a valid request context after the queue's context is cancelled.
-			futures[test.numItems] = q.Add(t.Context(), tessera.NewEntry([]byte("after cancel")))
+			futures = append(futures, q.Add(t.Context(), tessera.NewEntry([]byte("after cancel"))))
 
 			for i, f := range futures {
 				if _, err := f(); !errors.Is(err, context.Canceled) {
