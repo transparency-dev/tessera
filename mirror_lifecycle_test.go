@@ -18,13 +18,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/merkle"
 	"github.com/transparency-dev/merkle/compact"
@@ -543,79 +546,182 @@ func TestMirrorTarget_AddEntries_VerifySubtreeProof(t *testing.T) {
 	}
 }
 
-func TestMirrorTarget_AddEntries_Unaligned_PadsFirstBundle(t *testing.T) {
-	const (
-		testIntegratedSize = uint64(270)
-		testUploadStart    = uint64(270) // not aligned: 270 % 256 = 14
-		testUploadEnd      = testPendingCPSize
-	)
+// TestMirrorTarget_AddEntries_Unaligned tests handling of uploads whose start index is not aligned
+// to an entry bundle boundary:
+//   - the entry bundle resource we read for padding must have the shape (full, or partial of a given
+//     size) which the mirror's current tree size implies is actually stored, and
+//   - the entries we read must be used to left-pad the first bundle yielded for integration, with the
+//     subtree proof verified against the floored (bundle aligned) start index.
+func TestMirrorTarget_AddEntries_Unaligned(t *testing.T) {
+	// storedEntries are the entries the mirror already has integrated, i.e. what a read of the
+	// bundle containing uploadStart will return.
+	storedEntries := make([][]byte, layout.EntryBundleWidth)
+	for i := range storedEntries {
+		storedEntries[i] = fmt.Appendf(nil, "stored-%d", i)
+	}
+	uploadedEntries := [][]byte{[]byte("uploaded-0"), []byte("uploaded-1")}
 
-	var readEntryBundleCalled bool
-
-	padEntries := testUploadStart % layout.EntryBundleWidth
-	padBundleRaw := make([]byte, 2*padEntries)
-
-	drv := &fakeDriver{
-		writer: &fakeMirrorWriter{
-			integrateFunc: func(ctx context.Context, fromBundleIdx uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
-				if want := testUploadStart / layout.EntryBundleWidth; fromBundleIdx != want {
-					return 0, nil, fmt.Errorf("got fromBundleIdx %d want %d", fromBundleIdx, want)
-				}
-				for b, err := range bundles {
-					if err != nil {
-						return 0, nil, err
-					}
-					if got, want := uint64(len(b.Entries)), testUploadStart%layout.EntryBundleWidth; got != want {
-						return 0, nil, fmt.Errorf("got %d entries in bundle, want %d", got, want)
-					}
-				}
-				pendingCPRoot, err := base64.StdEncoding.DecodeString(testPendingCPRoot)
-				return testUploadEnd, pendingCPRoot, err
-			},
-			updateCheckpointFunc: func(ctx context.Context, f func(oldCP []byte) (newCP []byte, err error)) error {
-				_, err := f(nil)
-				return err
-			},
+	for _, test := range []struct {
+		desc           string
+		integratedSize uint64
+		uploadStart    uint64
+		// wantRead is true if a read of the bundle containing uploadStart is expected, in which
+		// case wantReadIdx/wantReadPartial describe the resource which must be requested.
+		wantRead        bool
+		wantReadIdx     uint64
+		wantReadPartial uint8
+		// wantNumPad is the number of stored entries expected to be prepended to the first
+		// bundle yielded for integration.
+		wantNumPad int
+	}{
+		{
+			desc:           "aligned start, no padding needed",
+			integratedSize: 256,
+			uploadStart:    256,
+			wantRead:       false,
+			wantNumPad:     0,
+		}, {
+			desc:            "unaligned start == tree size",
+			integratedSize:  270,
+			uploadStart:     270,
+			wantRead:        true,
+			wantReadIdx:     1,
+			wantReadPartial: 14,
+			wantNumPad:      14,
+		}, {
+			desc:            "unaligned start behind tree size, same bundle",
+			integratedSize:  300,
+			uploadStart:     270,
+			wantRead:        true,
+			wantReadIdx:     1,
+			wantReadPartial: 44,
+			wantNumPad:      14,
+		}, {
+			desc:            "unaligned start behind tree size, bundle is full",
+			integratedSize:  testPendingCPSize,
+			uploadStart:     270,
+			wantRead:        true,
+			wantReadIdx:     1,
+			wantReadPartial: 0,
+			wantNumPad:      14,
 		},
-		reader: &fakeLogReader{
-			sizeFunc: func(ctx context.Context) (uint64, error) { return testIntegratedSize, nil },
-			readEntryBundle: func(ctx context.Context, index uint64, p uint8) ([]byte, error) {
-				readEntryBundleCalled = true
-				if got, want := index, testUploadStart/layout.EntryBundleWidth; got != want {
-					t.Errorf("ReadEntryBundle index: got %d, want %d", got, want)
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			wantBundleIdx := test.uploadStart / layout.EntryBundleWidth
+			// Padding entries are taken from the start of the bundle, and the subtree proof is
+			// verified against the bundle aligned start index.
+			wantEntries := append(append([][]byte{}, storedEntries[:test.wantNumPad]...), uploadedEntries...)
+			wantProofStart := test.uploadStart - uint64(test.wantNumPad)
+
+			var (
+				gotRead     bool
+				gotBundles  [][][]byte
+				gotStart    uint64
+				gotEnd      uint64
+				gotSize     uint64
+				gotVerified bool
+			)
+
+			drv := &fakeDriver{
+				writer: &fakeMirrorWriter{
+					integrateFunc: func(ctx context.Context, fromBundleIdx uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
+						if fromBundleIdx != wantBundleIdx {
+							return 0, nil, fmt.Errorf("got fromBundleIdx %d, want %d", fromBundleIdx, wantBundleIdx)
+						}
+						for b, err := range bundles {
+							if err != nil {
+								return 0, nil, err
+							}
+							gotBundles = append(gotBundles, b.Entries)
+						}
+						pendingCPRoot, err := base64.StdEncoding.DecodeString(testPendingCPRoot)
+						return testPendingCPSize, pendingCPRoot, err
+					},
+					updateCheckpointFunc: func(ctx context.Context, f func(oldCP []byte) (newCP []byte, err error)) error {
+						_, err := f(nil)
+						return err
+					},
+				},
+				reader: &fakeLogReader{
+					sizeFunc: func(ctx context.Context) (uint64, error) { return test.integratedSize, nil },
+					readEntryBundle: func(ctx context.Context, index uint64, p uint8) ([]byte, error) {
+						gotRead = true
+						if index != test.wantReadIdx || p != test.wantReadPartial {
+							// Emulate storage, which only has the resource whose shape matches the tree size.
+							return nil, fmt.Errorf("%w: ReadEntryBundle(%d, %d), want (%d, %d)", os.ErrNotExist, index, p, test.wantReadIdx, test.wantReadPartial)
+						}
+						numEntries := int(p)
+						if p == 0 {
+							numEntries = layout.EntryBundleWidth
+						}
+						return marshalEntryBundle(storedEntries[:numEntries]), nil
+					},
+				},
+			}
+
+			mt, err := NewMirrorTarget(t.Context(), drv, &MirrorOptions{
+				origin:      testPendingCPOrigin,
+				logVerifier: testLogVerifier,
+				signer:      testMirrorSigner,
+				cpSource:    func(ctx context.Context) ([]byte, error) { return []byte(testPendingCP), nil },
+			})
+			if err != nil {
+				t.Fatalf("NewMirrorTarget() failed: %v", err)
+			}
+			// Stub out proof verification since our entries are arbitrary, but record what it was called with.
+			mt.verifySubtreeProof = func(hasher merkle.LogHasher, start, end, size uint64, proof [][]byte, subRoot, root []byte) error {
+				gotVerified, gotStart, gotEnd, gotSize = true, start, end, size
+				return nil
+			}
+			validTicket, err := mt.seal([]byte(testPendingCP))
+			if err != nil {
+				t.Fatalf("seal failed: %v", err)
+			}
+
+			firstCall := true
+			if _, _, _, _, err := mt.AddEntries(t.Context(), test.uploadStart, testPendingCPSize, validTicket, func() (*MirrorPackage, error) {
+				if firstCall {
+					firstCall = false
+					return &MirrorPackage{Entries: uploadedEntries, Proof: [][]byte{[]byte("proof")}}, nil
 				}
-				if got, want := p, uint8(testUploadStart%layout.EntryBundleWidth); got != want {
-					t.Errorf("ReadEntryBundle p: got %d, want %d", got, want)
-				}
-				return padBundleRaw, nil
-			},
-		},
-	}
+				return nil, io.EOF
+			}); err != nil {
+				t.Fatalf("AddEntries: %v", err)
+			}
 
-	mt, err := NewMirrorTarget(t.Context(), drv, &MirrorOptions{
-		origin:      testPendingCPOrigin,
-		logVerifier: testLogVerifier,
-		signer:      testMirrorSigner,
-		cpSource:    func(ctx context.Context) ([]byte, error) { return []byte(testPendingCP), nil },
-	})
-	if err != nil {
-		t.Fatalf("NewMirrorTarget() failed: %v", err)
+			if gotRead != test.wantRead {
+				t.Errorf("ReadEntryBundle called: got %t, want %t", gotRead, test.wantRead)
+			}
+			if len(gotBundles) != 1 {
+				t.Fatalf("got %d integrated bundles, want 1", len(gotBundles))
+			}
+			if diff := cmp.Diff(wantEntries, gotBundles[0]); diff != "" {
+				t.Errorf("integrated bundle entries diff (-want +got):\n%s", diff)
+			}
+			if !gotVerified {
+				t.Fatal("verifySubtreeProof was not called")
+			}
+			if gotStart != wantProofStart {
+				t.Errorf("verifySubtreeProof start: got %d, want %d", gotStart, wantProofStart)
+			}
+			if want := wantProofStart + uint64(len(wantEntries)); gotEnd != want {
+				t.Errorf("verifySubtreeProof end: got %d, want %d", gotEnd, want)
+			}
+			if gotSize != testPendingCPSize {
+				t.Errorf("verifySubtreeProof size: got %d, want %d", gotSize, testPendingCPSize)
+			}
+		})
 	}
+}
 
-	validTicket, err := mt.seal([]byte(testPendingCP))
-	if err != nil {
-		t.Fatalf("seal failed: %v", err)
+// marshalEntryBundle serialises the provided entries into entry bundle format.
+func marshalEntryBundle(entries [][]byte) []byte {
+	r := []byte{}
+	for _, e := range entries {
+		r = binary.BigEndian.AppendUint16(r, uint16(len(e)))
+		r = append(r, e...)
 	}
-
-	_, _, _, _, err = mt.AddEntries(t.Context(), testUploadStart, testUploadEnd, validTicket, func() (*MirrorPackage, error) {
-		return nil, io.EOF
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !readEntryBundleCalled {
-		t.Errorf("ReadEntryBundle was not called")
-	}
+	return r
 }
 
 func TestMirrorTarget_AddEntries_NoPendingCheckpoint(t *testing.T) {
