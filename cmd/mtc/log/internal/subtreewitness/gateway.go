@@ -43,9 +43,8 @@ type witnessKey struct {
 }
 
 type witness struct {
-	client     SubtreeWitnessClient
-	verifier   f_note.SubtreeVerifier
-	cosignerID []byte
+	client   SubtreeWitnessClient
+	verifier f_note.SubtreeVerifier
 }
 
 // SubtreeWitnessClient defines the interface for calling a witness's sign-subtree endpoint.
@@ -85,9 +84,8 @@ func New(httpClient *http.Client, pol policy.TLogPolicy) (*Gateway, error) {
 			slog.WarnContext(context.Background(), "witness verifier does not implement SubtreeVerifier", slog.String("name", w.Name))
 			continue
 		}
-		cosignerID, err := mtcproof.ParseCosignerID(sv.Name())
-		if err != nil {
-			return nil, fmt.Errorf("invalid cosigner ID for witness %s: %w", sv.Name(), err)
+		if _, err := mtcproof.ParseCosignerID(sv.Name()); err != nil {
+			return nil, fmt.Errorf("invalid cosigner name in subtree verifier %q: %v", sv.Name(), err)
 		}
 		k := witnessKey{name: sv.Name(), keyHash: sv.KeyHash()}
 		if _, exists := witnesses[k]; exists {
@@ -95,9 +93,8 @@ func New(httpClient *http.Client, pol policy.TLogPolicy) (*Gateway, error) {
 		}
 		client := wc.NewWitness(w.URL, httpClient)
 		witnesses[k] = witness{
-			client:     client,
-			verifier:   sv,
-			cosignerID: cosignerID,
+			client:   client,
+			verifier: sv,
 		}
 	}
 
@@ -223,7 +220,7 @@ func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end 
 				continue
 			}
 
-			if !w.verifier.VerifySubtree(0, origin, start, end, subRoot, sigBytes) {
+			if !w.verifier.VerifySubtree(origin, start, end, subRoot, sigBytes) {
 				slog.ErrorContext(ctx, "Subtree signature verification failed",
 					slog.String("witness", s.Name),
 					slog.Uint64("start", start),
@@ -232,7 +229,7 @@ func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end 
 				continue
 			}
 
-			subSig, err := mtcproof.NewSubtreeSignatureFromCosig(w.cosignerID, sigBytes)
+			subSig, err := mtcproof.NewSubtreeSignatureFromCosig(sigBytes)
 			if err != nil {
 				slog.ErrorContext(ctx, "Failed to extract raw subtree signature",
 					slog.String("witness", s.Name),

@@ -17,8 +17,10 @@ package mtcproof
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -437,8 +439,21 @@ func TestParseCosignerID(t *testing.T) {
 }
 
 func TestNewSubtreeSignatureFromCosig(t *testing.T) {
-	cosignerID := []byte{0x2b, 0x06, 0x01, 0x04, 0x01}
+	partsToSig := func(t *testing.T, name string, hash uint32, timestamp uint64, sig []byte) []byte {
+		t.Helper()
+		s := make([]byte, 0, 4+8+len(sig))
+		s = binary.BigEndian.AppendUint32(s, hash)
+		s = binary.BigEndian.AppendUint64(s, timestamp)
+		s = append(s, sig...)
+		r := fmt.Appendf(nil, "— %s %s\n", name, base64.StdEncoding.EncodeToString(s))
+		t.Logf("sig: %q", string(r))
+		return r
+	}
+
+	cosignerID := []byte{0x01, 0x02, 0x03, 0x04}
+	cosignerName := "oid/1.3.6.1.4.1.1.2.3.4"
 	rawSig := []byte("raw-signature-bytes")
+	zeroTimestamp := uint64(0)
 
 	tests := []struct {
 		name    string
@@ -447,14 +462,14 @@ func TestNewSubtreeSignatureFromCosig(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "valid cosignature with timestamp and signature",
-			input:   append(binary.BigEndian.AppendUint64(nil, 1724867400), rawSig...),
+			name:    "valid cosignature",
+			input:   partsToSig(t, cosignerName, 0, zeroTimestamp, rawSig),
 			want:    rawSig,
 			wantErr: false,
 		},
 		{
 			name:    "valid cosignature with timestamp only",
-			input:   binary.BigEndian.AppendUint64(nil, 1724867400),
+			input:   partsToSig(t, cosignerName, 0, zeroTimestamp, []byte{}),
 			want:    []byte{},
 			wantErr: false,
 		},
@@ -472,7 +487,7 @@ func TestNewSubtreeSignatureFromCosig(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := NewSubtreeSignatureFromCosig(cosignerID, tc.input)
+			got, err := NewSubtreeSignatureFromCosig(tc.input)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("NewSubtreeSignatureFromCosig() error = %v, wantErr %v", err, tc.wantErr)
 			}
@@ -483,7 +498,7 @@ func TestNewSubtreeSignatureFromCosig(t *testing.T) {
 				t.Errorf("CosignerID = %x, want %x", got.CosignerID, cosignerID)
 			}
 			if !bytes.Equal(got.Signature, tc.want) {
-				t.Errorf("Signature = %x, want %x", got.Signature, tc.want)
+				t.Errorf("Signature = %s, want %s", got.Signature, tc.want)
 			}
 		})
 	}
