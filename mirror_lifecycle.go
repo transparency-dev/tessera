@@ -126,7 +126,7 @@ func (o *MirrorOptions) valid() error {
 type MirrorWriter interface {
 	// IntegrateBundles integrates bundles of log entries, starting at the given bundle index, into the local tree.
 	// Bundles are _always_ aligned on bundle boundaries.
-	// Implementations MUST NOT overwrite entries that are already integrated into the tree.
+	// Implementations MUST NOT alter entries that are already integrated into the tree.
 	//
 	// Returns the size of the tree and its new root hash if successful.
 	// If the provided iterator yields an error, the MirrorWriter MUST return it either directly, or wrapped so the caller can identify it.
@@ -259,7 +259,7 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 	}
 
 	bundleIdx := uploadStart / layout.EntryBundleWidth
-	nextEntry, newRoot, err := mt.writer.IntegrateBundles(ctx, bundleIdx, mt.bundleIterator(ctx, next, uploadStart, pendingCP))
+	nextEntry, newRoot, err := mt.writer.IntegrateBundles(ctx, bundleIdx, mt.bundleIterator(ctx, next, uploadStart, nextEntry, pendingCP))
 	switch {
 	case err != nil:
 		return 0, 0, nil, nil, err
@@ -291,33 +291,41 @@ func (mt *MirrorTarget) AddEntries(ctx context.Context, uploadStart, uploadEnd u
 //
 // Yielded entry bundles are always aligned to bundle boundaries. Specifically, this means that if the provided start is _not_ bundle aligned, then we will
 // fetch entries from the bundle at start/256 and use those entries to left-pad the first yielded bundle.
-func (mt *MirrorTarget) bundleIterator(ctx context.Context, next func() (*MirrorPackage, error), start uint64, pendingCP *log.Checkpoint) func(func(*api.EntryBundle, error) bool) {
+func (mt *MirrorTarget) bundleIterator(ctx context.Context, next func() (*MirrorPackage, error), start, integratedSize uint64, pendingCP *log.Checkpoint) func(func(*api.EntryBundle, error) bool) {
 	crf := compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}
 	return func(yield func(*api.EntryBundle, error) bool) {
 		// Check for unaligned upload start, and fetch entries from the start of the bundle to use to pad.
 		// This is necessary for the subtree proof for such an unaligned first bundle to validate.
 		var padEntries [][]byte
-		if p := start % layout.EntryBundleWidth; p != 0 {
-			// non-aligned starting bundle
-			br, err := mt.reader.ReadEntryBundle(ctx, start/layout.EntryBundleWidth, uint8(p))
+		if startPad := start % layout.EntryBundleWidth; startPad != 0 {
+			bIdx := start / layout.EntryBundleWidth
+			// The tlog-mirror spec allows an upload to start some way below the current tree size, so the
+			// stored bundle we need to read could well contain more entries than we're going to use for padding.
+			// Figure out which size of tile we can fetch, given the size of the _actual_ tree, and then fetch that
+			// and trim as necessary.
+			storedPartial := layout.PartialTileSize(0, bIdx, integratedSize)
+			br, err := mt.reader.ReadEntryBundle(ctx, bIdx, storedPartial)
 			if err != nil {
 				yield(nil, fmt.Errorf("failed to read bundle containing uploadStart (%d): %v", start, err))
 				return
 			}
-			// Parse and clip, just in case we were returned data from a full tile.
+			// Parse and clip, since the bundle we read may contain more entries than we need for padding.
 			b := &api.EntryBundle{}
 			if err := b.UnmarshalText(br); err != nil {
 				yield(nil, fmt.Errorf("failed to unmarshal bundle containing uploadStart (%d): %v", start, err))
 				return
 			}
-			if l := len(b.Entries); l < int(p) {
-				yield(nil, fmt.Errorf("POTENTIAL CORRUPTION: partial bundle at index %d.%d has only %d entries", start/layout.EntryBundleWidth, p, l))
+			if l := len(b.Entries); l < int(startPad) {
+				yield(nil, fmt.Errorf("POTENTIAL CORRUPTION: bundle at index %d (requested p.%d) has only %d entries, want at least %d", bIdx, storedPartial, l, startPad))
 				return
 			}
-			padEntries = b.Entries[:p]
+			// Take a slice of the entries to use as padding, but don't allow append to mutate the
+			// underlying storage (which we share with calls to ReadEntryBundle).
+			// slices.Clone would work too, but at the cost of another alloc.
+			padEntries = b.Entries[:startPad:startPad]
 			// SPEC: The subtree consistency proof is computed from the subtree defined by [rounded_start + i * 256, end), and the log
 			//       checkpoint with tree size upload_end
-			start &= ^uint64(0xff) // floor to bundle boundary
+			start -= startPad
 		}
 
 		for {
