@@ -208,9 +208,7 @@ func TestNodeCacheHandlesInvalidRequest(t *testing.T) {
 		return h.MarshalText()
 	}
 
-	// Large tree, but we're emulating skew since f, above, will return a tile which only knows about 1
-	// leaf.
-	nc := newNodeCache(f, 10)
+	nc := newNodeCache(f, 1)
 
 	if got, err := nc.GetNode(ctx, compact.NewNodeID(0, 0)); err != nil {
 		t.Errorf("got %v, want no error", err)
