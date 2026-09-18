@@ -991,6 +991,17 @@ func TestMirrorTarget_SignSubtree(t *testing.T) {
 			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testLogSigner, testMirrorSigner),
 			wantErr: witness.ErrInvalidProof,
 		},
+		{
+			// A checkpoint which isn't a well-formed note is a bad request rather than a signature
+			// failure, so it must not be reported as ErrNoWitnessSignature.
+			name:    "malformed checkpoint",
+			start:   0,
+			end:     4,
+			subRoot: validSubRoot,
+			proof:   validProof,
+			cp:      []byte("not a checkpoint"),
+			wantErr: witness.ErrInvalidCheckpoint,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := mt.SignSubtree(ctx, test.start, test.end, test.subRoot, test.proof, test.cp)
