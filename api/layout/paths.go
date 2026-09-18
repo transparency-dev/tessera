@@ -47,6 +47,10 @@ func EntriesPathForLogIndex(seq, logSize uint64) string {
 //
 // If from >= treeSize or N == 0, the returned iterator will yield no elements.
 func Range(from, N, treeSize uint64) iter.Seq[RangeInfo] {
+	// Mostly hypothetical, but ensure we never overflow uint64.
+	if math.MaxUint64-from < N {
+		N = math.MaxUint64 - from
+	}
 	return func(yield func(RangeInfo) bool) {
 		// Range is empty if we're entirely beyond the extent of the tree, or we've been asked for zero items.
 		if from >= treeSize || N == 0 {
