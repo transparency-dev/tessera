@@ -263,9 +263,6 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 	var (
 		next func() (client.Entry[[]byte], error, bool)
 		stop func()
-
-		curEntries [][]byte
-		curIndex   uint64
 	)
 	// Ensure we tear down any in-flight entry stream when we're done.
 	defer func() {
@@ -343,7 +340,7 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 							// We're caught up, so unblock pushback and go back to sleep
 							streamDone = true
 							f.as.pushBack.Store(false)
-							return ctx.Err()
+							return nil
 						default:
 							// size > followFrom, so there's more work to be done!
 						}
@@ -376,40 +373,31 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 						}
 					}
 
-					if curIndex == followFrom && curEntries != nil {
-						// Note that it's possible for Spanner to automatically retry transactions in some circumstances, when it does
-						// it'll call this function again.
-						// If the above condition holds, then we're in a retry situation and we must use the same data again rather
-						// than continue reading entries which will take us out of sync.
-					} else {
-						bs := uint64(f.as.opts.MaxBatchSize)
-						if r := logSize - followFrom; r < bs {
-							bs = r
+					bs := uint64(f.as.opts.MaxBatchSize)
+					if r := logSize - followFrom; r < bs {
+						bs = r
+					}
+					batch := make([][]byte, 0, bs)
+					for i := range int(bs) {
+						e, err, ok := next()
+						if !ok {
+							// The entry stream has ended so we'll need to start a new stream next time around the loop:
+							stop()
+							next, stop = nil, nil
+							break
 						}
-						batch := make([][]byte, 0, bs)
-						for i := range int(bs) {
-							e, err, ok := next()
-							if !ok {
-								// The entry stream has ended so we'll need to start a new stream next time around the loop:
-								stop()
-								next, stop = nil, nil
-								break
-							}
-							if err != nil {
-								return fmt.Errorf("entryReader.next: %v", err)
-							}
-							if wantIdx := followFrom + uint64(i); e.Index != wantIdx {
-								slog.InfoContext(ctx, "Out of sync", slog.Uint64("index", e.Index), slog.Uint64("wantidx", wantIdx))
-								// We're out of sync
-								return errOutOfSync
-							}
-							batch = append(batch, e.Entry)
+						if err != nil {
+							return fmt.Errorf("entryReader.next: %w", err)
 						}
-						curEntries = batch
-						curIndex = followFrom
+						if wantIdx := followFrom + uint64(i); e.Index != wantIdx {
+							slog.InfoContext(ctx, "Out of sync", slog.Uint64("index", e.Index), slog.Uint64("wantidx", wantIdx))
+							// We're out of sync
+							return errOutOfSync
+						}
+						batch = append(batch, e.Entry)
 					}
 
-					if len(curEntries) == 0 {
+					if len(batch) == 0 {
 						// We didn't manage to read any entries, so there's nothing to commit. Break out of
 						// the busy loop and wait for the ticker rather than spinning.
 						streamDone = true
@@ -418,10 +406,10 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 
 					// Now update the index.
 					{
-						for i, e := range curEntries {
+						for i, e := range batch {
 							if _, err := txn.Get(e); err == badger.ErrKeyNotFound {
 								b := make([]byte, 8)
-								binary.BigEndian.PutUint64(b, curIndex+uint64(i))
+								binary.BigEndian.PutUint64(b, followFrom+uint64(i))
 								if err := txn.Set(e, b); err != nil {
 									return err
 								}
@@ -429,11 +417,11 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 						}
 					}
 
-					numAdded := uint64(len(curEntries))
+					numAdded := uint64(len(batch))
 
 					// and update the follower state
 					b := make([]byte, 8)
-					binary.BigEndian.PutUint64(b, curIndex+numAdded)
+					binary.BigEndian.PutUint64(b, followFrom+numAdded)
 					if err := txn.Set(nextKey, b); err != nil {
 						return fmt.Errorf("failed to update follower state: %v", err)
 					}
@@ -446,7 +434,7 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 				})
 			})
 			if err != nil {
-				if err != errOutOfSync {
+				if !errors.Is(err, errOutOfSync) {
 					slog.ErrorContext(followCtx, "Failed to commit antispam population tx", slog.Any("error", err))
 				}
 				if stop != nil {
@@ -454,10 +442,8 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 				}
 				next, stop = nil, nil
 				streamDone = true
-				curEntries = nil
 				continue
 			}
-			curEntries = nil
 		}
 	}
 }

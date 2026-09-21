@@ -309,6 +309,12 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 
 		// Busy loop while there are entries to be consumed from the stream
 		for streamDone := false; !streamDone; {
+			select {
+			case <-followCtx.Done():
+				return
+			default:
+			}
+
 			err := otel.TraceErr(followCtx, "tessera.antispam.gcp.FollowTask", tracer, func(ctx context.Context, span trace.Span) error {
 				ctx, cancel := context.WithTimeout(ctx, defaultBatchTimeout)
 				defer cancel()
@@ -328,6 +334,11 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 
 						followFrom := uint64(nextIdx)
 						if followFrom >= logSize {
+							if stop != nil {
+								stop()
+								next, stop = nil, nil
+							}
+
 							// Our view of the log is out of date, update it.
 							// We use ctx here because Cloud Spanner doesn't support nested transactions.
 							// This is okay because we're only reading the log size, not modifying anything.
@@ -354,35 +365,35 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 						span.SetAttributes(pushbackKey.Bool(pushback))
 						f.as.pushBack.Store(pushback)
 
-						// If this is the first time around the loop we need to start the stream of entries now that we know where we want to
-						// start reading from:
-						if next == nil {
-							span.AddEvent("Start streaming entries")
-							streamSize := logSize
-							sizeFn := func(_ context.Context) (uint64, error) {
-								return streamSize, nil
-							}
-
-							numFetchers := uint(10)
-
-							// Start a new streaming read of entries, using a fresh context rooted in the "outermost" context passed to Follow.
-							// This allows this stream to be re-used across loops where the stop function is not called (e.g. when we hit a conflict).
-							streamCtx, sCancel := context.WithCancel(trace.ContextWithSpan(followCtx, span))
-							streamNext, streamStop := iter.Pull2(client.Entries(client.EntryBundles(streamCtx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
-
-							next, stop = streamNext, func() {
-								// Cancel first so in-flight fetches abort, then kill the iterator
-								sCancel()
-								streamStop()
-							}
-						}
-
 						if curIndex == followFrom && curEntries != nil {
 							// Note that it's possible for Spanner to automatically retry transactions in some circumstances, when it does
 							// it'll call this function again.
 							// If the above condition holds, then we're in a retry situation and we must use the same data again rather
 							// than continue reading entries which will take us out of sync.
 						} else {
+							// If this is the first time around the loop we need to start the stream of entries now that we know where we want to
+							// start reading from:
+							if next == nil {
+								span.AddEvent("Start streaming entries")
+								streamSize := logSize
+								sizeFn := func(_ context.Context) (uint64, error) {
+									return streamSize, nil
+								}
+
+								numFetchers := uint(10)
+
+								// Start a new streaming read of entries, using a fresh context rooted in the "outermost" context passed to Follow.
+								// This allows this stream to be re-used across loops where the stop function is not called (e.g. when we hit a conflict).
+								streamCtx, sCancel := context.WithCancel(trace.ContextWithSpan(followCtx, span))
+								streamNext, streamStop := iter.Pull2(client.Entries(client.EntryBundles(streamCtx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
+
+								next, stop = streamNext, func() {
+									// Cancel first so in-flight fetches abort, then kill the iterator
+									sCancel()
+									streamStop()
+								}
+							}
+
 							bs := uint64(f.as.opts.MaxBatchSize)
 							if r := logSize - followFrom; r < bs {
 								bs = r
@@ -397,7 +408,7 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 									break
 								}
 								if err != nil {
-									return fmt.Errorf("entryReader.next: %v", err)
+									return fmt.Errorf("entryReader.next: %w", err)
 								}
 								if wantIdx := followFrom + uint64(i); e.Index != wantIdx {
 									// We're out of sync
@@ -410,6 +421,9 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 						}
 
 						if len(curEntries) == 0 {
+							// We didn't manage to read any entries, so there's nothing to commit. Break out of
+							// the busy loop and wait for the ticker rather than spinning.
+							streamDone = true
 							return ctx.Err()
 						}
 
@@ -437,7 +451,7 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 				return err
 			})
 			if err != nil {
-				if err != errOutOfSync {
+				if !errors.Is(err, errOutOfSync) {
 					slog.ErrorContext(followCtx, "Failed to commit antispam population tx", slog.Any("error", err))
 				}
 				if stop != nil {
@@ -445,6 +459,7 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 				}
 				next, stop = nil, nil
 				streamDone = true
+				curEntries = nil
 				continue
 			}
 			curEntries = nil

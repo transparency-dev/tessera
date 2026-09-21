@@ -316,6 +316,11 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 				}
 
 				if followFrom >= logSize {
+					if stop != nil {
+						stop()
+						next, stop = nil, nil
+					}
+
 					// Our view of the log is out of date, update it
 					logSize, err = lr.IntegratedSize(ctx)
 					if err != nil {
@@ -373,7 +378,7 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 						break
 					}
 					if err != nil {
-						return fmt.Errorf("entryReader.next: %v", err)
+						return fmt.Errorf("entryReader.next: %w", err)
 					}
 					if wantIdx := followFrom + uint64(i); e.Index != wantIdx {
 						// We're out of sync
@@ -383,6 +388,9 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 				}
 
 				if len(curEntries) == 0 {
+					// We didn't manage to read any entries, so there's nothing to commit. Break out of
+					// the busy loop and wait for the ticker rather than spinning.
+					streamDone = true
 					return ctx.Err()
 				}
 
@@ -416,7 +424,7 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 				return ctx.Err()
 			})
 			if err != nil {
-				if err != errOutOfSync {
+				if !errors.Is(err, errOutOfSync) {
 					slog.ErrorContext(followCtx, "Failed to commit antispam population tx", slog.Any("error", err))
 				}
 				if stop != nil {
