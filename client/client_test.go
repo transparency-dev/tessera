@@ -199,7 +199,7 @@ func TestCheckLogStateTracker(t *testing.T) {
 }
 
 func TestNodeCache(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	leafHash := []byte("0123456789ABCDEF0123456789ABCDEF")
 
 	for _, test := range []struct {

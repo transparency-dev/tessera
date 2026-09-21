@@ -523,7 +523,7 @@ func (n *nodeCache) fetchTileNodes(ctx context.Context, tileLevel, tileIndex uin
 	return otel.Trace(ctx, "tessera.client.nodecache.fetchTileNodes", tracer, func(ctx context.Context, span trace.Span) (map[compact.NodeID][]byte, error) {
 		tileRaw, err := n.getTile(ctx, tileLevel, tileIndex, p)
 		if err != nil {
-			return nil, fmt.Errorf("failed to fetch tile: %v", err)
+			return nil, fmt.Errorf("failed to fetch tile: %w", err)
 		}
 
 		var tile api.HashTile
@@ -543,7 +543,11 @@ func (n *nodeCache) fetchTileNodes(ctx context.Context, tileLevel, tileIndex uin
 			// Trim the full tile down to the size of the requested partial tile.
 			tile.Nodes = tile.Nodes[:wantSize]
 		default:
-			return nil, fmt.Errorf("invalid tile: expected %d or %d nodes, got %d", wantSize, layout.TileWidth, gotLen)
+			additional := ""
+			if wantSize < layout.TileWidth {
+				additional = fmt.Sprintf(" or %d", layout.TileWidth)
+			}
+			return nil, fmt.Errorf("invalid tile: expected %d%s nodes, got %d", wantSize, additional, gotLen)
 		}
 
 		ret := make(map[compact.NodeID][]byte, wantSize*2-1)
