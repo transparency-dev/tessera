@@ -198,28 +198,100 @@ func TestCheckLogStateTracker(t *testing.T) {
 	}
 }
 
-func TestNodeCacheHandlesInvalidRequest(t *testing.T) {
-	ctx := context.Background()
-	wantBytes := []byte("0123456789ABCDEF0123456789ABCDEF")
-	f := func(_ context.Context, _, _ uint64, _ uint8) ([]byte, error) {
-		h := &api.HashTile{
-			Nodes: [][]byte{wantBytes},
-		}
-		return h.MarshalText()
-	}
+func TestNodeCache(t *testing.T) {
+	ctx := t.Context()
+	leafHash := []byte("0123456789ABCDEF0123456789ABCDEF")
 
-	// Large tree, but we're emulating skew since f, above, will return a tile which only knows about 1
-	// leaf.
-	nc := newNodeCache(f, 10)
+	for _, test := range []struct {
+		desc          string
+		logSize       uint64
+		tileNodes     int
+		reqID         compact.NodeID
+		wantErr       bool
+		wantCacheSize int
+	}{
+		{
+			desc:          "valid single leaf",
+			logSize:       1,
+			tileNodes:     1,
+			reqID:         compact.NewNodeID(0, 0),
+			wantCacheSize: 1,
+		},
+		{
+			desc:      "out of range leaf in same tile",
+			logSize:   1,
+			tileNodes: 1,
+			reqID:     compact.NewNodeID(0, 1),
+			wantErr:   true,
+		},
+		{
+			desc:      "out of range leaf in next tile",
+			logSize:   layout.TileWidth,
+			tileNodes: layout.TileWidth,
+			reqID:     compact.NewNodeID(0, layout.TileWidth),
+			wantErr:   true,
+		},
+		{
+			desc:      "out of range high level overflow check",
+			logSize:   layout.TileWidth,
+			tileNodes: layout.TileWidth,
+			reqID:     compact.NewNodeID(64, 0),
+			wantErr:   true,
+		},
+		{
+			desc:      "truncated partial tile",
+			logSize:   10,
+			tileNodes: 1,
+			reqID:     compact.NewNodeID(0, 0),
+			wantErr:   true,
+		},
+		{
+			desc:      "truncated full tile",
+			logSize:   layout.TileWidth,
+			tileNodes: layout.TileWidth - 1,
+			reqID:     compact.NewNodeID(0, 0),
+			wantErr:   true,
+		},
+		{
+			desc:      "oversized tile",
+			logSize:   layout.TileWidth,
+			tileNodes: layout.TileWidth + 1,
+			reqID:     compact.NewNodeID(0, 0),
+			wantErr:   true,
+		},
+		{
+			desc:          "partial tile fallback to full tile truncates and omits ephemeral nodes",
+			logSize:       3,
+			tileNodes:     layout.TileWidth,
+			reqID:         compact.NewNodeID(1, 0),
+			wantCacheSize: 4, // (0,0), (0,1), (1,0), (0,2) - no leaves >= 3 and no ephemeral (2,0)
+		},
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			t.Parallel()
+			f := func(_ context.Context, _, _ uint64, _ uint8) ([]byte, error) {
+				nodes := make([][]byte, test.tileNodes)
+				for i := range nodes {
+					nodes[i] = leafHash
+				}
+				return (&api.HashTile{Nodes: nodes}).MarshalText()
+			}
 
-	if got, err := nc.GetNode(ctx, compact.NewNodeID(0, 0)); err != nil {
-		t.Errorf("got %v, want no error", err)
-	} else if !bytes.Equal(got, wantBytes) {
-		t.Errorf("got %v, want %v", got, wantBytes)
-	}
-
-	if _, err := nc.GetNode(ctx, compact.NewNodeID(0, 1)); err == nil {
-		t.Error("got no error, want error because ID is out of range")
+			nc := newNodeCache(f, test.logSize)
+			got, err := nc.GetNode(ctx, test.reqID)
+			if gotErr := err != nil; gotErr != test.wantErr {
+				t.Fatalf("GetNode(%+v) err = %v, wantErr %t", test.reqID, err, test.wantErr)
+			}
+			if test.wantErr {
+				return
+			}
+			if len(got) == 0 {
+				t.Errorf("GetNode(%+v) returned empty hash", test.reqID)
+			}
+			if gotSize := nc.nodes.Len(); gotSize != test.wantCacheSize {
+				t.Errorf("cache size = %d, want %d", gotSize, test.wantCacheSize)
+			}
+		})
 	}
 }
 
