@@ -53,6 +53,8 @@ const (
 
 	// defaultBatchTimeout is the max permitted duration for a single "chunk" of antispam updates.
 	defaultBatchTimeout = 10 * time.Second
+	// defaultStreamTimeout is the maximum duration to spend streaming entries from the log.
+	defaultStreamTimeout = time.Minute
 )
 
 // AntispamOpts allows configuration of some tunable options.
@@ -259,7 +261,7 @@ func (f *follower) Name() string {
 }
 
 // Follow uses entry data from the log to populate the antispam storage.
-func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
+func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 	errOutOfSync := errors.New("out-of-sync")
 
 	t := time.NewTicker(time.Second)
@@ -267,9 +269,15 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 		next func() (client.Entry[[]byte], error, bool)
 		stop func()
 	)
+	// Ensure we tear down any in-flight entry stream when we're done.
+	defer func() {
+		if stop != nil {
+			stop()
+		}
+	}()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-followCtx.Done():
 			return
 		case <-t.C:
 		}
@@ -281,11 +289,11 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 		// Busy loop while there's work to be done
 		for streamDone := false; !streamDone; {
 			select {
-			case <-ctx.Done():
+			case <-followCtx.Done():
 				return
 			default:
 			}
-			err := otel.TraceErr(ctx, "tessera.antispam.aws.FollowTask", tracer, func(ctx context.Context, span trace.Span) error {
+			err := otel.TraceErr(followCtx, "tessera.antispam.aws.FollowTask", tracer, func(ctx context.Context, span trace.Span) error {
 				ctx, cancel := context.WithTimeout(ctx, defaultBatchTimeout)
 				defer cancel()
 
@@ -335,11 +343,22 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 				// If this is the first time around the loop we need to start the stream of entries now that we know where we want to
 				// start reading from:
 				if next == nil {
+					streamSize := logSize
 					sizeFn := func(_ context.Context) (uint64, error) {
-						return logSize, nil
+						return streamSize, nil
 					}
 					numFetchers := uint(10)
-					next, stop = iter.Pull2(client.Entries(client.EntryBundles(ctx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
+
+					// Start a new streaming read of entries, using a fresh context rooted in the "outermost" context passed to Follow.
+					// This allows this stream to be re-used across loops where the stop function is not called (e.g. when we hit a conflict).
+					streamCtx, sCancel := context.WithTimeout(trace.ContextWithSpan(followCtx, span), defaultStreamTimeout)
+
+					streamNext, streamStop := iter.Pull2(client.Entries(client.EntryBundles(streamCtx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
+
+					next, stop = streamNext, func() {
+						sCancel()
+						streamStop()
+					}
 				}
 
 				bs := uint64(f.as.opts.MaxBatchSize)
@@ -352,7 +371,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 					if !ok {
 						// The entry stream has ended so we'll need to start a new stream next time around the loop:
 						stop()
-						next = nil
+						next, stop = nil, nil
 						break
 					}
 					if err != nil {
@@ -400,13 +419,12 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 			})
 			if err != nil {
 				if err != errOutOfSync {
-					slog.ErrorContext(ctx, "Failed to commit antispam population tx", slog.Any("error", err))
+					slog.ErrorContext(followCtx, "Failed to commit antispam population tx", slog.Any("error", err))
 				}
-				if next != nil {
+				if stop != nil {
 					stop()
-					next = nil
-					stop = nil
 				}
+				next, stop = nil, nil
 				streamDone = true
 				continue
 			}
