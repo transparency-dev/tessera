@@ -143,7 +143,7 @@ func (a *PublicationAwaiter) pollLoop(ctx context.Context, readCheckpoint func(c
 					cpSize = 0
 				default:
 					_, cpSize, _, cpErr = parse.CheckpointUnsafe(cp)
-					if cpSize <= math.MaxInt64 && cpErr != nil {
+					if cpSize <= math.MaxInt64 && cpErr == nil {
 						span.SetAttributes(checkpointSizeKey.Int64(int64(cpSize)))
 					}
 				}
