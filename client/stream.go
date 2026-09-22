@@ -93,6 +93,12 @@ func EntryBundles(ctx context.Context, numWorkers uint, getSize TreeSizeFunc, ge
 		// to resolve it.
 		for ri := range layout.Range(fromEntry, N, treeSize) {
 			select {
+			case <-ctx.Done():
+				select {
+				case bundles <- func() bundleOrErr { return bundleOrErr{err: ctx.Err()} }:
+				case <-exit:
+				}
+				return
 			case <-exit:
 				return
 			case <-tokens:
