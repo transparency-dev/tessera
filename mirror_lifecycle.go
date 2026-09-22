@@ -306,7 +306,7 @@ func (mt *MirrorTarget) bundleIterator(ctx context.Context, next func() (*Mirror
 			storedPartial := layout.PartialTileSize(0, bIdx, integratedSize)
 			br, err := mt.reader.ReadEntryBundle(ctx, bIdx, storedPartial)
 			if err != nil {
-				yield(nil, fmt.Errorf("failed to read bundle containing uploadStart (%d): %v", start, err))
+				yield(nil, fmt.Errorf("failed to read bundle containing uploadStart (%d): %w", start, err))
 				return
 			}
 			// Parse and clip, since the bundle we read may contain more entries than we need for padding.
@@ -316,7 +316,11 @@ func (mt *MirrorTarget) bundleIterator(ctx context.Context, next func() (*Mirror
 				return
 			}
 			if l := len(b.Entries); l < int(startPad) {
-				yield(nil, fmt.Errorf("POTENTIAL CORRUPTION: bundle at index %d (requested p.%d) has only %d entries, want at least %d", bIdx, storedPartial, l, startPad))
+				bDesc := fmt.Sprintf("full bundle at index %d", bIdx)
+				if storedPartial > 0 {
+					bDesc = fmt.Sprintf("partial bundle at index %d.%d", bIdx, storedPartial)
+				}
+				yield(nil, fmt.Errorf("POTENTIAL CORRUPTION: %s has only %d entries, want at least %d", bDesc, l, startPad))
 				return
 			}
 			// Take a slice of the entries to use as padding, but don't allow append to mutate the
