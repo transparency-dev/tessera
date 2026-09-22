@@ -85,6 +85,18 @@ func (a *PublicationAwaiter) Await(ctx context.Context, future IndexFuture) (Ind
 		span.SetAttributes(indexKey.Int64(int64(i.Index)), dupeKey.Bool(i.IsDup))
 
 		span.AddEvent("Waiting for tree growth")
+
+		// Ensure we are woken if our own context is cancelled or expires, even
+		// if the poll loop stops producing broadcasts. The callback must take
+		// the lock: Await holds it continuously from the ctx.Err() check through
+		// to Wait(), which is what prevents a lost wakeup in that window.
+		stop := context.AfterFunc(ctx, func() {
+			a.c.L.Lock()
+			defer a.c.L.Unlock()
+			a.c.Broadcast()
+		})
+		defer stop()
+
 		a.c.L.Lock()
 		defer a.c.L.Unlock()
 		if a.preWaitSignaller != nil {
