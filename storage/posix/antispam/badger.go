@@ -45,6 +45,8 @@ const (
 
 	// defaultBatchTimeout is the max permitted duration for a single "chunk" of antispam updates.
 	defaultBatchTimeout = 10 * time.Second
+	// defaultReadTimeout is the maximum duration to spend waiting for reads to complete.
+	defaultReadTimeout = 5 * time.Second
 )
 
 var (
@@ -255,9 +257,22 @@ func (f *follower) Name() string {
 	return "Badger antispam"
 }
 
+// readBundleWithTimeout returns a wrapper around a function which reads an entry bundle,
+// which has the effect of adding a timeout to the context before calling the wrapped function.
+func readBundleWithTimeout(timeout time.Duration, r func(context.Context, uint64, uint8) ([]byte, error)) func(context.Context, uint64, uint8) ([]byte, error) {
+	return func(ctx context.Context, idx uint64, p uint8) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return r(ctx, idx, p)
+	}
+}
+
 // Follow uses entry data from the log to populate the antispam storage.
 func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 	errOutOfSync := errors.New("out-of-sync")
+	// The timeout here defines how long we're prepared to wait for a single bundle to be read.
+	// If the log is slow to respond, we'll stop, and (potentially) restart streaming later.
+	readBundle := readBundleWithTimeout(defaultReadTimeout, lr.ReadEntryBundle)
 
 	t := time.NewTicker(time.Second)
 	var (
@@ -364,7 +379,7 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 						// Start a new streaming read of entries, using a fresh context rooted in the "outermost" context passed to Follow.
 						// This allows this stream to be re-used across loops where the stop function is not called (e.g. when we hit a conflict).
 						streamCtx, sCancel := context.WithCancel(trace.ContextWithSpan(followCtx, span))
-						streamNext, streamStop := iter.Pull2(client.Entries(client.EntryBundles(streamCtx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
+						streamNext, streamStop := iter.Pull2(client.Entries(client.EntryBundles(streamCtx, numFetchers, sizeFn, readBundle, followFrom, logSize-followFrom), f.bundleHasher))
 
 						next, stop = streamNext, func() {
 							// Cancel first so in-flight fetches abort, then kill the iterator
