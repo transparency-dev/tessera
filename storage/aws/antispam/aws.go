@@ -53,8 +53,6 @@ const (
 
 	// defaultBatchTimeout is the max permitted duration for a single "chunk" of antispam updates.
 	defaultBatchTimeout = 10 * time.Second
-	// defaultStreamTimeout is the maximum duration to spend streaming entries from the log.
-	defaultStreamTimeout = time.Minute
 )
 
 // AntispamOpts allows configuration of some tunable options.
@@ -351,11 +349,11 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 
 					// Start a new streaming read of entries, using a fresh context rooted in the "outermost" context passed to Follow.
 					// This allows this stream to be re-used across loops where the stop function is not called (e.g. when we hit a conflict).
-					streamCtx, sCancel := context.WithTimeout(trace.ContextWithSpan(followCtx, span), defaultStreamTimeout)
-
+					streamCtx, sCancel := context.WithCancel(trace.ContextWithSpan(followCtx, span))
 					streamNext, streamStop := iter.Pull2(client.Entries(client.EntryBundles(streamCtx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
 
 					next, stop = streamNext, func() {
+						// Cancel first so in-flight fetches abort, then kill the iterator
 						sCancel()
 						streamStop()
 					}

@@ -45,8 +45,6 @@ const (
 
 	// defaultBatchTimeout is the max permitted duration for a single "chunk" of antispam updates.
 	defaultBatchTimeout = 10 * time.Second
-	// defaultStreamTimeout is the maximum duration to spend streaming entries from the log.
-	defaultStreamTimeout = time.Minute
 )
 
 var (
@@ -287,9 +285,15 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 		var logSize uint64
 
 		// Busy loop while there's work to be done
-		for moreWork := true; moreWork; {
+		for streamDone := false; !streamDone; {
+			select {
+			case <-followCtx.Done():
+				return
+			default:
+			}
 
 			err := f.as.db.Update(func(txn *badger.Txn) error {
+				return otel.TraceErr(followCtx, "tessera.antispam.badger.follow_txn", tracer, func(ctx context.Context, span trace.Span) error {
 					batchStart := time.Now()
 					ctx, cancel := context.WithTimeout(ctx, defaultBatchTimeout)
 					defer cancel()
@@ -315,27 +319,31 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 
 					var err error
 					if followFrom >= logSize {
+						if stop != nil {
+							stop()
+							next, stop = nil, nil
+						}
+
 						// Our view of the log is out of date, update it
 						logSize, err = lr.IntegratedSize(ctx)
 						if err != nil {
+							// The log probably just hasn't completed its first integration yet, so break out of here
+							// and go back to sleep for a bit to avoid spamming errors into the log and scaring operators.
+							streamDone = true
 							if errors.Is(err, os.ErrNotExist) {
-								// The log probably just hasn't completed its first integration yet, so break out of here
-								// and go back to sleep for a bit to avoid spamming errors into the log and scaring operators.
-								moreWork = false
 								return nil
 							}
 							return fmt.Errorf("populate: IntegratedSize(): %v", err)
 						}
 						switch {
 						case followFrom > logSize:
-							// Since we've got a stale view, there could be more work to do - loop and check without sleeping.
-							moreWork = true
+							streamDone = true
 							return fmt.Errorf("followFrom %d > size %d", followFrom, logSize)
 						case followFrom == logSize:
 							// We're caught up, so unblock pushback and go back to sleep
-							moreWork = false
+							streamDone = true
 							f.as.pushBack.Store(false)
-							return nil
+							return ctx.Err()
 						default:
 							// size > followFrom, so there's more work to be done!
 						}
@@ -349,18 +357,20 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 					// start reading from:
 					if next == nil {
 						span.AddEvent("Start streaming entries")
+						streamSize := logSize
 						sizeFn := func(_ context.Context) (uint64, error) {
-							return logSize, nil
+							return streamSize, nil
 						}
+
 						numFetchers := uint(10)
 
 						// Start a new streaming read of entries, using a fresh context rooted in the "outermost" context passed to Follow.
 						// This allows this stream to be re-used across loops where the stop function is not called (e.g. when we hit a conflict).
-						streamCtx, sCancel := context.WithTimeout(trace.ContextWithSpan(followCtx, span), defaultStreamTimeout)
-
+						streamCtx, sCancel := context.WithCancel(trace.ContextWithSpan(followCtx, span))
 						streamNext, streamStop := iter.Pull2(client.Entries(client.EntryBundles(streamCtx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
 
 						next, stop = streamNext, func() {
+							// Cancel first so in-flight fetches abort, then kill the iterator
 							sCancel()
 							streamStop()
 						}
@@ -397,6 +407,13 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 						}
 						curEntries = batch
 						curIndex = followFrom
+					}
+
+					if len(curEntries) == 0 {
+						// We didn't manage to read any entries, so there's nothing to commit. Break out of
+						// the busy loop and wait for the ticker rather than spinning.
+						streamDone = true
+						return ctx.Err()
 					}
 
 					// Now update the index.
@@ -437,6 +454,7 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 				}
 				next, stop = nil, nil
 				streamDone = true
+				curEntries = nil
 				continue
 			}
 			curEntries = nil
