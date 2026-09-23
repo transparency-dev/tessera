@@ -557,7 +557,15 @@ func TestNewPublisher(t *testing.T) {
 			storage:            dummyStorage,
 			maxCertLifetime:    47 * 24 * time.Hour,
 			pubInterval:        4 * time.Hour,
-			wantMaxActive:      283, // ceil(1128/4) + 1 = 283
+			wantMaxActive:      283, // ceil(1128/4) + 1 = 283 <= 370
+		},
+		{
+			name:               "valid 7-day lifetime with 1-hour interval",
+			readCheckpointSize: dummyReader,
+			storage:            dummyStorage,
+			maxCertLifetime:    7 * 24 * time.Hour,
+			pubInterval:        1 * time.Hour,
+			wantMaxActive:      169, // ceil(168/1) + 1 = 169 <= 220
 		},
 		{
 			name:               "pubInterval exceeds maxCertLifetime",
@@ -573,6 +581,14 @@ func TestNewPublisher(t *testing.T) {
 			storage:            dummyStorage,
 			maxCertLifetime:    47 * 24 * time.Hour,
 			pubInterval:        1 * time.Hour,
+			wantErr:            true,
+		},
+		{
+			name:               "maxActive exceeds limit (7 days with 35-minute interval yields 289 > 220)",
+			readCheckpointSize: dummyReader,
+			storage:            dummyStorage,
+			maxCertLifetime:    7 * 24 * time.Hour,
+			pubInterval:        35 * time.Minute,
 			wantErr:            true,
 		},
 		{
@@ -633,6 +649,28 @@ func TestNewPublisher(t *testing.T) {
 			}
 			if !tc.wantErr && pub.maxActive != tc.wantMaxActive {
 				t.Errorf("pub.maxActive = %d, want %d", pub.maxActive, tc.wantMaxActive)
+			}
+		})
+	}
+}
+
+func TestMaxActiveLandmarks(t *testing.T) {
+	tests := []struct {
+		name     string
+		lifetime time.Duration
+		want     uint64
+	}{
+		{name: "1 hour", lifetime: 1 * time.Hour, want: maxActiveLandmarks7Day},
+		{name: "7 days", lifetime: 7 * 24 * time.Hour, want: maxActiveLandmarks7Day},
+		{name: "7 days plus 1 minute", lifetime: 7*24*time.Hour + time.Minute, want: maxActiveLandmarks47Day},
+		{name: "15 days", lifetime: 15 * 24 * time.Hour, want: maxActiveLandmarks47Day},
+		{name: "30 days", lifetime: 30 * 24 * time.Hour, want: maxActiveLandmarks47Day},
+		{name: "47 days", lifetime: 47 * 24 * time.Hour, want: maxActiveLandmarks47Day},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := maxActiveLandmarks(tc.lifetime); got != tc.want {
+				t.Errorf("maxActiveLandmarks(%v) = %d, want %d", tc.lifetime, got, tc.want)
 			}
 		})
 	}
