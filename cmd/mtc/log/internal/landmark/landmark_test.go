@@ -345,10 +345,13 @@ func (m *mockStorage) UpdateLandmarks(ctx context.Context, fn func(old []byte, o
 	if err != nil {
 		return time.Time{}, err
 	}
-	if newData != nil && !bytes.Equal(m.data, newData) {
-		m.data = newData
-		m.modTime = time.Now()
+	if newData == nil {
+		return m.modTime, nil
 	}
+	if !bytes.Equal(m.data, newData) {
+		m.data = newData
+	}
+	m.modTime = time.Now()
 	return m.modTime, nil
 }
 
@@ -440,6 +443,7 @@ func TestPublisher_Update(t *testing.T) {
 		name          string
 		currentSize   uint64
 		lastPublished time.Time
+		wantModTime   time.Time
 		wantLandmarks *ActiveLandmarks
 		wantErr       bool
 	}{
@@ -447,6 +451,7 @@ func TestPublisher_Update(t *testing.T) {
 			name:          "skip because last update too recent",
 			currentSize:   50,
 			lastPublished: now,
+			wantModTime:   now,
 			wantLandmarks: mustNew(t, 0, 0, []uint64{0}),
 		},
 		{
@@ -456,7 +461,7 @@ func TestPublisher_Update(t *testing.T) {
 			wantLandmarks: mustNew(t, 1, 1, []uint64{50, 0}),
 		},
 		{
-			name:          "skip because tree has not grown",
+			name:          "refresh modTime when tree has not grown",
 			currentSize:   50,
 			lastPublished: now.Add(-2 * time.Hour),
 			wantLandmarks: mustNew(t, 1, 1, []uint64{50, 0}),
@@ -496,9 +501,18 @@ func TestPublisher_Update(t *testing.T) {
 			if nextIn <= 0 {
 				t.Errorf("Update() nextIn = %v, want > 0", nextIn)
 			}
-			data, _, err := memStorage.ReadLandmarks(ctx)
+			data, modTime, err := memStorage.ReadLandmarks(ctx)
 			if err != nil {
 				t.Fatalf("memStorage.ReadLandmarks() error: %v", err)
+			}
+			if !tc.wantModTime.IsZero() {
+				if got, want := modTime, tc.wantModTime; got != want {
+					t.Errorf("landmark modTime = %v, want %v", got, want)
+				}
+			} else {
+				if !modTime.After(tc.lastPublished) {
+					t.Errorf("landmark modTime = %v, want > %v", modTime, tc.lastPublished)
+				}
 			}
 			got := &ActiveLandmarks{}
 			if err := got.UnmarshalText(data); err != nil {

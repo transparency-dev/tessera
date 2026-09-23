@@ -61,12 +61,20 @@ func TestStorage(t *testing.T) {
 			wantChanged: true,
 		},
 		{
-			name: "content unchanged: skips write and preserves modTime",
+			name: "content nil: skips write and preserves modTime",
+			updateFn: func(old []byte, oldModTime time.Time) ([]byte, error) {
+				return nil, nil
+			},
+			wantData:    data1,
+			wantChanged: false,
+		},
+		{
+			name: "content unchanged: refreshes modTime without modifying data",
 			updateFn: func(old []byte, oldModTime time.Time) ([]byte, error) {
 				return old, nil
 			},
 			wantData:    data1,
-			wantChanged: false,
+			wantChanged: true,
 		},
 		{
 			name: "content changed: overwrites file and updates modTime",
@@ -90,8 +98,8 @@ func TestStorage(t *testing.T) {
 			}
 
 			if tc.wantChanged {
-				if !lastModTime.IsZero() && modTime.Before(lastModTime) {
-					t.Errorf("UpdateLandmarks() modTime = %v, expected >= %v", modTime, lastModTime)
+				if !lastModTime.IsZero() && !modTime.After(lastModTime) {
+					t.Errorf("UpdateLandmarks() modTime = %v, expected > %v", modTime, lastModTime)
 				}
 			} else {
 				if !modTime.Equal(lastModTime) {
@@ -125,5 +133,3 @@ func TestStorage(t *testing.T) {
 		})
 	}
 }
-
-
