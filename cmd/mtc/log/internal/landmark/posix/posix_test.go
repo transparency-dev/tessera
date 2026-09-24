@@ -89,6 +89,15 @@ func TestStorage(t *testing.T) {
 	var lastModTime time.Time
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.wantChanged && !lastModTime.IsZero() {
+				// Set the file's modification time into the past to verify that
+				// UpdateLandmarks advances the timestamp without needing time.Sleep.
+				past := time.Now().Add(-10 * time.Minute)
+				if err := os.Chtimes(storage.path, past, past); err != nil {
+					t.Fatalf("os.Chtimes() error: %v", err)
+				}
+				lastModTime = past
+			}
 			modTime, err := storage.UpdateLandmarks(ctx, tc.updateFn)
 			if err != nil {
 				t.Fatalf("UpdateLandmarks() error: %v", err)
