@@ -210,6 +210,16 @@ func TestAddEntries_StatusCodes(t *testing.T) {
 			wantStatus: http.StatusOK,
 			wantBody:   testCosig,
 		}, {
+			name:   "200 ok (uploadEnd reached before pendingSize)",
+			origin: testOrigin,
+			mockTarget: &mockTarget{
+				addEntriesFunc: func(ctx context.Context, uploadStart, uploadEnd uint64, ticket []byte, next func() (*tessera.MirrorPackage, error)) (uint64, uint64, []byte, []byte, error) {
+					return testUploadEnd, testPendingSize, []byte(testNewTicket), nil, nil
+				},
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   "",
+		}, {
 			name:   "202 partial upload",
 			origin: testOrigin,
 			mockTarget: &mockTarget{
