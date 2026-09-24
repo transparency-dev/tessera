@@ -29,9 +29,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-sql-driver/mysql"
+	"github.com/transparency-dev/formats/log"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
-	"github.com/transparency-dev/tessera/internal/parse"
 	"github.com/transparency-dev/tessera/storage/aws"
 )
 
@@ -77,10 +77,9 @@ func main() {
 		slog.ErrorContext(ctx, "fetch initial source checkpoint", slog.Any("error", err))
 		os.Exit(1)
 	}
-	// TODO(mhutchinson): parse this safely.
-	_, sourceSize, sourceRoot, err := parse.CheckpointUnsafe(sourceCP)
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to parse checkpoint", slog.Any("error", err))
+	cp := &log.Checkpoint{}
+	if _, err := cp.Unmarshal(sourceCP); err != nil {
+		slog.ErrorContext(ctx, "Failed to unmarshal checkpoint", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -99,8 +98,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.InfoContext(ctx, "Starting Migrate() with workers=, sourceSize=, migrating from", slog.Any("numworkers", *numWorkers), slog.Uint64("sourcesize", sourceSize), slog.String("sourceurl", *sourceURL))
-	if err := m.Migrate(context.Background(), *numWorkers, sourceSize, sourceRoot, src.ReadEntryBundle); err != nil {
+	slog.InfoContext(ctx, "Starting Migrate() with workers=, sourceSize=, migrating from", slog.Any("numworkers", *numWorkers), slog.Uint64("sourcesize", cp.Size), slog.String("sourceurl", *sourceURL))
+	if err := m.Migrate(ctx, *numWorkers, cp.Size, cp.Hash, src.ReadEntryBundle); err != nil {
 		slog.ErrorContext(ctx, "Migrate failed", slog.Any("error", err))
 		os.Exit(1)
 	}
