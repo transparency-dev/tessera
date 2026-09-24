@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"sync/atomic"
 
 	"log/slog"
 
@@ -45,12 +46,18 @@ type Bundle struct {
 //
 // This adaptor is optimised for the case where calling getBundle has some appreciable latency, and works
 // around that by maintaining a read-ahead cache of subsequent bundles which is populated a number of parallel
-// requests to getBundle. The request parallelism is set by the value of the numWorkers paramemter, which can be tuned
+// requests to getBundle. The request parallelism is set by the value of the numWorkers parameter, which can be tuned
 // to balance throughput against consumption of resources, but such balancing needs to be mindful of the nature of the
 // source infrastructure, and how concurrent requests affect performance (e.g. GCS buckets vs. files on a single disk).
+//
+// The returned iterator will cover entries in the range [fromEntry, min(fromEntry+N, treeSize)), where treeSize is the
+// value first returned by a call to getSize.
+//
+// Note that getSize is called only once - the returned iterator will not track the growth of the underlying log.
 func EntryBundles(ctx context.Context, numWorkers uint, getSize TreeSizeFunc, getBundle EntryBundleFetcherFunc, fromEntry uint64, N uint64) iter.Seq2[Bundle, error] {
-	ctx, span := tracer.Start(ctx, "tessera.storage.StreamAdaptor")
-	defer span.End()
+	if numWorkers == 0 {
+		numWorkers = 1
+	}
 
 	// bundleOrErr represents a fetched entry bundle and its params, or an error if we couldn't fetch it for
 	// some reason.
@@ -59,67 +66,81 @@ func EntryBundles(ctx context.Context, numWorkers uint, getSize TreeSizeFunc, ge
 		err error
 	}
 
-	// bundles will be filled with futures for in-order entry bundles by the worker
-	// go routines below.
-	// This channel will be drained by the loop at the bottom of this func which
-	// yields the bundles to the caller.
-	bundles := make(chan func() bundleOrErr, numWorkers)
-	exit := make(chan struct{})
-
-	// Fetch entry bundle resources in parallel.
-	// We use a limited number of tokens here to prevent this from
-	// consuming an unbounded amount of resources.
-	go func() {
-		ctx, span := tracer.Start(ctx, "tessera.storage.StreamAdaptorWorker")
+	return func(yield func(Bundle, error) bool) {
+		ctx, span := tracer.Start(ctx, "tessera.client.EntryBundles")
 		defer span.End()
 
-		defer close(bundles)
+		// Wrap the initial context in a cancelable context so that we can signal cancellation to our
+		// internal workers.
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
 
-		treeSize, err := getSize(ctx)
-		if err != nil {
-			bundles <- func() bundleOrErr { return bundleOrErr{err: err} }
-			return
-		}
+		// bundles will be filled with futures for in-order entry bundles by the read-ahead goroutine
+		// below.
+		// This channel will be drained by the loop at the bottom of this func which
+		// yields the bundles to the caller.
+		bundles := make(chan func() bundleOrErr, numWorkers)
 
-		// We'll limit ourselves to numWorkers worth of on-going work using these tokens:
-		tokens := make(chan struct{}, numWorkers)
-		for range numWorkers {
-			tokens <- struct{}{}
-		}
+		var rangeComplete atomic.Bool
 
-		slog.DebugContext(ctx, "stream.EntryBundles: streaming", slog.Uint64("from", fromEntry), slog.Uint64("N", N))
+		// Fetch entry bundle resources in parallel.
+		// We use a limited number of tokens here to prevent this from
+		// consuming an unbounded amount of resources.
+		go func() {
+			defer close(bundles)
 
-		// For each bundle, pop a future into the bundles channel and kick off an async request
-		// to resolve it.
-		for ri := range layout.Range(fromEntry, N, treeSize) {
-			select {
-			case <-exit:
+			treeSize, err := getSize(ctx)
+			if err != nil {
+				bundles <- func() bundleOrErr { return bundleOrErr{err: err} }
 				return
-			case <-tokens:
-				// We'll return a token below, once the bundle is fetched _and_ is being yielded.
 			}
 
-			c := make(chan bundleOrErr, 1)
-			go func(ri layout.RangeInfo) {
-				b, err := getBundle(ctx, ri.Index, ri.Partial)
-				c <- bundleOrErr{b: Bundle{RangeInfo: ri, Data: b}, err: err}
-			}(ri)
-
-			f := func() bundleOrErr {
-				b := <-c
-				// We're about to yield a value, so we can now return the token and unblock another fetch.
+			// We'll limit ourselves to numWorkers worth of on-going work using these tokens:
+			tokens := make(chan struct{}, numWorkers)
+			for range numWorkers {
 				tokens <- struct{}{}
-				return b
 			}
 
-			bundles <- f
-		}
+			slog.DebugContext(ctx, "stream.EntryBundles: streaming", slog.Uint64("from", fromEntry), slog.Uint64("N", N))
 
-		slog.DebugContext(ctx, "stream.EntryBundles: exiting")
-	}()
+			// For each bundle, pop a future into the bundles channel and kick off an async request
+			// to resolve it.
+			for ri := range layout.Range(fromEntry, N, treeSize) {
+				select {
+				case <-ctx.Done():
+					return
+				case <-tokens:
+					// If the context was cancelled, and we happened to grab a token at the same time, then bail.
+					if ctx.Err() != nil {
+						return
+					}
+					// We'll return a token below, once the bundle is fetched _and_ is being yielded.
+				}
 
-	return func(yield func(Bundle, error) bool) {
-		defer close(exit)
+				c := make(chan bundleOrErr, 1)
+				go func(ri layout.RangeInfo) {
+					b, err := getBundle(ctx, ri.Index, ri.Partial)
+					c <- bundleOrErr{b: Bundle{RangeInfo: ri, Data: b}, err: err}
+				}(ri)
+
+				f := func() bundleOrErr {
+					b := <-c
+					// We're about to yield a value, so we can now return the token and unblock another fetch.
+					tokens <- struct{}{}
+					return b
+				}
+
+				// Send the future to the bundles channel, block if necessary, unless/until context is cancelled.
+				select {
+				case <-ctx.Done():
+					return
+				case bundles <- f:
+				}
+			}
+
+			rangeComplete.Store(true)
+			slog.DebugContext(ctx, "stream.EntryBundles: exiting")
+		}()
 
 		for f := range bundles {
 			b := f()
@@ -130,6 +151,13 @@ func EntryBundles(ctx context.Context, numWorkers uint, getSize TreeSizeFunc, ge
 			// If there's a good reason to allow it to continue we can change this.
 			if b.err != nil {
 				return
+			}
+		}
+		if !rangeComplete.Load() {
+			// We've successfully yielded all the bundles from the channel but didn't finish the requested range.
+			// If this is because the provided context was cancelled we should return that error.
+			if err := ctx.Err(); err != nil {
+				yield(Bundle{}, err)
 			}
 		}
 		slog.DebugContext(ctx, "stream.EntryBundles: iter done")

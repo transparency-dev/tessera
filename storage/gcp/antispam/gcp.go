@@ -279,7 +279,7 @@ func (f *follower) Name() string {
 }
 
 // Follow uses entry data from the log to populate the antispam storage.
-func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
+func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 	errOutOfSync := errors.New("out-of-sync")
 
 	t := time.NewTicker(time.Second)
@@ -290,9 +290,16 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 		curEntries [][]byte
 		curIndex   uint64
 	)
+
+	defer func() {
+		if stop != nil {
+			stop()
+		}
+	}()
+
 	for {
 		select {
-		case <-ctx.Done():
+		case <-followCtx.Done():
 			return
 		case <-t.C:
 		}
@@ -303,7 +310,7 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 
 		// Busy loop while there are entries to be consumed from the stream
 		for streamDone := false; !streamDone; {
-			err := otel.TraceErr(ctx, "tessera.antispam.gcp.FollowTask", tracer, func(ctx context.Context, span trace.Span) error {
+			err := otel.TraceErr(followCtx, "tessera.antispam.gcp.FollowTask", tracer, func(ctx context.Context, span trace.Span) error {
 				ctx, cancel := context.WithTimeout(ctx, defaultBatchTimeout)
 				defer cancel()
 				_, err := f.as.dbPool.ReadWriteTransactionWithOptions(ctx, func(txctx context.Context, txn *spanner.ReadWriteTransaction) error {
@@ -352,11 +359,12 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 						// start reading from:
 						if next == nil {
 							span.AddEvent("Start streaming entries")
+							streamSize := logSize
 							sizeFn := func(_ context.Context) (uint64, error) {
-								return logSize, nil
+								return streamSize, nil
 							}
 							numFetchers := uint(10)
-							next, stop = iter.Pull2(client.Entries(client.EntryBundles(txctx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, logSize-followFrom), f.bundleHasher))
+							next, stop = iter.Pull2(client.Entries(client.EntryBundles(followCtx, numFetchers, sizeFn, lr.ReadEntryBundle, followFrom, streamSize-followFrom), f.bundleHasher))
 						}
 
 						if curIndex == followFrom && curEntries != nil {
@@ -420,12 +428,13 @@ func (f *follower) Follow(ctx context.Context, lr tessera.LogReader) {
 			})
 			if err != nil {
 				if err != errOutOfSync {
-					slog.ErrorContext(ctx, "Failed to commit antispam population tx", slog.Any("error", err))
+					slog.ErrorContext(followCtx, "Failed to commit antispam population tx", slog.Any("error", err))
 				}
 				if stop != nil {
 					stop()
+					next = nil
+					stop = nil
 				}
-				next = nil
 				streamDone = true
 				continue
 			}
