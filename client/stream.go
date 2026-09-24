@@ -51,7 +51,7 @@ type Bundle struct {
 // source infrastructure, and how concurrent requests affect performance (e.g. GCS buckets vs. files on a single disk).
 //
 // The returned iterator will cover entries in the range [fromEntry, min(fromEntry+N, treeSize)), where treeSize is the
-// value first returned by a call to getSize, and will correctly release resources regardless of how iteration is terminated.
+// value first returned by a call to getSize.
 //
 // Note that getSize is called only once - the returned iterator will not track the growth of the underlying log.
 func EntryBundles(ctx context.Context, numWorkers uint, getSize TreeSizeFunc, getBundle EntryBundleFetcherFunc, fromEntry uint64, N uint64) iter.Seq2[Bundle, error] {
@@ -154,7 +154,7 @@ func EntryBundles(ctx context.Context, numWorkers uint, getSize TreeSizeFunc, ge
 			}
 		}
 		if !rangeComplete.Load() {
-			// We've succesfully yielded all the bundles from the channel but didn't finish the requested range.
+			// We've successfully yielded all the bundles from the channel but didn't finish the requested range.
 			// If this is because the provided context was cancelled we should return that error.
 			if err := ctx.Err(); err != nil {
 				yield(Bundle{}, err)

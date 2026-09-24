@@ -424,8 +424,9 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 				}
 				if stop != nil {
 					stop()
+					next = nil
+					stop = nil
 				}
-				next = nil
 				continue
 			}
 			curEntries = nil
