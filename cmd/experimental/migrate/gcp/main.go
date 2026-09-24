@@ -18,16 +18,14 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"flag"
 	"fmt"
 	"net/url"
 	"os"
-	"strconv"
-	"strings"
 
 	"log/slog"
 
+	"github.com/transparency-dev/formats/log"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/storage/gcp"
@@ -64,15 +62,9 @@ func main() {
 		slog.ErrorContext(ctx, "fetch initial source checkpoint", slog.Any("error", err))
 		os.Exit(1)
 	}
-	bits := strings.Split(string(sourceCP), "\n")
-	sourceSize, err := strconv.ParseUint(bits[1], 10, 64)
-	if err != nil {
-		slog.ErrorContext(ctx, "invalid CP size", slog.String("size", bits[1]), slog.Any("error", err))
-		os.Exit(1)
-	}
-	sourceRoot, err := base64.StdEncoding.DecodeString(bits[2])
-	if err != nil {
-		slog.ErrorContext(ctx, "invalid checkpoint roothash", slog.String("hash", bits[2]), slog.Any("error", err))
+	cp := &log.Checkpoint{}
+	if _, err := cp.Unmarshal(sourceCP); err != nil {
+		slog.ErrorContext(ctx, "Failed to unmarshal checkpoint", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -106,7 +98,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := m.Migrate(ctx, *numWorkers, sourceSize, sourceRoot, src.ReadEntryBundle); err != nil {
+	if err := m.Migrate(ctx, *numWorkers, cp.Size, cp.Hash, src.ReadEntryBundle); err != nil {
 		slog.ErrorContext(ctx, "Migrate failed", slog.Any("error", err))
 		os.Exit(1)
 	}
