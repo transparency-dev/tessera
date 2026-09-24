@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -292,6 +293,117 @@ func TestAwait_contextCancel(t *testing.T) {
 	// And finally release the final one for success
 	size.Store(75)
 	wg.Wait()
+}
+
+// awaitWithin runs fn in a goroutine and returns its error, failing the test if
+// fn does not return within limit. Regression coverage for #1192 needs this
+// because the failure mode being guarded against is an indefinite block, which
+// would otherwise hang the test binary until the whole run times out.
+func awaitWithin(t *testing.T, limit time.Duration, fn func() error) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		done <- fn()
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(limit):
+		t.Fatalf("Await did not return within %v", limit)
+		return nil
+	}
+}
+
+// TestAwait_NoCheckpointRespectsContext covers a log which has not yet published
+// its first checkpoint. LogReader.ReadCheckpoint documents os.ErrNotExist as the
+// way to signal this, and mirror/migration targets legitimately start out in
+// that state. The poll loop publishes nothing at all while this persists, so
+// Await only returns if it watches its own context.
+func TestAwait_NoCheckpointRespectsContext(t *testing.T) {
+	t.Parallel()
+
+	readCheckpoint := func(ctx context.Context) ([]byte, error) {
+		return nil, os.ErrNotExist
+	}
+	awaiter := NewPublicationAwaiter(t.Context(), readCheckpoint, 10*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+
+	err := awaitWithin(t, 5*time.Second, func() error {
+		_, _, err := awaiter.Await(ctx, func() (Index, error) {
+			return Index{Index: 0}, nil
+		})
+		return err
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Await err = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+// TestAwait_PollerShutdown covers the poll loop exiting while an Await is still
+// blocked. The awaited context deliberately has no deadline of its own, so the
+// only thing that can release the waiter is the awaiter reporting that its poll
+// loop has gone away.
+func TestAwait_PollerShutdown(t *testing.T) {
+	t.Parallel()
+
+	// Deliberately not t.Context(), so that only the explicit cancel below can
+	// stop the poll loop.
+	pollCtx, stopPoller := context.WithCancel(context.Background())
+	defer stopPoller()
+
+	// A healthy log, but one whose tree never grows to cover the index awaited
+	// below.
+	readCheckpoint := func(ctx context.Context) ([]byte, error) {
+		return []byte("origin\n0\nhash\n\n"), nil
+	}
+	awaiter := NewPublicationAwaiter(pollCtx, readCheckpoint, 10*time.Millisecond)
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		stopPoller()
+	}()
+
+	err := awaitWithin(t, 5*time.Second, func() error {
+		_, _, err := awaiter.Await(t.Context(), func() (Index, error) {
+			return Index{Index: 5}, nil
+		})
+		return err
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Await err = %v, want context.Canceled", err)
+	}
+}
+
+// TestAwait_CancelWithLongPollPeriod ensures cancellation latency is decoupled
+// from the poll period. With an hour between polls the awaiter publishes
+// nothing, so this only passes if Await watches its own context.
+func TestAwait_CancelWithLongPollPeriod(t *testing.T) {
+	t.Parallel()
+
+	readCheckpoint := func(ctx context.Context) ([]byte, error) {
+		return []byte("origin\n0\nhash\n\n"), nil
+	}
+	awaiter := NewPublicationAwaiter(t.Context(), readCheckpoint, time.Hour)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	err := awaitWithin(t, 5*time.Second, func() error {
+		_, _, err := awaiter.Await(ctx, func() (Index, error) {
+			return Index{Index: 5}, nil
+		})
+		return err
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Await err = %v, want context.Canceled", err)
+	}
 }
 
 func BenchmarkAwait(b *testing.B) {

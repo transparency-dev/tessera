@@ -34,10 +34,30 @@ import (
 // to fetch checkpoints using the `readCheckpoint` function.
 func NewPublicationAwaiter(ctx context.Context, readCheckpoint func(ctx context.Context) ([]byte, error), pollPeriod time.Duration) *PublicationAwaiter {
 	a := &PublicationAwaiter{
-		c: sync.NewCond(&sync.Mutex{}),
+		waiters: make(map[*waiter]struct{}),
 	}
 	go a.pollLoop(ctx, readCheckpoint, pollPeriod)
 	return a
+}
+
+// awaitResult is the outcome delivered to a single blocked Await call.
+type awaitResult struct {
+	checkpoint []byte
+	err        error
+}
+
+// waiter represents a single blocked Await call.
+type waiter struct {
+	index uint64
+
+	// errObserved preserves the "two consecutive errors" tolerance that Await
+	// has always had: a waiter is only failed once it has seen two consecutive
+	// failed polls. Guarded by PublicationAwaiter.mu.
+	errObserved bool
+
+	// res is buffered with capacity 1 and is written to at most once, so the
+	// poll loop never blocks while resolving a waiter.
+	res chan awaitResult
 }
 
 // PublicationAwaiter allows client threads to block until a leaf is published.
@@ -55,7 +75,12 @@ func NewPublicationAwaiter(ctx context.Context, readCheckpoint func(ctx context.
 // When used this way, it requires very little code at the point of use to
 // block until the new leaf is integrated into the tree.
 type PublicationAwaiter struct {
-	c *sync.Cond
+	mu sync.Mutex
+
+	// waiters is the set of currently blocked Await calls. The poll loop
+	// resolves and removes only the entries which the latest observation
+	// satisfies, so unrelated waiters are left undisturbed.
+	waiters map[*waiter]struct{}
 
 	// Only used for testing coordination
 	preWaitSignaller chan struct{}
@@ -65,6 +90,40 @@ type PublicationAwaiter struct {
 	size       uint64
 	checkpoint []byte
 	err        error
+
+	// closed is set once the poll loop has exited, after which no further
+	// observations will ever be published.
+	closed bool
+}
+
+// publish records the latest observation from the poll loop and resolves every
+// waiter which that observation settles, leaving the rest blocked.
+//
+// closed is only ever set from the poll loop's ctx.Done() path, which always
+// records that context's error, so err is non-nil whenever closed is true.
+func (a *PublicationAwaiter) publish(cp []byte, size uint64, err error, closed bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.checkpoint, a.size, a.err, a.closed = cp, size, err, closed
+
+	for w := range a.waiters {
+		var res awaitResult
+		switch {
+		case a.size > w.index:
+			res = awaitResult{checkpoint: a.checkpoint} // Success
+		case a.err != nil && w.errObserved:
+			res = awaitResult{checkpoint: a.checkpoint, err: a.err} // Second consecutive error
+		case a.closed:
+			// The poll loop has gone, so this waiter can never be satisfied.
+			res = awaitResult{err: a.err}
+		default:
+			w.errObserved = a.err != nil
+			continue
+		}
+		w.res <- res
+		delete(a.waiters, w)
+	}
 }
 
 // Await blocks until the IndexFuture is resolved, and this new index has been
@@ -84,30 +143,47 @@ func (a *PublicationAwaiter) Await(ctx context.Context, future IndexFuture) (Ind
 		span.AddEvent("Resolved future")
 		span.SetAttributes(indexKey.Int64(int64(i.Index)), dupeKey.Bool(i.IsDup))
 
-		span.AddEvent("Waiting for tree growth")
-		a.c.L.Lock()
-		defer a.c.L.Unlock()
+		a.mu.Lock()
 		if a.preWaitSignaller != nil {
 			a.preWaitSignaller <- struct{}{}
 		}
-
-		// Await the tree growing to include the new leaf, or for two consecutive errors to be reported.
-		errorObserved := false
-		for ctx.Err() == nil {
-			if a.size > i.Index {
-				return i, a.checkpoint, nil // Success
-			}
-			if a.err != nil {
-				if errorObserved {
-					return i, a.checkpoint, a.err // Second consecutive error
-				}
-			}
-			errorObserved = a.err != nil
-			a.c.Wait()
+		// Fast path: the tree has already grown past this index.
+		if a.size > i.Index {
+			cp := a.checkpoint
+			a.mu.Unlock()
+			return i, cp, nil // Success
 		}
+		if a.closed {
+			cErr := a.err
+			a.mu.Unlock()
+			return i, nil, cErr
+		}
+		// Register interest before releasing the lock, so that an observation
+		// published concurrently cannot be missed. errObserved is seeded from
+		// the current state to preserve the pre-existing behaviour of only
+		// failing after two consecutive errors.
+		w := &waiter{
+			index:       i.Index,
+			errObserved: a.err != nil,
+			res:         make(chan awaitResult, 1),
+		}
+		a.waiters[w] = struct{}{}
+		a.mu.Unlock()
 
-		// The loop only exits if the context was cancelled or expired.
-		return i, nil, ctx.Err()
+		span.AddEvent("Waiting for tree growth")
+
+		// Await the tree growing to include the new leaf, two consecutive
+		// errors being reported, the poll loop going away, or our own context
+		// being cancelled or expiring.
+		select {
+		case res := <-w.res:
+			return i, res.checkpoint, res.err
+		case <-ctx.Done():
+			a.mu.Lock()
+			delete(a.waiters, w)
+			a.mu.Unlock()
+			return i, nil, ctx.Err()
+		}
 	})
 }
 
@@ -149,18 +225,10 @@ func (a *PublicationAwaiter) pollLoop(ctx context.Context, readCheckpoint func(c
 				}
 			}
 
-			span.AddEvent("Taking lock")
-			a.c.L.Lock()
-			span.AddEvent("Locked")
-			a.checkpoint = cp
-			a.size = cpSize
-			a.err = cpErr
-			// Note that this releases all clients in the event of any failure.
-			// However individual clients (via Await) can decide whether to ignore or fail.
-			a.c.Broadcast()
-			span.AddEvent("Broadcast Sent")
-			a.c.L.Unlock()
-			span.AddEvent("Unlocked")
+			span.AddEvent("Publishing")
+			a.publish(cp, cpSize, cpErr, ctxDone)
+			span.AddEvent("Published")
+
 			return ctxDone, nil
 		}, trace.WithAttributes(otel.PeriodicKey.Bool(true)))
 	}
