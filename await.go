@@ -138,7 +138,10 @@ func (a *PublicationAwaiter) pollLoop(ctx context.Context, readCheckpoint func(c
 				cp, cpErr = readCheckpoint(ctx)
 				switch {
 				case errors.Is(cpErr, os.ErrNotExist):
-					return false, nil
+					// The log has not published a checkpoint yet. This is not an error,
+					// but we still need to fall through and broadcast so that waiters
+					// get a chance to notice if their context has been cancelled.
+					cp, cpSize, cpErr = nil, 0, nil
 				case cpErr != nil:
 					cpSize = 0
 				default:

@@ -19,12 +19,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"errors"
 	"testing"
+	"testing/synctest"
 
 	"github.com/transparency-dev/formats/log"
 	"golang.org/x/mod/sumdb/note"
@@ -292,6 +294,49 @@ func TestAwait_contextCancel(t *testing.T) {
 	// And finally release the final one for success
 	size.Store(75)
 	wg.Wait()
+}
+
+// TestAwait_noCheckpointRespectsContext checks that Await returns once its
+// context expires, even if the log has not yet published a checkpoint.
+//
+// See https://github.com/transparency-dev/tessera/issues/1192.
+func TestAwait_noCheckpointRespectsContext(t *testing.T) {
+	t.Parallel()
+
+	// Within the synctest bubble, time only advances once every goroutine is
+	// durably blocked, so Await is guaranteed to be waiting on the awaiter
+	// before its context deadline passes.
+	synctest.Test(t, func(t *testing.T) {
+		// The awaiter is long-lived, so it has its own context which outlives the
+		// Await call below. Cancelling it at the end of the test lets the poll loop
+		// broadcast one final time, releasing any goroutine still stuck in Await.
+		awaiterCtx, cancelAwaiter := context.WithCancel(t.Context())
+		defer cancelAwaiter()
+
+		// Simulate a log which has not yet published a checkpoint.
+		readCheckpoint := func(_ context.Context) ([]byte, error) {
+			return nil, os.ErrNotExist
+		}
+		awaiter := NewPublicationAwaiter(awaiterCtx, readCheckpoint, 10*time.Millisecond)
+
+		awaitCtx, cancelAwait := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer cancelAwait()
+
+		errC := make(chan error, 1)
+		go func() {
+			_, _, err := awaiter.Await(awaitCtx, func() (Index, error) { return Index{Index: 0}, nil })
+			errC <- err
+		}()
+
+		select {
+		case err := <-errC:
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("Await: got err %v, want %v", err, context.DeadlineExceeded)
+			}
+		case <-time.After(1 * time.Second):
+			t.Error("Await did not return after its context expired")
+		}
+	})
 }
 
 func BenchmarkAwait(b *testing.B) {
