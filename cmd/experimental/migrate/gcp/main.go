@@ -62,6 +62,7 @@ func main() {
 		slog.ErrorContext(ctx, "fetch initial source checkpoint", slog.Any("error", err))
 		os.Exit(1)
 	}
+	// TODO: parse this safely.
 	cp := &log.Checkpoint{}
 	if _, err := cp.Unmarshal(sourceCP); err != nil {
 		slog.ErrorContext(ctx, "Failed to unmarshal checkpoint", slog.Any("error", err))
