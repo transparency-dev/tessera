@@ -69,7 +69,9 @@ func (s *Storage) ReadLandmarks(ctx context.Context) ([]byte, time.Time, error) 
 	return data, info.ModTime(), nil
 }
 
-// UpdateLandmarks executes fn and writes any updated landmarks data.
+// UpdateLandmarks executes fn and writes landmarks data.
+// If fn returns nil, no write is performed and the existing modification time is returned.
+// If fn returns unchanged content, the file's modification time is refreshed via os.Chtimes.
 // Runs under an advisory file lock to ensure distinct tasks are serialized.
 func (s *Storage) UpdateLandmarks(ctx context.Context, fn func(old []byte, oldModTime time.Time) ([]byte, error)) (time.Time, error) {
 	unlock, err := lockFile(ctx, s.lockPath)
@@ -91,10 +93,22 @@ func (s *Storage) UpdateLandmarks(ctx context.Context, fn func(old []byte, oldMo
 	if err != nil {
 		return time.Time{}, err
 	}
+	if newData == nil {
+		slog.DebugContext(ctx, "skipping landmarks write since update returned nil", slog.String("path", s.path))
+		return oldModTime, nil
+	}
 
 	if bytes.Equal(oldData, newData) && len(oldData) > 0 {
-		slog.DebugContext(ctx, "skipping landmarks write because contents are unchanged", slog.String("path", s.path))
-		return oldModTime, nil
+		now := time.Now()
+		if err := os.Chtimes(s.path, now, now); err != nil {
+			return time.Time{}, fmt.Errorf("failed to update landmark mtime")
+		}
+		slog.DebugContext(ctx, "refreshed landmarks modification time", slog.String("path", s.path))
+		info, err := os.Stat(s.path)
+		if err != nil {
+			return now, nil
+		}
+		return info.ModTime(), nil
 	}
 
 	if err := overwrite(s.path, newData); err != nil {

@@ -88,7 +88,8 @@ type LandmarksStorage interface {
 	ReadLandmarks(ctx context.Context) (data []byte, modTime time.Time, err error)
 
 	// UpdateLandmarks passes the current stored raw landmarks and its modification time to fn under an advisory lock.
-	// If fn returns new data, it is written to storage and the new modification time is returned.
+	// If fn returns nil, no update is performed and the existing modification time is returned.
+	// If fn returns data (even if identical to old), storage updates the resource's modification time.
 	UpdateLandmarks(ctx context.Context, fn func(old []byte, oldModTime time.Time) (new []byte, err error)) (modTime time.Time, err error)
 }
 
@@ -360,7 +361,7 @@ func (p *Publisher) initialise(ctx context.Context) error {
 		if err := activeLM.UnmarshalText(old); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal active landmarks: %w", err)
 		}
-		return old, nil
+		return nil, nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialise active landmarks: %w", err)
@@ -406,7 +407,6 @@ func (p *Publisher) start(ctx context.Context) {
 func (p *Publisher) Update(ctx context.Context) (time.Duration, error) {
 	cpSize := p.readCheckpointSize()
 
-	grown := true
 	active := &ActiveLandmarks{}
 	modTime, err := p.storage.UpdateLandmarks(ctx, func(old []byte, oldModTime time.Time) ([]byte, error) {
 		if len(old) == 0 {
@@ -418,14 +418,13 @@ func (p *Publisher) Update(ctx context.Context) (time.Duration, error) {
 
 		if time.Since(oldModTime) < p.pubInterval {
 			slog.DebugContext(ctx, "landmarks update: skipping landmarks write because last update too recent", slog.Time("lastUpdate", oldModTime))
-			return old, nil
+			return nil, nil
 		}
 		if cpSize < active.latestTreeSize() {
 			return nil, fmt.Errorf("checkpoint size (%d) smaller than last landmark size (%d)", cpSize, active.latestTreeSize())
 		}
 		if cpSize == active.latestTreeSize() {
-			grown = false
-			slog.DebugContext(ctx, "landmarks update: skipping landmarks write because tree has not grown", slog.Uint64("cpSize", cpSize))
+			slog.DebugContext(ctx, "landmarks update: tree has not grown, refreshing landmark timestamp", slog.Uint64("cpSize", cpSize))
 			return old, nil
 		}
 
@@ -445,10 +444,7 @@ func (p *Publisher) Update(ctx context.Context) (time.Duration, error) {
 	p.pubAt = modTime
 	p.mu.Unlock()
 
-	next := p.pubInterval
-	if grown {
-		next = max(time.Millisecond, time.Until(modTime.Add(p.pubInterval)))
-	}
+	next := max(time.Millisecond, time.Until(modTime.Add(p.pubInterval)))
 
 	slog.DebugContext(ctx, "landmarks update: success", slog.Duration("next-in", next))
 	return next, nil
