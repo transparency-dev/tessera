@@ -58,6 +58,16 @@ type Gateway struct {
 	policy    policy.TLogPolicy
 }
 
+// subtreeVerifier returns a SubtreeVerifier for a given witness.
+// If w.Verifier already implements f_note.SubtreeVerifier, it is returned
+// directly. Otherwise, it attempts to construct one from w.VKey.
+func subtreeVerifier(w policy.Witness) (f_note.SubtreeVerifier, error) {
+	if sv, ok := w.Verifier.(f_note.SubtreeVerifier); ok {
+		return sv, nil
+	}
+	return f_note.NewMLDSAVerifier(w.VKey)
+}
+
 // New creates a new subtree witness Gateway.
 // It only creates witness endpoints which implement f_note.SubtreeVerifier, i.e. which
 // use ML-DSA signatures.
@@ -73,15 +83,16 @@ func New(httpClient *http.Client, pol policy.TLogPolicy) (*Gateway, error) {
 		if w.URL == nil {
 			return nil, fmt.Errorf("missing URL for subtree witness %q", w.Name)
 		}
-		v := w.Verifier
-		if v == nil {
+		if w.Verifier == nil {
 			return nil, fmt.Errorf("missing Verifier for witness %q", w.Name)
 		}
-		var sv f_note.SubtreeVerifier
-		sv, ok := v.(f_note.SubtreeVerifier)
-		if !ok {
+		sv, err := subtreeVerifier(w)
+		if err != nil {
 			// Ignore witnesses that do not implement SubtreeVerifier.
-			slog.WarnContext(context.Background(), "witness verifier does not implement SubtreeVerifier", slog.String("name", w.Name))
+			slog.WarnContext(context.Background(), "witness verifier does not implement SubtreeVerifier",
+				slog.String("name", w.Name),
+				slog.Any("error", err),
+			)
 			continue
 		}
 		if _, err := mtcproof.ParseCosignerID(sv.Name()); err != nil {

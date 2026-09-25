@@ -105,6 +105,17 @@ func TestNew(t *testing.T) {
 		Verifier: verInvalid,
 	}
 
+	verFromPolicy, err := f_note.NewVerifier(vkeyValid)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	witFromPolicy := policy.Witness{
+		Name:     verFromPolicy.Name(),
+		URL:      u1,
+		VKey:     vkeyValid,
+		Verifier: verFromPolicy,
+	}
+
 	tests := []struct {
 		name          string
 		policy        policy.TLogPolicy
@@ -116,6 +127,15 @@ func TestNew(t *testing.T) {
 			policy: policy.TLogPolicy{
 				Witnesses: []policy.Witness{witValid},
 				Quorum:    witValid.Name,
+			},
+			wantWitnesses: 1,
+			wantErr:       false,
+		},
+		{
+			name: "fallback to VKey for policy witness",
+			policy: policy.TLogPolicy{
+				Witnesses: []policy.Witness{witFromPolicy},
+				Quorum:    witFromPolicy.Name,
 			},
 			wantWitnesses: 1,
 			wantErr:       false,
