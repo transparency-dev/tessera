@@ -908,8 +908,7 @@ func setupTestWitness(t *testing.T) (policy.TLogPolicy, note.SubtreeVerifier) {
 				http.Error(w, fmt.Sprintf("sign subtree: %v", err), http.StatusInternalServerError)
 				return
 			}
-			buf := binary.BigEndian.AppendUint32(nil, signer.KeyHash())
-			if _, err := fmt.Fprintf(w, "— %s %s\n", signer.Name(), base64.StdEncoding.EncodeToString(append(buf, rawSig...))); err != nil {
+			if _, err := w.Write(rawSig); err != nil {
 				t.Errorf("write /sign-subtree response: %v", err)
 			}
 		}
