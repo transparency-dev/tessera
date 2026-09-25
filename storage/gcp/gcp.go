@@ -165,6 +165,14 @@ type Config struct {
 	// TODO: consider providing a mechanism to set both BucketPrefix and SpannerTablePrefix
 	// from a single string to avoid misconfiguration foot-guns.
 	SpannerTablePrefix string
+
+	// ObjectRetentionPeriod, if non-zero, writes full tiles and entry bundles with a GCS object
+	// retention (https://cloud.google.com/storage/docs/object-lock) expiring this long after the
+	// write. Checkpoints and partial tiles/bundles are never retained. Requires object retention
+	// enabled on the Bucket, and the JSON API (the gRPC API cannot set retention).
+	ObjectRetentionPeriod time.Duration
+	// ObjectRetentionLocked selects "Locked" rather than "Unlocked" retention mode.
+	ObjectRetentionLocked bool
 }
 
 // tablePrefixRE matches valid values for a Spanner table prefix: empty, or a leading
@@ -175,6 +183,9 @@ var tablePrefixRE = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]{0,63})?$`)
 func New(ctx context.Context, cfg Config) (tessera.Driver, error) {
 	if !tablePrefixRE.MatchString(cfg.SpannerTablePrefix) {
 		return nil, fmt.Errorf("invalid SpannerTablePrefix %q: must start with a letter, contain only letters, digits, or underscores, and be at most 64 characters long", cfg.SpannerTablePrefix)
+	}
+	if cfg.ObjectRetentionPeriod < 0 {
+		return nil, fmt.Errorf("invalid ObjectRetentionPeriod %v: must not be negative", cfg.ObjectRetentionPeriod)
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = http.DefaultClient
@@ -281,8 +292,10 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoord
 
 	a := &Appender{
 		logStore: &logResourceStore{
-			objStore:    o,
-			entriesPath: opts.EntriesPath(),
+			objStore:        o,
+			entriesPath:     opts.EntriesPath(),
+			retentionPeriod: s.cfg.ObjectRetentionPeriod,
+			retentionLocked: s.cfg.ObjectRetentionLocked,
 		},
 		sequencer:       seq,
 		cpUpdated:       make(chan struct{}),
@@ -518,7 +531,7 @@ func (a *Appender) updateCheckpoint(ctx context.Context, size uint64, root []byt
 // objStore describes a type which can store and retrieve objects.
 type objStore interface {
 	getObject(ctx context.Context, obj string) ([]byte, *gcs.ReaderObjectAttrs, error)
-	setObject(ctx context.Context, obj string, data []byte, cond *gcs.Conditions, contType string, cacheCtl string) error
+	setObject(ctx context.Context, obj string, data []byte, cond *gcs.Conditions, contType string, cacheCtl string, retention *gcs.ObjectRetention) error
 	deleteObjectsWithPrefix(ctx context.Context, prefix string) error
 }
 
@@ -526,10 +539,25 @@ type objStore interface {
 type logResourceStore struct {
 	objStore    objStore
 	entriesPath func(uint64, uint8) string
+	// See Config.ObjectRetentionPeriod.
+	retentionPeriod time.Duration
+	retentionLocked bool
+}
+
+// retention returns the retention to set on a full (partial == 0) tile or entry bundle, or nil.
+func (lrs *logResourceStore) retention(partial uint8) *gcs.ObjectRetention {
+	if lrs.retentionPeriod == 0 || partial > 0 {
+		return nil
+	}
+	mode := "Unlocked"
+	if lrs.retentionLocked {
+		mode = "Locked"
+	}
+	return &gcs.ObjectRetention{Mode: mode, RetainUntil: time.Now().Add(lrs.retentionPeriod)}
 }
 
 func (lrs *logResourceStore) setCheckpoint(ctx context.Context, cpRaw []byte) error {
-	return lrs.objStore.setObject(ctx, layout.CheckpointPath, cpRaw, nil, ckptContType, ckptCacheControl)
+	return lrs.objStore.setObject(ctx, layout.CheckpointPath, cpRaw, nil, ckptContType, ckptCacheControl, nil)
 }
 
 func (lrs *logResourceStore) getCheckpoint(ctx context.Context) ([]byte, error) {
@@ -549,7 +577,7 @@ func (s *logResourceStore) setTile(ctx context.Context, level, index uint64, par
 	start := time.Now()
 
 	tPath := layout.TilePath(level, index, partial)
-	err := s.objStore.setObject(ctx, tPath, data, &gcs.Conditions{DoesNotExist: true}, logContType, logCacheControl)
+	err := s.objStore.setObject(ctx, tPath, data, &gcs.Conditions{DoesNotExist: true}, logContType, logCacheControl, s.retention(partial))
 	opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("writeTile")))
 	return err
 }
@@ -627,7 +655,7 @@ func (s *logResourceStore) setEntryBundle(ctx context.Context, bundleIndex uint6
 	// Note that setObject does an idempotent interpretation of DoesNotExist - it only
 	// returns an error if the named object exists _and_ contains different data to what's
 	// passed in here.
-	if err := s.objStore.setObject(ctx, objName, bundleRaw, &gcs.Conditions{DoesNotExist: true}, logContType, logCacheControl); err != nil {
+	if err := s.objStore.setObject(ctx, objName, bundleRaw, &gcs.Conditions{DoesNotExist: true}, logContType, logCacheControl, s.retention(p)); err != nil {
 		return fmt.Errorf("setObject(%q): %v", objName, err)
 
 	}
@@ -1349,11 +1377,12 @@ func (s *gcsStorage) getObject(ctx context.Context, obj string) ([]byte, *gcs.Re
 //
 // cond can be used to specify preconditions for the write (e.g. write iff not exists, write iff
 // current generation is X, etc.), or nil can be passed if no preconditions are desired.
+// retention, if non-nil, is applied to the written object.
 //
 // Note that when preconditions are specified and are not met, an error will be returned *unless*
 // the currently stored data is bit-for-bit identical to the data to-be-written.
 // This is intended to provide idempotentency for writes.
-func (s *gcsStorage) setObject(ctx context.Context, objName string, data []byte, cond *gcs.Conditions, contType string, cacheCtl string) error {
+func (s *gcsStorage) setObject(ctx context.Context, objName string, data []byte, cond *gcs.Conditions, contType string, cacheCtl string, retention *gcs.ObjectRetention) error {
 	return otel.TraceErr(ctx, "tessera.storage.gcp.setObject", tracer, func(ctx context.Context, span trace.Span) error {
 		if s.bucketPrefix != "" {
 			objName = filepath.Join(s.bucketPrefix, objName)
@@ -1373,6 +1402,7 @@ func (s *gcsStorage) setObject(ctx context.Context, objName string, data []byte,
 		}
 		w.ContentType = contType
 		w.CacheControl = cacheCtl
+		w.Retention = retention
 		// Limit the amount of memory used for buffers, see https://pkg.go.dev/cloud.google.com/go/storage#Writer
 		w.ChunkSize = len(data) + 1024
 		if _, err := w.Write(data); err != nil {
@@ -1490,7 +1520,9 @@ func (s *Storage) MigrationWriter(ctx context.Context, opts *tessera.MigrationOp
 				bucket:       s.cfg.Bucket,
 				bucketPrefix: s.cfg.BucketPrefix,
 			},
-			entriesPath: opts.EntriesPath(),
+			entriesPath:     opts.EntriesPath(),
+			retentionPeriod: s.cfg.ObjectRetentionPeriod,
+			retentionLocked: s.cfg.ObjectRetentionLocked,
 		},
 	}
 
