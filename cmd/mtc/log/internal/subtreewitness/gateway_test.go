@@ -17,10 +17,7 @@ package subtreewitness
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/binary"
 	"errors"
-	"fmt"
 	"net/url"
 	"testing"
 
@@ -42,14 +39,11 @@ func (m *mockSubtreeClient) SignSubtree(ctx context.Context, start, end uint64, 
 // mustSignSubtree signs a subtree and formats the signature as a note-style signature line.
 func mustSignSubtree(t *testing.T, s f_note.SubtreeSigner, origin string, start, end uint64, root []byte) (rawSig []byte, sigLine []byte) {
 	t.Helper()
-	noteSig, err := s.SignSubtree(origin, start, end, root)
+	sigLine, err := s.SignSubtree(origin, start, end, root)
 	if err != nil {
 		t.Fatalf("SignSubtree: %v", err)
 	}
-	buf := binary.BigEndian.AppendUint32(nil, s.KeyHash())
-	buf = append(buf, noteSig...)
-	sigLine = fmt.Appendf(nil, "— %s %s\n", s.Name(), base64.StdEncoding.EncodeToString(buf))
-	sigObj, err := mtcproof.NewSubtreeSignatureFromCosig(noteSig)
+	sigObj, err := mtcproof.NewSubtreeSignatureFromCosig(sigLine)
 	if err != nil {
 		t.Fatalf("NewSubtreeSignatureFromCosig: %v", err)
 	}
@@ -221,12 +215,7 @@ func TestGateway_CosignSubtree(t *testing.T) {
 	}
 
 	rawSubSig, subSigLine := mustSignSubtree(t, signer1, origin, start, end, root)
-
-	corruptNoteSig, _ := signer1.SignSubtree(origin, start, end, root)
-	corruptNoteSig[len(corruptNoteSig)-4] ^= 0xff
-	corruptBuf := binary.BigEndian.AppendUint32(nil, signer1.KeyHash())
-	corruptBuf = append(corruptBuf, corruptNoteSig...)
-	corruptSubSigLine := fmt.Appendf(nil, "— %s %s\n", signer1.Name(), base64.StdEncoding.EncodeToString(corruptBuf))
+	_, corruptSubSigLine := mustSignSubtree(t, signer1, origin, start, end, bytes.Repeat([]byte{0xee}, 32))
 
 	u1, _ := url.Parse("https://wit1.example.com")
 	policy1 := policy.TLogPolicy{

@@ -17,7 +17,6 @@ package subtreewitness
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -195,18 +194,7 @@ func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end 
 		}
 
 		for _, s := range sigNote.Note.UnverifiedSigs {
-			raw, bErr := base64.StdEncoding.DecodeString(s.Base64)
-			if bErr != nil || len(raw) < 4 {
-				slog.WarnContext(ctx, "Failed to decode witness subtree signature base64", slog.String("witness", s.Name), slog.Any("error", bErr))
-				continue
-			}
-			// SPEC: https://c2sp.org/signed-note
-			// "— <key name> base64(32-bit key ID || signature)"
-			// Remove the first 4 bytes to extract the C2SP timestamped_signature payload.
-			keyHash := s.Hash
-			sigBytes := raw[4:]
-
-			k := witnessKey{name: s.Name, keyHash: keyHash}
+			k := witnessKey{name: s.Name, keyHash: s.Hash}
 			// SPEC: draft-ietf-plants-merkle-tree-certs section 6.2.
 			// "An MTCProof parser MUST reject the input if there are duplicate cosigner_id values"
 			if _, ok := verifiedSubtreeSigs[k]; ok {
@@ -217,7 +205,7 @@ func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end 
 			if !ok {
 				slog.WarnContext(ctx, "Received subtree signature from witness not present on checkpoint",
 					slog.String("witness", s.Name),
-					slog.String("key_hash", fmt.Sprintf("%08x", keyHash)),
+					slog.String("key_hash", fmt.Sprintf("%08x", s.Hash)),
 				)
 				continue
 			}
@@ -226,12 +214,13 @@ func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end 
 			if !ok {
 				slog.ErrorContext(ctx, "Received subtree signature from unknown witness key",
 					slog.String("witness", s.Name),
-					slog.String("key_hash", fmt.Sprintf("%08x", keyHash)),
+					slog.String("key_hash", fmt.Sprintf("%08x", s.Hash)),
 				)
 				continue
 			}
 
-			if !w.verifier.VerifySubtree(origin, start, end, subRoot, sigBytes) {
+			sigLine := fmt.Appendf(nil, "— %s %s\n", s.Name, s.Base64)
+			if !w.verifier.VerifySubtree(origin, start, end, subRoot, sigLine) {
 				slog.ErrorContext(ctx, "Subtree signature verification failed",
 					slog.String("witness", s.Name),
 					slog.Uint64("start", start),
@@ -240,7 +229,7 @@ func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end 
 				continue
 			}
 
-			subSig, err := mtcproof.NewSubtreeSignatureFromCosig(sigBytes)
+			subSig, err := mtcproof.NewSubtreeSignatureFromCosig(sigLine)
 			if err != nil {
 				slog.ErrorContext(ctx, "Failed to extract raw subtree signature",
 					slog.String("witness", s.Name),
