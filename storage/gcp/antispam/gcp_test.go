@@ -25,6 +25,8 @@ import (
 	"log/slog"
 
 	"cloud.google.com/go/spanner"
+	database "cloud.google.com/go/spanner/admin/database/apiv1"
+	adminpb "cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
 	"cloud.google.com/go/spanner/spannertest"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
@@ -105,9 +107,8 @@ func TestAntispamStorage(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			closeDB := newSpannerDB(t)
 			defer closeDB()
-			const spannerDB = "projects/p/instances/i/databases/d"
 			if test.sharedClient {
-				c, err := spanner.NewClient(t.Context(), spannerDB)
+				c, err := spanner.NewClient(t.Context(), testSpannerDB)
 				if err != nil {
 					t.Fatalf("spanner.NewClient: %v", err)
 				}
@@ -117,7 +118,7 @@ func TestAntispamStorage(t *testing.T) {
 				t.Cleanup(c.Close)
 				test.opts.SpannerClient = c
 			}
-			as, err := NewAntispam(t.Context(), spannerDB, test.opts)
+			as, err := NewAntispam(t.Context(), testSpannerDB, test.opts)
 			if err != nil {
 				t.Fatalf("NewAntispam: %v", err)
 			}
@@ -194,7 +195,7 @@ func TestAntispamSharedClientWrongDatabase(t *testing.T) {
 	}
 	defer c.Close()
 
-	if _, err := NewAntispam(t.Context(), "projects/p/instances/i/databases/d", AntispamOpts{SpannerClient: c}); err == nil {
+	if _, err := NewAntispam(t.Context(), testSpannerDB, AntispamOpts{SpannerClient: c}); err == nil {
 		t.Error("NewAntispam accepted a SpannerClient connected to a different database, want error")
 	}
 }
@@ -220,7 +221,7 @@ func TestAntispamPushbackRecovers(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			closeDB := newSpannerDB(t)
 			defer closeDB()
-			as, err := NewAntispam(t.Context(), "projects/p/instances/i/databases/d", test.opts)
+			as, err := NewAntispam(t.Context(), testSpannerDB, test.opts)
 			if err != nil {
 				t.Fatalf("NewAntispam: %v", err)
 			}
@@ -280,6 +281,139 @@ func TestAntispamPushbackRecovers(t *testing.T) {
 			}
 			t.Fatalf("pushBack remains true after 5 seconds despite being caught up!")
 		})
+	}
+}
+
+func TestNewAntispamExistingSchema(t *testing.T) {
+	ctx := t.Context()
+	closeDB := newSpannerDB(t)
+	defer closeDB()
+
+	db, err := spanner.NewClient(ctx, testSpannerDB)
+	if err != nil {
+		t.Fatalf("spanner.NewClient: %v", err)
+	}
+	defer db.Close()
+	opts := AntispamOpts{SpannerTablePrefix: "Tenant1_", SpannerClient: db}
+
+	if schemaInitialised(ctx, db, prefixTable(opts.SpannerTablePrefix)) {
+		t.Fatal("schemaInitialised: got true on empty DB, want false")
+	}
+	if _, err := NewAntispam(ctx, testSpannerDB, opts); err != nil {
+		t.Fatalf("NewAntispam on empty DB: %v", err)
+	}
+	if !schemaInitialised(ctx, db, prefixTable(opts.SpannerTablePrefix)) {
+		t.Fatal("schemaInitialised: got false after NewAntispam, want true")
+	}
+	if _, err := db.Apply(ctx, []*spanner.Mutation{spanner.Update(opts.SpannerTablePrefix+"FollowCoord", []string{"id", "nextIdx"}, []any{0, 42})}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// spannertest rejects CREATE TABLE IF NOT EXISTS on an existing table, so a re-open that ran DDL
+	// would fail below; guard against the emulator changing and this passing vacuously.
+	if err := createAndPrepareTables(ctx, testSpannerDB, db, []string{"CREATE TABLE IF NOT EXISTS Tenant1_IDSeq (h BYTES(32) NOT NULL, idx INT64 NOT NULL) PRIMARY KEY (h)"}, nil); err == nil {
+		t.Skip("spannertest now honours CREATE TABLE IF NOT EXISTS, so this test can no longer tell whether NewAntispam applied DDL")
+	}
+
+	// Re-opening must apply no DDL (see above) and leave existing state alone.
+	as, err := NewAntispam(ctx, testSpannerDB, opts)
+	if err != nil {
+		t.Fatalf("NewAntispam on existing schema: %v", err)
+	}
+	f := as.Follower(testBundleHasher)
+	if got, err := f.EntriesProcessed(ctx); err != nil || got != 42 {
+		t.Fatalf("EntriesProcessed: got %d, %v, want 42, nil", got, err)
+	}
+}
+
+func TestSchemaInitialised(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		// prep modifies a DB in which NewAntispam has created the unprefixed schema.
+		prep func(ctx context.Context, t *testing.T, db *spanner.Client)
+		// table defaults to unprefixed.
+		table func(string) string
+		want  bool
+	}{
+		{
+			name: "initialised",
+			want: true,
+		}, {
+			name:  "not initialised: no tables with this prefix",
+			table: prefixTable("Other_"),
+			want:  false,
+		}, {
+			name: "missing seed row",
+			prep: func(ctx context.Context, t *testing.T, db *spanner.Client) {
+				if _, err := db.Apply(ctx, []*spanner.Mutation{spanner.Delete("FollowCoord", spanner.Key{0})}); err != nil {
+					t.Fatalf("Apply: %v", err)
+				}
+			},
+			want: false,
+		}, {
+			name: "missing unseeded table",
+			prep: func(ctx context.Context, t *testing.T, db *spanner.Client) {
+				applyDDL(t, "DROP TABLE IDSeq")
+			},
+			want: false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			closeDB := newSpannerDB(t)
+			defer closeDB()
+			db, err := spanner.NewClient(ctx, testSpannerDB)
+			if err != nil {
+				t.Fatalf("spanner.NewClient: %v", err)
+			}
+			defer db.Close()
+			if _, err := NewAntispam(ctx, testSpannerDB, AntispamOpts{SpannerClient: db}); err != nil {
+				t.Fatalf("NewAntispam: %v", err)
+			}
+			if test.prep != nil {
+				test.prep(ctx, t, db)
+			}
+			if test.table == nil {
+				test.table = prefixTable("")
+			}
+			if got := schemaInitialised(ctx, db, test.table); got != test.want {
+				t.Fatalf("schemaInitialised: got %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+// testSpannerDB is the database served by the spannertest emulator.
+const testSpannerDB = "projects/p/instances/i/databases/d"
+
+// prefixTable returns a func which prepends prefix to a table name.
+func prefixTable(prefix string) func(string) string {
+	return func(table string) string {
+		return prefix + table
+	}
+}
+
+// applyDDL applies DDL directly to testSpannerDB.
+func applyDDL(t *testing.T, statements ...string) {
+	t.Helper()
+	adminClient, err := database.NewDatabaseAdminClient(t.Context())
+	if err != nil {
+		t.Fatalf("NewDatabaseAdminClient: %v", err)
+	}
+	defer func() {
+		if err := adminClient.Close(); err != nil {
+			t.Logf("adminClient.Close: %v", err)
+		}
+	}()
+	op, err := adminClient.UpdateDatabaseDdl(t.Context(), &adminpb.UpdateDatabaseDdlRequest{
+		Database:   testSpannerDB,
+		Statements: statements,
+	})
+	if err != nil {
+		t.Fatalf("UpdateDatabaseDdl(%q): %v", statements, err)
+	}
+	if err := op.Wait(t.Context()); err != nil {
+		t.Fatalf("UpdateDatabaseDdl(%q): %v", statements, err)
 	}
 }
 
