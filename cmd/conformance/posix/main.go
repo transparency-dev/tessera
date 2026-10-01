@@ -33,6 +33,7 @@ import (
 	"log/slog"
 
 	fnote "github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/storage/posix"
 	badger_as "github.com/transparency-dev/tessera/storage/posix/antispam"
@@ -104,16 +105,16 @@ func main() {
 	if *mirrorPolicyFile != "" {
 		b, err := os.ReadFile(*mirrorPolicyFile)
 		if err != nil {
-			slog.ErrorContext(ctx, "Failed to read mirror policy", slog.Any("error", err))
+			slog.ErrorContext(ctx, "Failed to read mirror policy", slog.String("mirrorpolicyfile", *mirrorPolicyFile), slog.Any("error", err))
 			os.Exit(1)
 		}
-		policy, err := tessera.NewWitnessGroupFromPolicy(b)
-		if err != nil {
+		var mPol policy.TLogPolicy
+		if err := mPol.Unmarshal(b); err != nil {
 			slog.ErrorContext(ctx, "Failed to parse mirror policy", slog.Any("error", err))
 			os.Exit(1)
 		}
-		opts = opts.WithMirrors(policy, nil)
-		slog.InfoContext(ctx, "Mirroring enabled", slog.Any("policy", policy))
+		opts = opts.WithMirrorPolicy(mPol, nil)
+		slog.InfoContext(ctx, "Mirroring enabled", slog.Any("policy", mPol))
 	}
 
 	appender, shutdown, _, err := tessera.NewAppender(ctx, driver, opts)

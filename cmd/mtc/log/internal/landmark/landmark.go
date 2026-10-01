@@ -36,19 +36,36 @@ const (
 	// publishRetryOnFailure configures when to schedule a new publication upon failure.
 	publishRetryOnFailure = time.Second * 5
 
-	// MaxActiveLandmarks is the maximum allowed number of active landmarks over
-	// any certificate validity period.
+	// maxActiveLandmarks7Day is the maximum allowed number of active landmarks over
+	// any 7-day period.
 	//
-	// SPEC: CQRP Policy v0.2.0
-	// "MTC CA Operators MUST NOT issue Subscriber certificates with a validity
-	// period exceeding 47 days."
+	// SPEC: CQRP v0.3.0 Section 2.6.2
+	// "For CA Cosigners with a maximum permitted certificate validity of up to
+	// 7 days, MTC CA landmarks SHOULD be generated approximately every hour,
+	// and MUST NOT exceed a total of 220 landmarks over any 7-day period."
+	maxActiveLandmarks7Day = 220
+
+	// maxActiveLandmarks47Day is the maximum allowed number of active landmarks over
+	// any 47-day period.
 	//
-	// SPEC: CQRP Policy v0.2.0
+	// SPEC: CQRP v0.3.0 Section 2.6.2
 	// "For CA Cosigners with a maximum permitted certificate validity of up to 47
-	// days, MTC CA landmarks SHOULD be generated approximately every four 4 hours,
+	// days, MTC CA landmarks SHOULD be generated approximately every 4 hours,
 	// and MUST NOT exceed a total of 370 landmarks over any 47-day period."
-	MaxActiveLandmarks = 370
+	maxActiveLandmarks47Day = 370
 )
+
+// maxActiveLandmarks returns the maximum allowed number of active landmarks
+// for a given certificate lifetime according to CQRP v0.3.0 Section 2.6.2:
+//
+// - Up to 7 days: 220 (maxActiveLandmarks7Day)
+// - Greater than 7 days (up to 47 days): 370 (maxActiveLandmarks47Day)
+func maxActiveLandmarks(maxCertLifetime time.Duration) uint64 {
+	if maxCertLifetime <= 7*24*time.Hour {
+		return maxActiveLandmarks7Day
+	}
+	return maxActiveLandmarks47Day
+}
 
 var (
 	// ErrTooOld indicates that an index precedes the earliest available active landmark.
@@ -309,8 +326,8 @@ func NewPublisher(ctx context.Context, readCheckpointSize ReadCheckpointSize, st
 	// which can push certificate expiry one interval further than
 	// ceil(max_cert_lifetime / time_between_landmarks) alone would bound."
 	maxActive := uint64(math.Ceil(float64(maxCertLifetime)/float64(pubInterval))) + 1
-	if maxActive > MaxActiveLandmarks {
-		return nil, fmt.Errorf("max active landmarks (%d) exceeds limit (%d); increase pubInterval or decrease maxCertLifetime", maxActive, MaxActiveLandmarks)
+	if limit := maxActiveLandmarks(maxCertLifetime); maxActive > limit {
+		return nil, fmt.Errorf("max active landmarks (%d) exceeds limit (%d); increase pubInterval or decrease maxCertLifetime", maxActive, limit)
 	}
 
 	p := &Publisher{

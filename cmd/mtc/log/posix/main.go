@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/log"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/handler"
@@ -43,7 +44,6 @@ var (
 	// Tessera settings
 	storageDir                = flag.String("storage_dir", "", "Path to root of log storage.")
 	checkpointInterval        = flag.Duration("checkpoint_interval", 1500*time.Millisecond, "Interval between publishing checkpoints when the log has grown")
-	landmarkInterval          = flag.Duration("landmark_interval", 0, "Interval between publishing landmarks. If 0, defaults to CQRP recommended interval for max_cert_lifetime.")
 	batchMaxSize              = flag.Uint("batch_max_size", tessera.DefaultBatchMaxSize, "Maximum number of entries to process in a single sequencing batch.")
 	batchMaxAge               = flag.Duration("batch_max_age", tessera.DefaultBatchMaxAge, "Maximum age of entries in a single sequencing batch.")
 	awaiterPollInterval       = flag.Duration("awaiter_poll_interval", 100*time.Millisecond, "Interval between checkpoint polls by the publication awaiter.")
@@ -56,10 +56,11 @@ var (
 	clientHTTPMaxIdlePerHost = flag.Int("client_http_max_idle_per_host", 10, "Maximum number of idle HTTP connections per host for outgoing requests.")
 
 	// CA settings
-	caID            = flag.String("ca_id", "32473.106", "The CA ID as per draft-ietf-plants-merkle-tree-certs section 5.1 (e.g. 32473.106)")
-	logNumber       = flag.Uint64("log_number", 1, "The issuance log number (strictly positive)")
-	privKeyFile     = flag.String("private_key", "", "Location of private key file. If unset, uses the contents of the LOG_PRIVATE_KEY environment variable.")
-	maxCertLifetime = flag.Duration("max_cert_lifetime", log.DefaultMaxCertLifetime, "Maximum validity duration allowed for submitted certificate entries.")
+	landmarkInterval = flag.Duration("landmark_interval", 0, "Interval between publishing landmarks. If 0, defaults to CQRP recommended interval for max_cert_lifetime.")
+	caID             = flag.String("ca_id", "32473.106", "The CA ID as per draft-ietf-plants-merkle-tree-certs Section 5.1 (e.g. 32473.106)")
+	logNumber        = flag.Uint64("log_number", 1, "The issuance log number (strictly positive)")
+	privKeyFile      = flag.String("private_key", "", "Location of private key file. If unset, uses the contents of the LOG_PRIVATE_KEY environment variable.")
+	maxCertLifetime  = flag.Duration("max_cert_lifetime", log.DefaultMaxCertLifetime, "Maximum validity duration allowed for submitted certificate entries.")
 )
 
 func main() {
@@ -67,19 +68,18 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 	ctx := context.Background()
 
-	var policy tessera.WitnessGroup
+	var mPol policy.TLogPolicy
 	if *mirrorPolicyFile != "" {
 		b, err := os.ReadFile(*mirrorPolicyFile)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to read mirror policy", slog.Any("error", err), slog.String("path", *mirrorPolicyFile))
 			os.Exit(1)
 		}
-		policy, err = tessera.NewWitnessGroupFromPolicy(b)
-		if err != nil {
+		if err := mPol.Unmarshal(b); err != nil {
 			slog.ErrorContext(ctx, "Failed to parse mirror policy", slog.Any("error", err), slog.String("path", *mirrorPolicyFile))
 			os.Exit(1)
 		}
-		slog.InfoContext(ctx, "Mirroring enabled", slog.Any("policy", policy), slog.String("path", *mirrorPolicyFile))
+		slog.InfoContext(ctx, "Mirroring enabled", slog.Any("policy", mPol), slog.String("path", *mirrorPolicyFile))
 	}
 
 	origin, signer, err := log.CreateSignerAndOrigin(*caID, *logNumber, mustGetPrivateKey())
@@ -97,7 +97,7 @@ func main() {
 		Timeout: *clientHTTPTimeout,
 	}
 
-	appender, shutdown, reader := newAppenderFromFlags(ctx, origin, signer, policy, httpClient)
+	appender, shutdown, reader := newAppenderFromFlags(ctx, origin, signer, mPol, httpClient)
 	opts := log.NewOptions().
 		WithTesseraReader(reader).
 		WithAwaiterPollInterval(*awaiterPollInterval).
@@ -106,7 +106,7 @@ func main() {
 		WithMaxCertLifetime(*maxCertLifetime).
 		WithOrigin(origin).
 		WithSubtreeSigner(signer).
-		WithSubtreeWitnesses(policy).
+		WithSubtreeWitnessPolicy(mPol).
 		WithHTTPClient(httpClient)
 	mtcLog, err := log.NewMTCLog(ctx, appender, opts)
 	if err != nil {
@@ -167,7 +167,7 @@ func getKeyFile(path string) (string, error) {
 	return string(k), nil
 }
 
-func newAppenderFromFlags(ctx context.Context, origin string, signer note.SubtreeSigner, policy tessera.WitnessGroup, httpClient *http.Client) (*tessera.Appender, func(ctx context.Context) error, tessera.LogReader) {
+func newAppenderFromFlags(ctx context.Context, origin string, signer note.SubtreeSigner, mirrorPolicy policy.TLogPolicy, httpClient *http.Client) (*tessera.Appender, func(ctx context.Context) error, tessera.LogReader) {
 	if *storageDir == "" {
 		slog.ErrorContext(ctx, "flag --storage_dir is required")
 		os.Exit(1)
@@ -182,7 +182,17 @@ func newAppenderFromFlags(ctx context.Context, origin string, signer note.Subtre
 		WithGarbageCollectionInterval(*garbageCollectionInterval)
 
 	if *mirrorPolicyFile != "" {
-		opts = opts.WithMirrors(policy, nil)
+		// TODO: enforce these checks at the policy level and/or when publishing checkpoints.
+		//
+		// SPEC: [DRAFT] Chrome Quantum-resistant Root Program Policy, Version 0.3.0, Section 3.1.
+		// "Mirroring Cosigner Keys MUST be ML-DSA-44"
+		//
+		// SPEC: [DRAFT] Chrome Quantum-resistant Root Program Policy, Version 0.3.0, Section 2.4.5.
+		// "In order for landmarks to be served by Chrome's Landmark Service, all
+		// checkpoints MUST be served with a minimum of 2 cosignatures. One of these
+		// MUST be from the MTC CA Operator and one MUST be from a Mirroring Cosigner
+		// recognized by Chrome and not operated by the MTC CA Operator."
+		opts = opts.WithMirrorPolicy(mirrorPolicy, nil)
 	}
 
 	cfg := posix.Config{

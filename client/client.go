@@ -462,6 +462,9 @@ func newNodeCache(f TileFetcherFunc, logSize uint64) *nodeCache {
 func (n *nodeCache) GetNode(ctx context.Context, id compact.NodeID) ([]byte, error) {
 	return otel.Trace(ctx, "tessera.client.nodecache.GetNode", tracer, func(ctx context.Context, span trace.Span) ([]byte, error) {
 		span.SetAttributes(indexKey.Int64(otel.Clamp64(id.Index)), levelKey.Int64(int64(id.Level)))
+		if id.Index >= n.logSize>>id.Level {
+			return nil, fmt.Errorf("node %+v out of range for log of size %d", id, n.logSize)
+		}
 		// Fast-path: check to see we have this node in the cache and return it directly if so, otherwise we'll need to fetch it.
 		if e, ok := n.nodes.Get(id); ok {
 			return e, nil
@@ -483,7 +486,7 @@ func (n *nodeCache) GetNode(ctx context.Context, id compact.NodeID) ([]byte, err
 		p := layout.PartialTileSize(tileLevel, tileIndex, n.logSize)
 		nodes, err := n.fetchTileNodes(ctx, tileLevel, tileIndex, p)
 		if err != nil {
-			return nil, fmt.Errorf("failed to fetch and populate node cache: %v", err)
+			return nil, fmt.Errorf("failed to fetch and populate node cache: %w", err)
 		}
 		for k, v := range nodes {
 			n.nodes.Add(k, v)
@@ -520,7 +523,7 @@ func (n *nodeCache) fetchTileNodes(ctx context.Context, tileLevel, tileIndex uin
 	return otel.Trace(ctx, "tessera.client.nodecache.fetchTileNodes", tracer, func(ctx context.Context, span trace.Span) (map[compact.NodeID][]byte, error) {
 		tileRaw, err := n.getTile(ctx, tileLevel, tileIndex, p)
 		if err != nil {
-			return nil, fmt.Errorf("failed to fetch tile: %v", err)
+			return nil, fmt.Errorf("failed to fetch tile: %w", err)
 		}
 
 		var tile api.HashTile
@@ -528,7 +531,26 @@ func (n *nodeCache) fetchTileNodes(ctx context.Context, tileLevel, tileIndex uin
 			return nil, fmt.Errorf("failed to parse tile: %v", err)
 		}
 
-		ret := make(map[compact.NodeID][]byte, 256*2-1)
+		wantSize := layout.TileWidth
+		if p > 0 {
+			wantSize = int(p)
+		}
+		switch gotLen := len(tile.Nodes); gotLen {
+		case wantSize:
+			// We got the exact size tile we asked for, nothing extra to do.
+		case layout.TileWidth:
+			// Must have asked for a partial tile and got a full tile back.
+			// Trim the full tile down to the size of the requested partial tile.
+			tile.Nodes = tile.Nodes[:wantSize]
+		default:
+			additional := ""
+			if wantSize < layout.TileWidth {
+				additional = fmt.Sprintf(" or %d", layout.TileWidth)
+			}
+			return nil, fmt.Errorf("invalid tile: expected %d%s nodes, got %d", wantSize, additional, gotLen)
+		}
+
+		ret := make(map[compact.NodeID][]byte, wantSize*2-1)
 		// visitFn is a visitor callback which populates the nodes cache.
 		// Used by the calls to compact range below.
 		visitFn := func(intID compact.NodeID, h []byte) {
@@ -545,9 +567,6 @@ func (n *nodeCache) fetchTileNodes(ctx context.Context, tileLevel, tileIndex uin
 			if err := r.Append(l, visitFn); err != nil {
 				return nil, fmt.Errorf("failed to Append: %v", err)
 			}
-		}
-		if _, err := r.GetRootHash(visitFn); err != nil {
-			return nil, fmt.Errorf("failed to visit all nodes: %v", err)
 		}
 		return ret, nil
 	})

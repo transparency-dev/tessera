@@ -72,7 +72,10 @@ func (m *MirrorMux) SignSubtree(ctx context.Context, start, end uint64, subRoot 
 	// signature and asserting the origin is correct.
 	cpOrigin, _, _, err := parse.CheckpointUnsafe(cp)
 	if err != nil {
-		return nil, err
+		// SPEC: the request body MUST be followed by a checkpoint, so an unparseable one is a bad
+		// request. ErrInvalidCheckpoint wraps witness.ErrBadRequest, which the handler turns into a
+		// 400 rather than a 500.
+		return nil, fmt.Errorf("%w: %v", witness.ErrInvalidCheckpoint, err)
 	}
 
 	t, err := m.target(cpOrigin)

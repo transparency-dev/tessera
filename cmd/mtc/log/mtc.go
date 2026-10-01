@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/client"
@@ -35,6 +36,7 @@ import (
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/entry"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/landmark"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/mtcproof"
+	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/subtreewitness"
 	"github.com/transparency-dev/tessera/internal/parse"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
@@ -44,7 +46,7 @@ const (
 	// DefaultAwaiterPollInterval is the fallback polling period for the publication awaiter.
 	DefaultAwaiterPollInterval = 200 * time.Millisecond
 
-	// SPEC: CQRP Policy v0.2.0
+	// SPEC: CQRP v0.3.0 Section 2.6.2
 	// "MTC CA Operators MUST NOT issue Subscriber certificates with a
 	// validity period exceeding 47 days."
 	DefaultMaxCertLifetime = 47 * 24 * time.Hour
@@ -68,24 +70,20 @@ var (
 )
 
 // RecommendedLandmarkInterval returns the recommended landmark publication interval
-// for a given maximum certificate lifetime, based on CQRP Policy v0.2.0 values.
+// for a given maximum certificate lifetime, based on CQRP v0.3.0 Section 2.6.2 values:
 //
-// - Up to 15 days: 1 hour (CQRP recommendation for 7-day certs)
-// - Up to 30 days: 2 hours
-// - Up to 47 days: 4 hours (CQRP recommendation for 47-day certs)
+// - Up to 7 days: 1 hour (CQRP Active CA Cosigner #1 recommendation)
+// - Greater than 7 days (up to 47 days): 4 hours (CQRP Active CA Cosigners #2, #3, #4 recommendation)
 func RecommendedLandmarkInterval(maxCertLifetime time.Duration) time.Duration {
-	// SPEC: CQRP Policy v0.2.0
+	// SPEC: CQRP v0.3.0 Section 2.6.2
 	// "For CA Cosigners with a maximum permitted certificate validity of up to
 	// 7 days, MTC CA landmarks SHOULD be generated approximately every hour"
-	if maxCertLifetime <= 15*24*time.Hour {
+	if maxCertLifetime <= 7*24*time.Hour {
 		return 1 * time.Hour
 	}
-	if maxCertLifetime <= 30*24*time.Hour {
-		return 2 * time.Hour
-	}
-	// SPEC: CQRP Policy v0.2.0
-	// "For CA Cosigners with a maximum permitted certificate validity of up to
-	// 47 days, MTC CA landmarks SHOULD be generated approximately 4 hour"
+	// SPEC: CQRP v0.3.0 Section 2.6.2
+	// "For CA Cosigners with a maximum permitted certificate validity of up to 47
+	// days, MTC CA landmarks SHOULD be generated approximately every 4 hours"
 	return 4 * time.Hour
 }
 
@@ -99,15 +97,15 @@ const (
 
 // Options holds settings for configuring MTCLog instances.
 type Options struct {
-	reader           tessera.LogReader
-	pollPeriod       time.Duration
-	landmarkStorage  landmark.LandmarksStorage
-	landmarkInterval time.Duration
-	maxCertLifetime  time.Duration
-	origin           string
-	subtreeSigner    note.SubtreeSigner
-	subtreeWitnesses tessera.WitnessGroup
-	httpClient       *http.Client
+	reader               tessera.LogReader
+	pollPeriod           time.Duration
+	landmarkStorage      landmark.LandmarksStorage
+	landmarkInterval     time.Duration
+	maxCertLifetime      time.Duration
+	origin               string
+	subtreeSigner        note.SubtreeSigner
+	subtreeWitnessPolicy policy.TLogPolicy
+	httpClient           *http.Client
 }
 
 // NewOptions creates a new options struct for configuring MTCLog instances.
@@ -179,7 +177,7 @@ func (o *Options) WithLandmarkInterval(duration time.Duration) *Options {
 // WithMaxCertLifetime configures a maximum validity duration for incoming certificates.
 // duration MUST be strictly positive and smaller than or equal to 47 days.
 //
-// SPEC: CQRP Policy v0.2.0
+// SPEC: CQRP v0.3.0 Section 2.6.2
 // "MTC CA Operators MUST NOT issue Subscriber certificates with a
 // validity period exceeding 47 days."
 func (o *Options) WithMaxCertLifetime(duration time.Duration) *Options {
@@ -211,10 +209,10 @@ func (o *Options) WithHTTPClient(client *http.Client) *Options {
 	return o
 }
 
-// WithSubtreeWitnesses configures the witness group policy and endpoints used
+// WithSubtreeWitnessPolicy configures the witness policy and endpoints used
 // to obtain subtree cosignatures for MTC proofs.
-func (o *Options) WithSubtreeWitnesses(witnesses tessera.WitnessGroup) *Options {
-	o.subtreeWitnesses = witnesses
+func (o *Options) WithSubtreeWitnessPolicy(policy policy.TLogPolicy) *Options {
+	o.subtreeWitnessPolicy = policy
 	return o
 }
 
@@ -228,7 +226,7 @@ type MTCLog struct {
 	origin            string
 	subtreeSigner     note.SubtreeSigner
 	logCosignerID     []byte
-	subtreeWitnesses  tessera.WitnessGroup
+	subtreeGateway    *subtreewitness.Gateway
 }
 
 // AddTBSRsp contains enough information from the log
@@ -435,14 +433,23 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 		return nil, fmt.Errorf("checkOriginSignerName: %v", err)
 	}
 
+	var gateway *subtreewitness.Gateway
+	if len(opts.subtreeWitnessPolicy.Witnesses) > 0 {
+		gw, err := subtreewitness.New(opts.httpClient, opts.subtreeWitnessPolicy)
+		if err != nil {
+			return nil, fmt.Errorf("creating subtree witness gateway: %w", err)
+		}
+		gateway = gw
+	}
+
 	l := &MTCLog{
-		a:                a,
-		reader:           opts.reader,
-		maxCertLifetime:  opts.maxCertLifetime,
-		origin:           opts.origin,
-		subtreeSigner:    opts.subtreeSigner,
-		logCosignerID:    logCosignerID,
-		subtreeWitnesses: opts.subtreeWitnesses,
+		a:               a,
+		reader:          opts.reader,
+		maxCertLifetime: opts.maxCertLifetime,
+		origin:          opts.origin,
+		subtreeSigner:   opts.subtreeSigner,
+		logCosignerID:   logCosignerID,
+		subtreeGateway:  gateway,
 	}
 
 	cpReader, err := checkpoint.NewReader(ctx, opts.reader.ReadCheckpoint, l.getSubtreeSigs)
@@ -487,15 +494,31 @@ func (l *MTCLog) getSubtreeSigs(ctx context.Context, start, end uint64, rawCp []
 		return nil, fmt.Errorf("cannot compute subtree root for [%d, %d): %v", start, end, err)
 	}
 
-	selfSig, err := l.subtreeSigner.SignSubtree(0, l.origin, start, end, subRoot)
+	selfSig, err := l.subtreeSigner.SignSubtree(l.origin, start, end, subRoot)
 	if err != nil {
 		return nil, fmt.Errorf("cannot sign subtree [%d, %d): %v", start, end, err)
 	}
+	selfSubSig, err := mtcproof.NewSubtreeSignatureFromCosig(selfSig)
+	if err != nil {
+		return nil, fmt.Errorf("cannot format self subtree signature: %w", err)
+	}
 
-	// TODO: fetch signatures from mirrors.
-	return []mtcproof.SubtreeSignature{
-		{CosignerID: l.logCosignerID, Signature: selfSig},
-	}, nil
+	allSigs := []mtcproof.SubtreeSignature{selfSubSig}
+
+	if l.subtreeGateway != nil {
+		consProof, err := pb.SubtreeConsistencyProof(ctx, start, end)
+		if err != nil {
+			return nil, fmt.Errorf("cannot get subtree consistency proof for [%d, %d): %v", start, end, err)
+		}
+
+		witnessSigs, err := l.subtreeGateway.CosignSubtree(ctx, l.origin, start, end, subRoot, consProof, rawCp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch subtree cosignatures for [%d, %d): %v", start, end, err)
+		}
+		allSigs = append(allSigs, witnessSigs...)
+	}
+
+	return allSigs, nil
 }
 
 // AddTBS adds a TBSCertificateLogEntry to the log.
@@ -539,6 +562,15 @@ func (l *MTCLog) AddTBS(ctx context.Context, tbs TBSCertificateLogEntry) (*AddTB
 	subtreeSigs, err := getSigs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get subtree signatures: %v", err)
+	}
+	if numSigs := len(subtreeSigs); numSigs < 2 {
+		// TODO: this is not strictly enforced for now, for development purposes. Consider
+		// enforcing it.
+		// SPEC: [DRAFT] Chrome Quantum-resistant Root Program Policy, Version 0.3.0, Section 2.4.5.
+		// "Standalone certificates MUST have at least 2 cosignatures. One of these
+		// MUST be from the MTC CA Operator, and one MUST be from a Mirroring
+		// Cosigner recognized by Chrome and not operated by the MTC CA Operator."
+		slog.WarnContext(ctx, "Collected less than 2 subtree signatures", slog.Int("num_sigs", numSigs))
 	}
 
 	extBytes, err := entry.ExtractExtensions(eb)
@@ -662,7 +694,7 @@ func CreateSignerAndOrigin(caID string, logNumber uint64, privKey string) (origi
 	return origin, s, nil
 }
 
-// checkOriginSigner verifies that an origin and signer match with each other.
+// checkOriginSignerName verifies that an origin and signer match with each other.
 //
 // SPEC: draft-ietf-plants-merkle-tree-certs section 5.2.
 // "Each issuance log has a log ID, which is a trust anchor ID constructed by concatenating the following OID components:

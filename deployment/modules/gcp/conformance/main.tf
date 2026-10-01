@@ -49,11 +49,23 @@ resource "google_project_service" "cloudrun_api" {
   service            = "run.googleapis.com"
   disable_on_destroy = false
 }
-
 resource "google_project_service" "compute_engine" {
   service            = "compute.googleapis.com"
   disable_on_destroy = false
 }
+resource "google_project_service" "monitoring" {
+  service            = "monitoring.googleapis.com"
+  disable_on_destroy = false
+}
+resource "google_project_service" "logging" {
+  service            = "logging.googleapis.com"
+  disable_on_destroy = false
+}
+resource "google_project_service" "telemetry" {
+  service            = "telemetry.googleapis.com"
+  disable_on_destroy = false
+}
+
 
 locals {
   spanner_db_full = "projects/${var.project_id}/instances/${module.gcs.log_spanner_instance.name}/databases/${module.gcs.log_spanner_db.name}"

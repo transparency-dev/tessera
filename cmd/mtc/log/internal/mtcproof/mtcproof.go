@@ -19,6 +19,8 @@ import (
 	"cmp"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"slices"
 	"strings"
@@ -38,12 +40,60 @@ const (
 type hashValue [sha256.Size]byte
 
 // SubtreeSignature represents a cosigner's signature on a subtree root
-// as per draft-ietf-plants-merkle-tree-certs section 6.2:
+// as per draft-ietf-plants-merkle-tree-certs section 6.2.
 type SubtreeSignature struct {
 	// CosignerID is the binary representation of the trust anchor ID (1..255 bytes).
 	CosignerID []byte
-	// Signature is the raw signature bytes over the subtree.
+	// Signature is the raw signature bytes over the subtree (with no timestamp).
 	Signature []byte
+}
+
+// NewSubtreeSignatureFromCosig creates a SubtreeSignature from a C2SP
+// timestamped_signature by stripping the timestamp prefix.
+//
+// SPEC: https://c2sp.org/tlog-cosignature
+//
+//	"struct {
+//	   u64 timestamp;
+//	   select (signature_algorithm) {
+//	       case ed25519: opaque ed25519_signature[64];
+//	       case ml-dsa-44: opaque ml_dsa_44_signature[2420];
+//	   } signature;
+//	 } timestamped_signature;"
+func NewSubtreeSignatureFromCosig(cosig []byte) (SubtreeSignature, error) {
+	l, ok := strings.CutPrefix(string(cosig), "— ")
+	if !ok {
+		return SubtreeSignature{}, fmt.Errorf("invalid cosignature format")
+	}
+	l, ok = strings.CutSuffix(l, "\n")
+	if !ok {
+		return SubtreeSignature{}, fmt.Errorf("invalid cosignature format")
+	}
+	name, sigB64, ok := strings.Cut(l, " ")
+	if !ok {
+		return SubtreeSignature{}, fmt.Errorf("invalid cosignature format")
+	}
+	cID, err := ParseCosignerID(name)
+	if err != nil {
+		return SubtreeSignature{}, fmt.Errorf("invalid cosigner ID: %v", err)
+	}
+	sigRaw, err := base64.StdEncoding.DecodeString(sigB64)
+	if err != nil {
+		return SubtreeSignature{}, fmt.Errorf("invalid cosignature base64: %v", err)
+	}
+	// Chomp 4 bytes of KeyHash
+	sigRaw = sigRaw[4:]
+	// Assert that timestamp is zero, otherwise client will never be able to verify the signature.
+	if t := binary.BigEndian.Uint64(sigRaw[:8]); t != 0 {
+		return SubtreeSignature{}, fmt.Errorf("invalid cosignature: timestamp (%d) is not zero", t)
+	}
+	// Remove timestamp
+	sigRaw = sigRaw[8:]
+
+	return SubtreeSignature{
+		CosignerID: cID,
+		Signature:  sigRaw,
+	}, nil
 }
 
 // mtcProof represents an MTC inclusion proof as per
@@ -178,18 +228,18 @@ func new(extensions []byte, start, end uint64, inclusionProof [][]byte, signatur
 //
 // opaque HashValue[HASH_SIZE];
 //
-// struct {
-//     TrustAnchorID cosigner_id;
-//     opaque signature<0..2^16-1>;
-// } SubtreeSignature;
+//	struct {
+//	    TrustAnchorID cosigner_id;
+//	    opaque signature<0..2^16-1>;
+//	} SubtreeSignature;
 //
-// struct {
-//     MTCLogEntryExtension extensions<0..2^16-1>;
-//     uint48 start;
-//     uint48 end;
-//     HashValue inclusion_proof<0..2^16-1>;
-//     SubtreeSignature signatures<0..2^16-1>;
-// } MTCProof;
+//	struct {
+//	    MTCLogEntryExtension extensions<0..2^16-1>;
+//	    uint48 start;
+//	    uint48 end;
+//	    HashValue inclusion_proof<0..2^16-1>;
+//	    SubtreeSignature signatures<0..2^24-1>;
+//	} MTCProof;
 func (p *mtcProof) marshal() ([]byte, error) {
 	var b cryptobyte.Builder
 
@@ -211,8 +261,8 @@ func (p *mtcProof) marshal() ([]byte, error) {
 		}
 	})
 
-	// SubtreeSignature signatures<0..2^16-1>
-	b.AddUint16LengthPrefixed(func(child *cryptobyte.Builder) {
+	// SubtreeSignature signatures<0..2^24-1>
+	b.AddUint24LengthPrefixed(func(child *cryptobyte.Builder) {
 		for _, sig := range p.signatures {
 			// TrustAnchorID cosigner_id<1..2^8-1>
 			child.AddUint8LengthPrefixed(func(c *cryptobyte.Builder) {

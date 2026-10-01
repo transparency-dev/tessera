@@ -183,9 +183,9 @@ func createTemp(prefix string, d []byte) (name string, err error) {
 	}()
 
 	if n, writeErr := f.Write(d); writeErr != nil {
-		return "", fmt.Errorf("failed to write to temporary file %q: %w", name, writeErr)
+		return name, fmt.Errorf("failed to write to temporary file %q: %w", name, writeErr)
 	} else if l := len(d); n < l {
-		return "", fmt.Errorf("short write on %q, %d < %d", name, n, l)
+		return name, fmt.Errorf("short write on %q, %d < %d", name, n, l)
 	}
 
 	return name, nil

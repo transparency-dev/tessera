@@ -19,17 +19,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/mtcproof"
 	"github.com/transparency-dev/tessera/internal/parse"
 )
 
-// maxSubtrees is the maximum number of recent subtrees kept in memory.
-// Retaining 16 subtrees covers 8+ checkpoint publication cycles, which is
-// enough to cover ongoing AddTBS requests.
-const maxSubtrees = 16
+const (
+	// initPollPeriod is the interval between checkpoint polling attempts when waiting
+	// for an initial checkpoint to become available.
+	initPollPeriod = 1 * time.Second
+
+	// maxSubtrees is the maximum number of recent subtrees kept in memory.
+	// Retaining 16 subtrees covers 8+ checkpoint publication cycles, which is
+	// enough to cover ongoing AddTBS requests.
+	maxSubtrees = 16
+)
 
 // GetSubtreeSigsFunc is called to produce signatures for a subtree [start, end).
 type GetSubtreeSigsFunc func(ctx context.Context, start, end uint64, rawCp []byte) ([]mtcproof.SubtreeSignature, error)
@@ -54,7 +63,8 @@ type Reader struct {
 	subtrees []subtree
 }
 
-// NewReader creates a new Reader instance wrapping readCheckpoint and reads the initial checkpoint from storage.
+// NewReader creates a new Reader instance wrapping readCheckpoint and reads the initial checkpoint from storage,
+// waiting until a checkpoint is available if needed.
 func NewReader(ctx context.Context, readCheckpoint func(context.Context) ([]byte, error), getSubtreeSigs GetSubtreeSigsFunc) (*Reader, error) {
 	if readCheckpoint == nil {
 		return nil, errors.New("readCheckpoint must not be nil")
@@ -66,11 +76,28 @@ func NewReader(ctx context.Context, readCheckpoint func(context.Context) ([]byte
 		readCheckpoint: readCheckpoint,
 		getSubtreeSigs: getSubtreeSigs,
 	}
+
+	t := time.NewTicker(initPollPeriod)
+	defer t.Stop()
+
 	// Populate subtrees with the two subtrees covering [0, checkpoint_size).
-	if _, err := r.Checkpoint(ctx); err != nil {
-		return nil, fmt.Errorf("initial checkpoint read: %v", err)
+	// If the checkpoint does not exist yet, wait until one becomes available or ctx is done.
+	for {
+		_, err := r.Checkpoint(ctx)
+		if err == nil {
+			return r, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("initial checkpoint read: %w", err)
+		}
+		slog.WarnContext(ctx, "Waiting for initial checkpoint to become available...")
+
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("initial checkpoint read: %w", ctx.Err())
+		case <-t.C:
+		}
 	}
-	return r, nil
 }
 
 // Checkpoint reads the latest checkpoint from storage and stores corresponding subtrees.

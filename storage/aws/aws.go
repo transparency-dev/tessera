@@ -614,6 +614,7 @@ func (m *MigrationStorage) IntegratedSize(ctx context.Context) (uint64, error) {
 	return sz, err
 }
 
+// fetchLeafHashes returns the leaf hashes for the entries in the range [from, to).
 func (m *MigrationStorage) fetchLeafHashes(ctx context.Context, from, to, sourceSize uint64) ([][]byte, error) {
 	// TODO(al): Make this configurable.
 	const maxBundles = 300
@@ -621,7 +622,7 @@ func (m *MigrationStorage) fetchLeafHashes(ctx context.Context, from, to, source
 	toBeAdded := sync.Map{}
 	eg := errgroup.Group{}
 	n := 0
-	for ri := range layout.Range(from, to, sourceSize) {
+	for ri := range layout.Range(from, to-from, sourceSize) {
 		eg.Go(func() error {
 			b, err := m.logStore.getEntryBundle(ctx, ri.Index, ri.Partial)
 			if err != nil {
@@ -647,7 +648,7 @@ func (m *MigrationStorage) fetchLeafHashes(ctx context.Context, from, to, source
 		return nil, err
 	}
 
-	lh := make([][]byte, 0, maxBundles)
+	lh := make([][]byte, 0, maxBundles*layout.EntryBundleWidth)
 	for i := from / layout.EntryBundleWidth; ; i++ {
 		v, ok := toBeAdded.LoadAndDelete(i)
 		if !ok {
@@ -1215,6 +1216,9 @@ func (s *mySQLSequencer) consumeEntries(ctx context.Context, limit uint64, f con
 		entries = append(entries, b...)
 		seqsConsumed = append(seqsConsumed, seq)
 		orderCheck += uint64(len(b))
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("failed to iterate over Seq rows: %v", err)
 	}
 	if len(seqsConsumed) == 0 && !forceUpdate {
 		slog.DebugContext(ctx, "Found no rows to sequence")

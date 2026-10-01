@@ -32,13 +32,16 @@ import (
 // queue reaches a defined threshold, the queue will call a provided FlushFunc with
 // a slice containing all queued entries in the same order as they were added.
 type Queue struct {
-	inputs chan queueItem
+	queueCtx context.Context
+	inputs   chan queueItem
 }
 
 // FlushFunc is the signature of a function which will receive the slice of queued entries.
 // Normally, this function would be provided by storage implementations. It's important to note
 // that the implementation MUST call each entry's MarshalBundleData function before attempting
 // to integrate it into the tree.
+// Implementations of FlushFunc MUST also ensure that they correctly handle the case where the
+// context has been cancelled.
 // See the comment on Entry.MarshalBundleData for further info.
 type FlushFunc func(ctx context.Context, entries []*tessera.Entry) error
 
@@ -49,7 +52,9 @@ type FlushFunc func(ctx context.Context, entries []*tessera.Entry) error
 // for maxAge, or the size of the queue reaches maxSize.
 func NewQueue(ctx context.Context, maxAge time.Duration, maxSize uint, f FlushFunc) *Queue {
 	q := &Queue{
-		inputs: make(chan queueItem, maxSize),
+		queueCtx: ctx,
+		// inputs is unbuffered so that Add() returns immediately when the queue is shutting down.
+		inputs: make(chan queueItem),
 	}
 	batches := make(chan []queueItem, 1)
 
@@ -58,12 +63,19 @@ func NewQueue(ctx context.Context, maxAge time.Duration, maxSize uint, f FlushFu
 	go func() {
 		defer close(batches)
 
-		var items []queueItem
+		items := make([]queueItem, 0, maxSize)
 
 		// Initialise a timer with an arbitrarily large value, and immediately
 		// call Stop() to avoid a spurious trigger on the first iteration.
 		timer := time.NewTimer(time.Hour)
 		timer.Stop()
+
+		cancelItems := func() {
+			for _, i := range items {
+				i.set(tessera.Index{}, ctx.Err())
+			}
+			items = nil
+		}
 
 		flush := func() {
 			if len(items) == 0 {
@@ -81,9 +93,11 @@ func NewQueue(ctx context.Context, maxAge time.Duration, maxSize uint, f FlushFu
 			select {
 			case batches <- items:
 			case <-ctx.Done():
+				// Drain any remaining items in the batch without sending them to the flush worker.
+				cancelItems()
 				return
 			}
-			items = nil
+			items = make([]queueItem, 0, maxSize)
 		}
 
 		// Process the incoming items into batches, flushing the batch when either
@@ -91,6 +105,8 @@ func NewQueue(ctx context.Context, maxAge time.Duration, maxSize uint, f FlushFu
 		for {
 			select {
 			case <-ctx.Done():
+				// q.inputs is unbuffered, so no need to drain here.
+				cancelItems()
 				return
 			case item := <-q.inputs:
 				items = append(items, item)
@@ -108,16 +124,8 @@ func NewQueue(ctx context.Context, maxAge time.Duration, maxSize uint, f FlushFu
 
 	// Spin off a worker thread to process the flushed batches.
 	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case b, ok := <-batches:
-				if !ok {
-					return
-				}
-				q.doFlush(ctx, f, b)
-			}
+		for b := range batches {
+			q.doFlush(ctx, f, b)
 		}
 	}()
 
@@ -132,6 +140,10 @@ func (q *Queue) Add(ctx context.Context, e *tessera.Entry) tessera.IndexFuture {
 	case <-ctx.Done():
 		return func() (tessera.Index, error) {
 			return tessera.Index{}, ctx.Err()
+		}
+	case <-q.queueCtx.Done():
+		return func() (tessera.Index, error) {
+			return tessera.Index{}, q.queueCtx.Err()
 		}
 	}
 	return qi.f

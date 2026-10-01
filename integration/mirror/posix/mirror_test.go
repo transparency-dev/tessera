@@ -31,6 +31,7 @@ import (
 
 	"github.com/transparency-dev/formats/log"
 	fnote "github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
@@ -101,16 +102,16 @@ func TestPosixMirrorIntegration(t *testing.T) {
 	t.Cleanup(mirrorServer.Close)
 
 	// Create mirror policy for the log pointing to the mirror server.
-	mirrorPolicyStr := fmt.Sprintf(`
+	mirrorPolicyRaw := fmt.Appendf(nil, `
 		witness mirror1 %s %s
 		group g1 all mirror1
 		quorum g1
 		`,
 		mirrorPubKey, mirrorServer.URL)
 
-	mirrorPolicy, err := tessera.NewWitnessGroupFromPolicy([]byte(mirrorPolicyStr))
-	if err != nil {
-		t.Fatalf("NewWitnessGroupFromPolicy: %v", err)
+	var mirrorPolicy policy.TLogPolicy
+	if err := mirrorPolicy.Unmarshal(mirrorPolicyRaw); err != nil {
+		t.Fatalf("policy.Unmarshal: %v", err)
 	}
 
 	logDriver := mustCreateDriver(t, logStorageDir)
@@ -120,7 +121,7 @@ func TestPosixMirrorIntegration(t *testing.T) {
 		WithCheckpointRepublishInterval(time.Minute).
 		WithBatching(256, time.Second).
 		WithAntispam(tessera.DefaultAntispamInMemorySize, nil).
-		WithMirrors(mirrorPolicy, nil)
+		WithMirrorPolicy(mirrorPolicy, nil)
 
 	appender, shutdownAppender, lr, err := tessera.NewAppender(ctx, logDriver, logOpts)
 	if err != nil {

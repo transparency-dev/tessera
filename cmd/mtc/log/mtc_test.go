@@ -18,14 +18,22 @@ import (
 	"bytes"
 	"context"
 	stdasn1 "encoding/asn1"
+	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera"
@@ -493,22 +501,23 @@ func TestMTCOptionsValid(t *testing.T) {
 
 func TestRecommendedLandmarkInterval(t *testing.T) {
 	tests := []struct {
+		name     string
 		lifetime time.Duration
 		want     time.Duration
 	}{
-		{lifetime: 1 * time.Hour, want: 1 * time.Hour},
-		{lifetime: 7 * 24 * time.Hour, want: 1 * time.Hour},
-		{lifetime: 15 * 24 * time.Hour, want: 1 * time.Hour},
-		{lifetime: 16 * 24 * time.Hour, want: 2 * time.Hour},
-		{lifetime: 25 * 24 * time.Hour, want: 2 * time.Hour},
-		{lifetime: 30 * 24 * time.Hour, want: 2 * time.Hour},
-		{lifetime: 31 * 24 * time.Hour, want: 4 * time.Hour},
-		{lifetime: 47 * 24 * time.Hour, want: 4 * time.Hour},
+		{name: "1 hour", lifetime: 1 * time.Hour, want: 1 * time.Hour},
+		{name: "7 days", lifetime: 7 * 24 * time.Hour, want: 1 * time.Hour},
+		{name: "7 days plus 1 minute", lifetime: 7*24*time.Hour + time.Minute, want: 4 * time.Hour},
+		{name: "15 days", lifetime: 15 * 24 * time.Hour, want: 4 * time.Hour},
+		{name: "30 days", lifetime: 30 * 24 * time.Hour, want: 4 * time.Hour},
+		{name: "47 days", lifetime: 47 * 24 * time.Hour, want: 4 * time.Hour},
 	}
 	for _, tc := range tests {
-		if got := RecommendedLandmarkInterval(tc.lifetime); got != tc.want {
-			t.Errorf("RecommendedLandmarkInterval(%v) = %v, want %v", tc.lifetime, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RecommendedLandmarkInterval(tc.lifetime); got != tc.want {
+				t.Errorf("RecommendedLandmarkInterval(%v) = %v, want %v", tc.lifetime, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -667,11 +676,33 @@ func TestNewMTCLog(t *testing.T) {
 		t.Fatalf("NewMLDSASigner failed: %v", err)
 	}
 
-	tests := []struct {
-		name     string
-		appender *tessera.Appender
-		opts     *Options
-		wantErr  bool
+	_, vkey1, err := note.GenerateMLDSAKey("oid/1.3.6.1.4.1.32473.106")
+	if err != nil {
+		t.Fatalf("GenerateMLDSAKey: %v", err)
+	}
+	ver1, err := note.NewMLDSAVerifier(vkey1)
+	if err != nil {
+		t.Fatalf("NewMLDSAVerifier: %v", err)
+	}
+	witURL, _ := url.Parse("http://wit1.example.com")
+	witPolicy := policy.TLogPolicy{
+		Witnesses: []policy.Witness{
+			{
+				Name:     ver1.Name(),
+				URL:      witURL,
+				VKey:     vkey1,
+				Verifier: ver1,
+			},
+		},
+		Quorum: ver1.Name(),
+	}
+
+	for _, tc := range []struct {
+		name        string
+		appender    *tessera.Appender
+		opts        *Options
+		wantGateway bool
+		wantErr     bool
 	}{
 		{
 			name:     "valid default options (47-day certs)",
@@ -700,6 +731,20 @@ func TestNewMTCLog(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:        "valid with single witness policy",
+			appender:    &tessera.Appender{},
+			opts:        newDummyOptions().WithSubtreeWitnessPolicy(witPolicy),
+			wantGateway: true,
+			wantErr:     false,
+		},
+		{
+			name:        "valid with empty witness policy",
+			appender:    &tessera.Appender{},
+			opts:        newDummyOptions().WithSubtreeWitnessPolicy(policy.TLogPolicy{}),
+			wantGateway: false,
+			wantErr:     false,
+		},
+		{
 			name:     "nil appender",
 			appender: nil,
 			opts:     newDummyOptions(),
@@ -723,16 +768,19 @@ func TestNewMTCLog(t *testing.T) {
 			opts:     newDummyOptions().WithOrigin("oid/1.3.6.1.4.1.99999.0.1"),
 			wantErr:  true,
 		},
-	}
-
-	for _, tc := range tests {
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l, err := NewMTCLog(ctx, tc.appender, tc.opts)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("NewMTCLog() error = %v, wantErr %v", err, tc.wantErr)
 			}
-			if !tc.wantErr && l == nil {
-				t.Fatal("NewMTCLog() returned nil instance on success")
+			if !tc.wantErr {
+				if l == nil {
+					t.Fatal("NewMTCLog() returned nil instance on success")
+				}
+				if got := l.subtreeGateway != nil; got != tc.wantGateway {
+					t.Errorf("has subtreeGateway = %v, want %v", got, tc.wantGateway)
+				}
 			}
 		})
 	}
@@ -792,7 +840,7 @@ func unmarshalMTCProof(data []byte) (*parsedMTCProof, error) {
 	}
 
 	var sigs cryptobyte.String
-	if !s.ReadUint16LengthPrefixed(&sigs) {
+	if !s.ReadUint24LengthPrefixed(&sigs) {
 		return nil, errors.New("malformed signatures")
 	}
 	for !sigs.Empty() {
@@ -816,7 +864,73 @@ func unmarshalMTCProof(data []byte) (*parsedMTCProof, error) {
 	return &p, nil
 }
 
-func setupTestMTCLog(t *testing.T) *MTCLog {
+func setupTestWitness(t *testing.T) (policy.TLogPolicy, note.SubtreeVerifier) {
+	t.Helper()
+	sKey, vKey, err := note.GenerateMLDSAKey("oid/1.3.6.1.4.1.32473.106.1")
+	if err != nil {
+		t.Fatalf("GenerateMLDSAKey: %v", err)
+	}
+	signer, _ := note.NewMLDSASigner(sKey)
+	verifier, _ := note.NewMLDSAVerifier(vKey)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch r.URL.Path {
+		case "/add-checkpoint":
+			var unverified *snote.UnverifiedNoteError
+			if _, err := snote.Open(body, snote.VerifierList()); !errors.As(err, &unverified) {
+				http.Error(w, fmt.Sprintf("invalid checkpoint note: %v", err), http.StatusBadRequest)
+				return
+			}
+			_, cpText, _ := strings.Cut(unverified.Note.Text, "\n\n")
+			signed, err := snote.Sign(&snote.Note{Text: cpText}, signer)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("sign checkpoint: %v", err), http.StatusInternalServerError)
+				return
+			}
+			if _, err := w.Write(signed[len(cpText)+1:]); err != nil {
+				t.Errorf("write /add-checkpoint response: %v", err)
+			}
+		case "/sign-subtree":
+			lines := strings.Split(string(body), "\n")
+			var start, end uint64
+			if _, err := fmt.Sscanf(lines[0], "subtree %d %d", &start, &end); err != nil {
+				http.Error(w, fmt.Sprintf("scan subtree range: %v", err), http.StatusBadRequest)
+				return
+			}
+			subRoot, err := base64.StdEncoding.DecodeString(lines[1])
+			if err != nil {
+				http.Error(w, fmt.Sprintf("decode subRoot: %v", err), http.StatusBadRequest)
+				return
+			}
+			rawSig, err := signer.SignSubtree(testOrigin, start, end, subRoot)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("sign subtree: %v", err), http.StatusInternalServerError)
+				return
+			}
+			if _, err := w.Write(rawSig); err != nil {
+				t.Errorf("write /sign-subtree response: %v", err)
+			}
+		}
+	}))
+	t.Cleanup(ts.Close)
+
+	witURL, _ := url.Parse(ts.URL)
+	pol := policy.TLogPolicy{
+		Witnesses: []policy.Witness{
+			{
+				Name:     verifier.Name(),
+				URL:      witURL,
+				VKey:     vKey,
+				Verifier: verifier,
+			},
+		},
+		Quorum: verifier.Name(),
+	}
+	return pol, verifier
+}
+
+func setupTestMTCLog(t *testing.T) (*MTCLog, note.SubtreeVerifier) {
 	t.Helper()
 	ctx := t.Context()
 	storageDir := t.TempDir()
@@ -832,10 +946,13 @@ func setupTestMTCLog(t *testing.T) *MTCLog {
 		t.Fatalf("Failed to create test signer: %v", err)
 	}
 
+	witPolicy, witVerifier := setupTestWitness(t)
+
 	opts := tessera.NewAppendOptions().
 		WithCheckpointSigner(signer).
 		WithBatching(4, 500*time.Millisecond).
-		WithCheckpointInterval(500*time.Millisecond)
+		WithCheckpointInterval(500*time.Millisecond).
+		WithWitnessPolicy(witPolicy, &tessera.WitnessOptions{Timeout: time.Second})
 	appender, _, reader, err := tessera.NewAppender(ctx, driver, opts)
 	if err != nil {
 		t.Fatalf("Failed to initialize Tessera appender: %v", err)
@@ -847,16 +964,17 @@ func setupTestMTCLog(t *testing.T) *MTCLog {
 		WithLandmarksStorage(dummyLandmarksStorage{}).
 		WithMaxCertLifetime(7*24*time.Hour).
 		WithOrigin(testOrigin).
-		WithSubtreeSigner(mustTestSigner()))
+		WithSubtreeSigner(mustTestSigner()).
+		WithSubtreeWitnessPolicy(witPolicy))
 	if err != nil {
 		t.Fatalf("Failed to initialize MTC log: %v", err)
 	}
-	return mtcLog
+	return mtcLog, witVerifier
 }
 
 func TestMTCLog_AddTBS(t *testing.T) {
 	ctx := t.Context()
-	mtcLog := setupTestMTCLog(t)
+	mtcLog, witVerifier := setupTestMTCLog(t)
 	now := time.Now().Truncate(time.Second)
 
 	makeEntry := func(id int) TBSCertificateLogEntry {
@@ -926,11 +1044,6 @@ func TestMTCLog_AddTBS(t *testing.T) {
 		{name: "entry 4 in single-entry subtree [4, 5)", entryIdx: 4, wantStart: 4, wantEnd: 5, wantProofLen: 0},
 	}
 
-	wantCosignerID, err := mtcproof.ParseCosignerID(mtcLog.subtreeSigner.Name())
-	if err != nil {
-		t.Fatalf("ParseCosignerID: %v", err)
-	}
-
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rsp := responses[tc.entryIdx]
@@ -972,14 +1085,30 @@ func TestMTCLog_AddTBS(t *testing.T) {
 			if len(subRoot) != 32 {
 				t.Fatalf("subRoot length = %d, want 32", len(subRoot))
 			}
-			if len(proofData.Signatures) != 1 {
-				t.Fatalf("got %d signatures, want 1", len(proofData.Signatures))
+			if len(proofData.Signatures) != 2 {
+				t.Fatalf("got %d signatures, want 2", len(proofData.Signatures))
 			}
-			if !mtcLog.subtreeSigner.Verifier().VerifySubtree(0, mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, proofData.Signatures[0].Signature) {
-				t.Errorf("VerifySubtree failed for entry%d signature", tc.entryIdx)
+			// SPEC: draft-ietf-plants-merkle-tree-certs section 6.2.
+			// SubtreeSignature.Signature contains the raw signature.
+			// SPEC: https://c2sp.org/tlog-cosignature
+			// note.SubtreeVerifier expects a C2SP timestamped_signature prefixed with the 8-byte u64 timestamp.
+			reconstructCosig := func(v note.SubtreeVerifier, rawSig []byte) []byte {
+				s := make([]byte, 4+8+len(rawSig))
+				binary.BigEndian.PutUint32(s[0:], v.KeyHash())
+				binary.BigEndian.PutUint64(s[4:], 0)
+				copy(s[12:], rawSig)
+				r := fmt.Appendf(nil, "— %s %s\n", v.Name(), base64.StdEncoding.EncodeToString(s))
+				t.Logf("reconstructed sig: %s", r)
+				return r
 			}
-			if !bytes.Equal(proofData.Signatures[0].CosignerID, wantCosignerID) {
-				t.Errorf("CosignerID = %x, want %x", proofData.Signatures[0].CosignerID, wantCosignerID)
+			if !mtcLog.subtreeSigner.Verifier().VerifySubtree(mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, reconstructCosig(mtcLog.subtreeSigner.Verifier(), proofData.Signatures[0].Signature)) {
+				t.Errorf("VerifySubtree failed for log signature on entry%d", tc.entryIdx)
+			}
+			if !bytes.Equal(proofData.Signatures[0].CosignerID, mtcLog.logCosignerID) {
+				t.Errorf("CosignerID = %x, want %x", proofData.Signatures[0].CosignerID, mtcLog.logCosignerID)
+			}
+			if !witVerifier.VerifySubtree(mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, reconstructCosig(witVerifier, proofData.Signatures[1].Signature)) {
+				t.Errorf("VerifySubtree failed for witness signature on entry%d", tc.entryIdx)
 			}
 		})
 	}

@@ -26,7 +26,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -1218,19 +1217,20 @@ func (m *MirrorWriter) initialise(ctx context.Context) error {
 
 // marshalTlogEntryBundle returns a tlog-tiles compatible serialization of the provided entry bundle.
 func marshalTlogEntryBundle(b *api.EntryBundle) ([]byte, error) {
-	// Prealloc the max size we could possibly write out (about 16MB for a full bundle of max size entries).
-	// If this causes problems we may want to default this to some lower
-	// "reasonable" intermediate size, but not going to worry about that for now.
-	data := make([]byte, 0, len(b.Entries)*(2+1<<16))
+	total := 0
 	for i, e := range b.Entries {
 		l := len(e)
 		if l >= 1<<16 {
 			return nil, fmt.Errorf("entry #%d has length %d >= 1<<16", i, l)
 		}
-		data = binary.BigEndian.AppendUint16(data, uint16(l))
+		total += 2 + l
+	}
+	data := make([]byte, 0, total)
+	for _, e := range b.Entries {
+		data = binary.BigEndian.AppendUint16(data, uint16(len(e)))
 		data = append(data, e...)
 	}
-	return slices.Clip(data), nil
+	return data, nil
 }
 
 // IntegrateBundles integrates a sequence of entry bundles into the tree, starting at the provided bundle index bundleIdx.
@@ -1388,7 +1388,10 @@ func (m *MirrorWriter) UpdateCheckpoint(ctx context.Context, fn func(old []byte)
 // If an implied partial resource is not already present, this function will attempt to create
 // it from a strictly larger resource whose presence is implied by treeSize.
 func (m *MirrorWriter) ensureGeometry(ctx context.Context, cpSize, treeSize uint64) error {
-	if cpSize == 0 {
+	// If cpSize is zero then no tree exists.
+	// If cpSize == treeSize the resources are guaranteed present by integration.
+	// In both cases there's nothing to do.
+	if cpSize == 0 || cpSize == treeSize {
 		return nil
 	}
 	if cpSize > treeSize {
@@ -1399,6 +1402,12 @@ func (m *MirrorWriter) ensureGeometry(ctx context.Context, cpSize, treeSize uint
 	for l := uint64(0); l <= uint64(ml); l, idx = l+1, idx>>layout.TileHeight {
 		treeP := layout.PartialTileSize(l, idx, treeSize)
 		cpP := layout.PartialTileSize(l, idx, cpSize)
+
+		if cpP == treeP {
+			// Nothing to be done at this level.
+			continue
+		}
+
 		if l == 0 {
 			if err := m.ensurePartialBundle(ctx, idx, cpP, treeP); err != nil {
 				return err
@@ -1425,7 +1434,7 @@ func maxLevel(sz uint64) int {
 // If the implied partial entry bundle is not already present, this function will attempt to create
 // it from the entry bundle implied by treeSize.
 func (m *MirrorWriter) ensurePartialBundle(ctx context.Context, idx uint64, cpP, treeP uint8) error {
-	if cpP == treeP {
+	if cpP == 0 {
 		return nil
 	}
 
@@ -1451,12 +1460,7 @@ func (m *MirrorWriter) ensurePartialBundle(ctx context.Context, idx uint64, cpP,
 		return fmt.Errorf("failed to unmarshal entry bundle @%d.%d: %v", idx, treeP, err)
 	}
 
-	// Then trim it down to the size implied by the checkpoint, and write it out.
-	// Handle cpP == 0 where a full-bundle is implied - we should never actually hit this case since cpP must
-	// equal treeP in this case, but it doesn't hurt to be defensive.
-	if cpP > 0 {
-		eb.Entries = eb.Entries[:cpP]
-	}
+	eb.Entries = eb.Entries[:cpP]
 	d, err = marshalTlogEntryBundle(eb)
 	if err != nil {
 		return fmt.Errorf("failed to marshal entry bundle @%d.%d: %v", idx, cpP, err)
@@ -1473,7 +1477,7 @@ func (m *MirrorWriter) ensurePartialBundle(ctx context.Context, idx uint64, cpP,
 // If the implied partial tile is not already present, this function will attempt to create
 // it from the tile implied by treeSize.
 func (m *MirrorWriter) ensurePartialTile(ctx context.Context, l uint64, idx uint64, cpP, treeP uint8) error {
-	if cpP == treeP {
+	if cpP == 0 {
 		return nil
 	}
 
@@ -1499,12 +1503,7 @@ func (m *MirrorWriter) ensurePartialTile(ctx context.Context, l uint64, idx uint
 		return fmt.Errorf("failed to unmarshal tile @%d/%d.%d: %v", l, idx, treeP, err)
 	}
 
-	// Then trim it down to the size implied by the checkpoint, and write it out.
-	// Handle cpP == 0 where a full-tile is implied - we should never actually hit this case since cpP must
-	// equal treeP in this case, but it doesn't hurt to be defensive.
-	if cpP > 0 {
-		t.Nodes = t.Nodes[:cpP]
-	}
+	t.Nodes = t.Nodes[:cpP]
 	d, err = t.MarshalText()
 	if err != nil {
 		return fmt.Errorf("failed to marshal tile @%d/%d.%d: %v", l, idx, cpP, err)

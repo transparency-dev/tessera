@@ -384,6 +384,11 @@ func witnessErrorStatus(err error) string {
 		return "no_witness_signature"
 	case errors.Is(err, witness.ErrSubtreeRangeInvalid):
 		return "subtree_range_invalid"
+	case errors.Is(err, witness.ErrInvalidCheckpoint):
+		return "invalid_checkpoint"
+	// Must come after the specific cases above, which wrap ErrBadRequest.
+	case errors.Is(err, witness.ErrBadRequest):
+		return "bad_request"
 	case errors.Is(err, witness.ErrNotImplemented):
 		return "not_implemented"
 	default:

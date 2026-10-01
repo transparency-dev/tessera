@@ -17,7 +17,10 @@ package mtcproof
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -40,6 +43,7 @@ func readUint48(s *cryptobyte.String, out *uint64) bool {
 	return true
 }
 
+// TODO: export and use in mtc_test.go directly.
 func (p *mtcProof) unmarshal(data []byte) error {
 	s := cryptobyte.String(data)
 
@@ -70,7 +74,7 @@ func (p *mtcProof) unmarshal(data []byte) error {
 	}
 
 	var sigs cryptobyte.String
-	if !s.ReadUint16LengthPrefixed(&sigs) {
+	if !s.ReadUint24LengthPrefixed(&sigs) {
 		return errors.New("malformed signatures")
 	}
 	p.signatures = nil
@@ -429,6 +433,72 @@ func TestParseCosignerID(t *testing.T) {
 			}
 			if !bytes.Equal(got, tc.want) {
 				t.Errorf("ParseCosignerID(%q) = %x, want %x", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNewSubtreeSignatureFromCosig(t *testing.T) {
+	partsToSig := func(t *testing.T, name string, hash uint32, timestamp uint64, sig []byte) []byte {
+		t.Helper()
+		s := make([]byte, 0, 4+8+len(sig))
+		s = binary.BigEndian.AppendUint32(s, hash)
+		s = binary.BigEndian.AppendUint64(s, timestamp)
+		s = append(s, sig...)
+		r := fmt.Appendf(nil, "— %s %s\n", name, base64.StdEncoding.EncodeToString(s))
+		t.Logf("sig: %q", string(r))
+		return r
+	}
+
+	cosignerID := []byte{0x01, 0x02, 0x03, 0x04}
+	cosignerName := "oid/1.3.6.1.4.1.1.2.3.4"
+	rawSig := []byte("raw-signature-bytes")
+	zeroTimestamp := uint64(0)
+
+	tests := []struct {
+		name    string
+		input   []byte
+		want    []byte
+		wantErr bool
+	}{
+		{
+			name:    "valid cosignature",
+			input:   partsToSig(t, cosignerName, 0, zeroTimestamp, rawSig),
+			want:    rawSig,
+			wantErr: false,
+		},
+		{
+			name:    "valid cosignature with timestamp only",
+			input:   partsToSig(t, cosignerName, 0, zeroTimestamp, []byte{}),
+			want:    []byte{},
+			wantErr: false,
+		},
+		{
+			name:    "too short (less than 8 bytes)",
+			input:   []byte{0x01, 0x02, 0x03},
+			wantErr: true,
+		},
+		{
+			name:    "empty",
+			input:   nil,
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := NewSubtreeSignatureFromCosig(tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("NewSubtreeSignatureFromCosig() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			if !bytes.Equal(got.CosignerID, cosignerID) {
+				t.Errorf("CosignerID = %x, want %x", got.CosignerID, cosignerID)
+			}
+			if !bytes.Equal(got.Signature, tc.want) {
+				t.Errorf("Signature = %s, want %s", got.Signature, tc.want)
 			}
 		})
 	}

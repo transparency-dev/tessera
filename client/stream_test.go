@@ -16,8 +16,8 @@ package client_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,8 +32,7 @@ import (
 func TestEntryBundles(t *testing.T) {
 	ctx := t.Context()
 
-	logSize1 := uint64(12345)
-	logSize2 := uint64(100045)
+	logSize := uint64(12345)
 
 	tl, done := testonly.NewTestLog(t, tessera.NewAppendOptions().WithBatching(30000, time.Second).WithCheckpointInterval(time.Second))
 	defer func() {
@@ -42,25 +41,18 @@ func TestEntryBundles(t *testing.T) {
 		}
 	}()
 
-	if _, err := populateEntries(t, tl, logSize1, "first"); err != nil {
+	if _, err := populateEntries(t, tl, logSize, "first"); err != nil {
 		t.Fatalf("populateEntries(first): %v", err)
 	}
-	if _, err := populateEntries(t, tl, logSize2-logSize1, "second"); err != nil {
-		t.Fatalf("populateEntries(second): %v", err)
-	}
 
-	var logSize atomic.Uint64
-	logSize.Store(uint64(logSize1))
 	size := func(ctx context.Context) (uint64, error) {
-		return logSize.Load(), nil
+		return logSize, nil
 	}
 
 	// Finally, try to stream all the bundles back.
-	// We'll first try to stream up to logSize1, then when we reach it we'll
-	// make the tree appear to grow to logSize2 to test resuming.
 	seenEntries := uint64(0)
 
-	for gotEntry, gotErr := range client.EntryBundles(ctx, 2, size, tl.LogReader.ReadEntryBundle, 0, uint64(logSize2)) {
+	for gotEntry, gotErr := range client.EntryBundles(ctx, 2, size, tl.LogReader.ReadEntryBundle, 0, logSize) {
 		if gotErr != nil {
 			t.Fatalf("gotErr after %d: %v", seenEntries, gotErr)
 		}
@@ -69,16 +61,82 @@ func TestEntryBundles(t *testing.T) {
 		}
 		seenEntries += uint64(gotEntry.RangeInfo.N)
 		t.Logf("got RI %d / %d", gotEntry.RangeInfo.Index, seenEntries)
+	}
+	if seenEntries != logSize {
+		t.Fatalf("got seenEntries %d, want %d", seenEntries, logSize)
+	}
+}
 
-		switch seenEntries {
-		case uint64(logSize1):
-			// We've fetched all the entries from the original tree size, now we'll make
-			// the tree appear to have grown to the final size.
-			// The stream should start returning bundles again until we've consumed them all.
-			t.Log("Reached logSize, growing tree")
-			logSize.Store(uint64(logSize2))
-			time.Sleep(time.Second)
+// syntheticLog returns a getSize/getBundle pair over a synthetic log of numBundles bundles.
+// The returned bundle data is not parseable; these tests only care about the streaming machinery.
+func syntheticLog(numBundles uint64) (client.TreeSizeFunc, client.EntryBundleFetcherFunc) {
+	size := numBundles * layout.EntryBundleWidth
+	return func(context.Context) (uint64, error) { return size, nil },
+		func(_ context.Context, idx uint64, _ uint8) ([]byte, error) {
+			return fmt.Appendf(nil, "bundle-%d", idx), nil
 		}
+}
+
+func TestEntryBundlesStopCancelsInFlightFetches(t *testing.T) {
+	const numBundles = 20
+	const numWorkers = 4
+
+	getSize, _ := syntheticLog(numBundles)
+
+	// The first bundle is served immediately so that the consumer below gets something to yield.
+	// Every subsequent fetch, i.e. all the in-flight read-aheads, blocks until its context is
+	// cancelled, and reports the fact that it was.
+	blocking := make(chan struct{}, numBundles)
+	cancelled := make(chan struct{}, numBundles)
+	getBundle := func(ctx context.Context, idx uint64, _ uint8) ([]byte, error) {
+		if idx == 0 {
+			return []byte("bundle-0"), nil
+		}
+		blocking <- struct{}{}
+		<-ctx.Done()
+		cancelled <- struct{}{}
+		return nil, ctx.Err()
+	}
+
+	for _, err := range client.EntryBundles(t.Context(), numWorkers, getSize, getBundle, 0, numBundles*layout.EntryBundleWidth) {
+		if err != nil {
+			t.Fatalf("Failed to iterate: %v", err)
+		}
+		// Wait until the read-ahead definitely has a fetch in flight before we stop,
+		// so that there's something for the stop to cancel.
+		select {
+		case <-blocking:
+		case <-t.Context().Done():
+			t.Fatalf("timed out")
+		}
+
+		// Now break out of the iterator, which should cancel the in-flight fetches.
+		break
+	}
+
+	select {
+	case <-cancelled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("in-flight getBundle calls were not cancelled when iteration stopped early")
+	}
+}
+
+func TestEntryBundlesReportsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	getSize, getBundle := syntheticLog(1000)
+	n, gotErr := 0, error(nil)
+	for _, err := range client.EntryBundles(ctx, 2, getSize, getBundle, 0, 1000*layout.EntryBundleWidth) {
+		gotErr = err
+		if err != nil {
+			break
+		}
+		if n++; n == 3 {
+			cancel()
+		}
+	}
+	if !errors.Is(gotErr, context.Canceled) {
+		t.Errorf("got err %v after %d bundles, want context.Canceled", gotErr, n)
 	}
 }
 
