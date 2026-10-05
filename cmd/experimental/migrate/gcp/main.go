@@ -18,20 +18,21 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"flag"
 	"fmt"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 
 	"log/slog"
 
+	"github.com/transparency-dev/formats/log"
+	f_note "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/storage/gcp"
 	gcp_as "github.com/transparency-dev/tessera/storage/gcp/antispam"
+	"golang.org/x/mod/sumdb/note"
 )
 
 var (
@@ -39,10 +40,16 @@ var (
 	spanner = flag.String("spanner", "", "Spanner resource URI ('projects/.../...')")
 
 	sourceURL          = flag.String("source_url", "", "Base URL for the source log.")
+	sourceOrigin       = flag.String("source_origin", "", "Origin of the source log. If unset, the name of the first --source_public_key will be used.")
+	sourcePubKeys      = &multiStringFlag{}
 	numWorkers         = flag.Uint("num_workers", 30, "Number of migration worker goroutines.")
 	persistentAntispam = flag.Bool("antispam", false, "EXPERIMENTAL: Set to true to enable GCP-based persistent antispam storage")
 	slogLevel          = flag.Int("slog_level", 0, "The cut-off threshold for structured logging. Default is 0 (INFO). See https://pkg.go.dev/log/slog#Level for other levels.")
 )
+
+func init() {
+	flag.Var(sourcePubKeys, "source_public_key", "Path to a file containing a public key of the source log (can be specified multiple times). The first key is used as the log's key, and the source checkpoint must be signed by all provided keys.")
+}
 
 func main() {
 	flag.Parse()
@@ -64,15 +71,19 @@ func main() {
 		slog.ErrorContext(ctx, "fetch initial source checkpoint", slog.Any("error", err))
 		os.Exit(1)
 	}
-	bits := strings.Split(string(sourceCP), "\n")
-	sourceSize, err := strconv.ParseUint(bits[1], 10, 64)
+	vs := verifiersFromFlags(ctx)
+	origin := *sourceOrigin
+	if origin == "" {
+		origin = vs[0].Name()
+	}
+	cp, _, n, err := log.ParseCheckpoint(sourceCP, origin, vs[0], vs[1:]...)
 	if err != nil {
-		slog.ErrorContext(ctx, "invalid CP size", slog.String("size", bits[1]), slog.Any("error", err))
+		slog.ErrorContext(ctx, "Failed to parse and verify source checkpoint", slog.Any("error", err))
 		os.Exit(1)
 	}
-	sourceRoot, err := base64.StdEncoding.DecodeString(bits[2])
-	if err != nil {
-		slog.ErrorContext(ctx, "invalid checkpoint roothash", slog.String("hash", bits[2]), slog.Any("error", err))
+	// Require the checkpoint to be signed by all provided keys.
+	if got, want := len(n.Sigs), len(vs); got != want {
+		slog.ErrorContext(ctx, "Checkpoint has unexpected number of verified signatures", slog.Int("got", got), slog.Int("want", want))
 		os.Exit(1)
 	}
 
@@ -106,7 +117,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := m.Migrate(ctx, *numWorkers, sourceSize, sourceRoot, src.ReadEntryBundle); err != nil {
+	if err := m.Migrate(ctx, *numWorkers, cp.Size, cp.Hash, src.ReadEntryBundle); err != nil {
 		slog.ErrorContext(ctx, "Migrate failed", slog.Any("error", err))
 		os.Exit(1)
 	}
@@ -127,4 +138,40 @@ func storageConfigFromFlags() gcp.Config {
 		Bucket:  *bucket,
 		Spanner: *spanner,
 	}
+}
+
+// verifiersFromFlags creates a slice of note.Verifier based on the provided flags.
+func verifiersFromFlags(ctx context.Context) []note.Verifier {
+	if len(*sourcePubKeys) == 0 {
+		slog.ErrorContext(ctx, "Must provide at least one --source_public_key flag")
+		os.Exit(1)
+	}
+	vs := make([]note.Verifier, 0, len(*sourcePubKeys))
+	for _, pk := range *sourcePubKeys {
+		b, err := os.ReadFile(pk)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to read verifier", slog.String("pubkey", pk), slog.Any("error", err))
+			os.Exit(1)
+		}
+		v, err := f_note.NewVerifier(string(b))
+		if err != nil {
+			slog.ErrorContext(ctx, "Invalid verifier", slog.String("pubkey", pk), slog.Any("error", err))
+			os.Exit(1)
+		}
+		vs = append(vs, v)
+	}
+	return vs
+}
+
+// multiStringFlag allows a flag to be specified multiple times on the command
+// line, and stores all of these values.
+type multiStringFlag []string
+
+func (ms *multiStringFlag) String() string {
+	return strings.Join(*ms, ",")
+}
+
+func (ms *multiStringFlag) Set(w string) error {
+	*ms = append(*ms, w)
+	return nil
 }
