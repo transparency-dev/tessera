@@ -18,10 +18,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"log/slog"
+	"mime"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"strings"
@@ -172,6 +177,26 @@ func TestSpannerTablePrefixValidation(t *testing.T) {
 				t.Errorf("New with prefix %q: got err %v, want err %t", test.prefix, err, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestObjectRetentionPeriodValidation(t *testing.T) {
+	for _, test := range []struct {
+		period  time.Duration
+		wantErr bool
+	}{
+		{period: 0},
+		{period: 24 * time.Hour},
+		{period: -time.Second, wantErr: true},
+	} {
+		_, err := New(t.Context(), Config{
+			Bucket:                "bucket",
+			Spanner:               "projects/p/instances/i/databases/d",
+			ObjectRetentionPeriod: test.period,
+		})
+		if gotErr := err != nil; gotErr != test.wantErr {
+			t.Errorf("New with ObjectRetentionPeriod %v: got err %v, want err %t", test.period, err, test.wantErr)
+		}
 	}
 }
 
@@ -607,7 +632,7 @@ func TestPublishTree(t *testing.T) {
 				t.Fatalf("publishTree: %v", err)
 			}
 			cpOld := []byte("bananas")
-			if err := m.setObject(ctx, layout.CheckpointPath, cpOld, nil, "", ""); err != nil {
+			if err := m.setObject(ctx, layout.CheckpointPath, cpOld, nil, "", "", nil); err != nil {
 				t.Fatalf("setObject(bananas): %v", err)
 			}
 			updatesSeen := 0
@@ -880,12 +905,14 @@ func expectedPartialPrefixes(size uint64, entriesPath func(uint64, uint8) string
 
 type memObjStore struct {
 	sync.RWMutex
-	mem map[string][]byte
+	mem       map[string][]byte
+	retention map[string]*gcs.ObjectRetention
 }
 
 func newMemObjStore() *memObjStore {
 	return &memObjStore{
-		mem: make(map[string][]byte),
+		mem:       make(map[string][]byte),
+		retention: make(map[string]*gcs.ObjectRetention),
 	}
 }
 
@@ -901,7 +928,7 @@ func (m *memObjStore) getObject(_ context.Context, obj string) ([]byte, *gcs.Rea
 }
 
 // TODO(phboneff): add content type tests
-func (m *memObjStore) setObject(_ context.Context, obj string, data []byte, cond *gcs.Conditions, _, _ string) error {
+func (m *memObjStore) setObject(_ context.Context, obj string, data []byte, cond *gcs.Conditions, _, _ string, retention *gcs.ObjectRetention) error {
 	m.Lock()
 	defer m.Unlock()
 
@@ -915,6 +942,7 @@ func (m *memObjStore) setObject(_ context.Context, obj string, data []byte, cond
 		}
 	}
 	m.mem[obj] = data
+	m.retention[obj] = retention
 	return nil
 }
 
@@ -939,6 +967,142 @@ func (m *memObjStore) deleteObjectsWithPrefix(_ context.Context, prefix string) 
 		}
 	}
 	return nil
+}
+
+// TestImmutableResourceRetention checks that only full tiles and entry bundles are retained.
+func TestImmutableResourceRetention(t *testing.T) {
+	const period = 24 * time.Hour
+
+	for _, test := range []struct {
+		name     string
+		period   time.Duration
+		locked   bool
+		wantMode string
+	}{
+		{name: "no retention configured"},
+		{name: "unlocked", period: period, wantMode: "Unlocked"},
+		{name: "locked", period: period, locked: true, wantMode: "Locked"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			m := newMemObjStore()
+			s := &logResourceStore{
+				objStore:        m,
+				entriesPath:     layout.EntriesPath,
+				retentionPeriod: test.period,
+				retentionLocked: test.locked,
+			}
+
+			start := time.Now()
+			if err := s.setCheckpoint(ctx, []byte("checkpoint")); err != nil {
+				t.Fatalf("setCheckpoint: %v", err)
+			}
+			for _, p := range []uint8{0, 10} {
+				if err := s.setTile(ctx, 0, 0, p, []byte("tile")); err != nil {
+					t.Fatalf("setTile(partial=%d): %v", p, err)
+				}
+				if err := s.setEntryBundle(ctx, 0, p, []byte("bundle")); err != nil {
+					t.Fatalf("setEntryBundle(partial=%d): %v", p, err)
+				}
+			}
+
+			for _, mutable := range []string{layout.CheckpointPath, layout.TilePath(0, 0, 10), layout.EntriesPath(0, 10)} {
+				if got := m.retention[mutable]; got != nil {
+					t.Errorf("%s: got retention %+v, want none", mutable, got)
+				}
+			}
+			for _, immutable := range []string{layout.TilePath(0, 0, 0), layout.EntriesPath(0, 0)} {
+				got := m.retention[immutable]
+				if test.period == 0 {
+					if got != nil {
+						t.Errorf("%s: got retention %+v, want none", immutable, got)
+					}
+					continue
+				}
+				if got == nil {
+					t.Fatalf("%s: got no retention, want mode %s", immutable, test.wantMode)
+				}
+				if got.Mode != test.wantMode {
+					t.Errorf("%s: got mode %q, want %q", immutable, got.Mode, test.wantMode)
+				}
+				if lo, hi := start.Add(test.period), time.Now().Add(test.period); got.RetainUntil.Before(lo) || got.RetainUntil.After(hi) {
+					t.Errorf("%s: got RetainUntil %v, want within [%v, %v]", immutable, got.RetainUntil, lo, hi)
+				}
+			}
+		})
+	}
+}
+
+// TestSetObjectRetention checks the retention gcsStorage sends on upload, using a fake GCS JSON API.
+func TestSetObjectRetention(t *testing.T) {
+	const bucket = "test-bucket"
+	until := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	var mu sync.Mutex
+	gotMeta := map[string]map[string]any{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/upload/") {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected", http.StatusNotImplemented)
+			return
+		}
+		// Multipart upload: JSON metadata part first.
+		_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil {
+			t.Errorf("upload Content-Type: %v", err)
+			return
+		}
+		part, err := multipart.NewReader(r.Body, params["boundary"]).NextPart()
+		if err != nil {
+			t.Errorf("multipart metadata part: %v", err)
+			return
+		}
+		var meta map[string]any
+		if err := json.NewDecoder(part).Decode(&meta); err != nil {
+			t.Errorf("decode metadata: %v", err)
+			return
+		}
+		name, _ := meta["name"].(string)
+		mu.Lock()
+		gotMeta[name] = meta
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"bucket":%q,"name":%q,"generation":"1"}`, bucket, name)
+	}))
+	defer srv.Close()
+
+	t.Setenv("STORAGE_EMULATOR_HOST", strings.TrimPrefix(srv.URL, "http://"))
+	ctx := t.Context()
+	c, err := gcs.NewClient(ctx, gcs.WithJSONReads())
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer func() {
+		if err := c.Close(); err != nil {
+			t.Logf("Close: %v", err)
+		}
+	}()
+
+	s := &gcsStorage{gcsClient: c, bucket: bucket}
+	if err := s.setObject(ctx, "retained", []byte("data"), nil, "application/octet-stream", "", &gcs.ObjectRetention{Mode: "Locked", RetainUntil: until}); err != nil {
+		t.Fatalf("setObject(retained): %v", err)
+	}
+	if err := s.setObject(ctx, "unretained", []byte("data"), nil, "application/octet-stream", "", nil); err != nil {
+		t.Fatalf("setObject(unretained): %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	retained, unretained := gotMeta["retained"], gotMeta["unretained"]
+	if retained == nil || unretained == nil {
+		t.Fatalf("expected uploads not seen, got %v", gotMeta)
+	}
+	if ret, ok := retained["retention"].(map[string]any); !ok || ret["mode"] != "Locked" || ret["retainUntilTime"] != until.Format(time.RFC3339) {
+		t.Errorf("retained object: got retention %v, want mode Locked retainUntilTime %s", retained["retention"], until.Format(time.RFC3339))
+	}
+	if ret, ok := unretained["retention"]; ok {
+		t.Errorf("unretained object: got retention %v, want none", ret)
+	}
 }
 
 func mustGenerateKeys(t *testing.T) (note.Signer, note.Verifier) {
