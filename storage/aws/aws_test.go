@@ -29,6 +29,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"strings"
@@ -38,6 +40,9 @@ import (
 
 	"log/slog"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"github.com/google/go-cmp/cmp"
@@ -832,4 +837,78 @@ func defaultMerkleLeafHasher(bundle []byte) ([][]byte, error) {
 		r = append(r, h[:])
 	}
 	return r, nil
+}
+
+// TestSetObjectIfNoneMatchBucketPrefixIdempotentRecovery exercises
+// s3Storage.setObjectIfNoneMatch's precondition-failed recovery path with a
+// non-empty BucketPrefix: the recovery getObject must read <prefix>/<name>,
+// not <prefix>/<prefix>/<name>. setObjectIfNoneMatch and getObject each apply
+// bucketPrefix once, so setObjectIfNoneMatch must hand getObject the
+// unprefixed name. The fake server returns 412 on the write and serves
+// identical bytes at the single-prefixed key, so setObjectIfNoneMatch should
+// return nil (idempotent success).
+func TestSetObjectIfNoneMatchBucketPrefixIdempotentRecovery(t *testing.T) {
+	const (
+		bucket  = "test-bucket"
+		prefix  = "some/prefix"
+		objName = "tile/0/000"
+	)
+	data := []byte("tile-bytes")
+	wantKey := prefix + "/" + objName
+
+	// This fake pins the aws-sdk-go-v2 S3 client's REST-XML wire shape
+	// (path-style requests, XML error bodies). That coupling is deliberate:
+	// the bug under test sits below the objStore interface, so a real
+	// *s3.Client is the only way to exercise it.
+	var mu sync.Mutex
+	var gotReadKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.URL.Path, "/"+bucket+"/")
+		switch r.Method {
+		case http.MethodPut:
+			if key != wantKey {
+				t.Errorf("conditional write PUT key %q, want %q", key, wantKey)
+			}
+			// Conditional write: object already exists, precondition fails.
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusPreconditionFailed)
+			_, _ = fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>PreconditionFailed</Code><Message>At least one of the pre-conditions you specified did not hold</Message></Error>`)
+		case http.MethodGet:
+			mu.Lock()
+			gotReadKey = key
+			mu.Unlock()
+			if key != wantKey {
+				w.Header().Set("Content-Type", "application/xml")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>`)
+				return
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected", http.StatusNotImplemented)
+		}
+	}))
+	defer srv.Close()
+
+	c := s3.New(s3.Options{
+		BaseEndpoint: aws.String(srv.URL),
+		UsePathStyle: true,
+		Region:       "us-east-1",
+		Credentials:  credentials.NewStaticCredentialsProvider("test", "test", ""),
+	})
+
+	s := &s3Storage{s3Client: c, bucket: bucket, bucketPrefix: prefix}
+	err := s.setObjectIfNoneMatch(context.Background(), objName, data, "application/octet-stream", "")
+	mu.Lock()
+	got := gotReadKey
+	mu.Unlock()
+	if err != nil {
+		t.Fatalf("setObjectIfNoneMatch: want idempotent success (nil), got %v (recovery read was for %q)", err, got)
+	}
+	if got != wantKey {
+		t.Fatalf("recovery getObject read %q, want %q (double-prefix bug)", got, wantKey)
+	}
 }
