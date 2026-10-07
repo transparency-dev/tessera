@@ -80,6 +80,7 @@ const (
 type Storage struct {
 	mu  sync.Mutex
 	cfg Config
+	wg  sync.WaitGroup
 }
 
 // appender implements the Tessera append lifecycle.
@@ -123,6 +124,12 @@ func New(ctx context.Context, cfg Config) (tessera.Driver, error) {
 	}, nil
 }
 
+// Close waits for any background tasks associated with this storage to finish.
+func (s *Storage) Close() error {
+	s.wg.Wait()
+	return nil
+}
+
 func (s *Storage) Appender(ctx context.Context, opts *tessera.AppendOptions) (*tessera.Appender, tessera.LogReader, error) {
 	logStorage := &logResourceStorage{
 		s:           s,
@@ -164,9 +171,17 @@ func (s *Storage) newAppender(ctx context.Context, o *logResourceStorage, opts *
 		return a.sequenceBatch(ctx, entries)
 	})
 
-	go a.publishCheckpointJob(ctx, opts.CheckpointInterval(), opts.CheckpointRepublishInterval(), opts.CheckpointPublicationTimeout())
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		a.publishCheckpointJob(ctx, opts.CheckpointInterval(), opts.CheckpointRepublishInterval(), opts.CheckpointPublicationTimeout())
+	}()
 	if i := opts.GarbageCollectionInterval(); i > 0 {
-		go a.garbageCollectorJob(ctx, i)
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			a.garbageCollectorJob(ctx, i)
+		}()
 	}
 
 	return a, a.logStorage, nil
@@ -180,6 +195,9 @@ func (a *appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 			return
 		case <-a.cpUpdated:
 		case <-t.C:
+		}
+		if ctx.Err() != nil {
+			return
 		}
 		if err := otel.TraceErr(ctx, "tessera.storage.posix.publishCheckpointJob", tracer, func(ctx context.Context, span trace.Span) error {
 			ctx, cancel := context.WithTimeout(ctx, publicationTimeout)
@@ -798,6 +816,9 @@ func (a *appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		}
+		if ctx.Err() != nil {
+			return
 		}
 
 		if err := otel.TraceErr(ctx, "tessera.storage.posix.garbageCollectJob", tracer, func(ctx context.Context, span trace.Span) error {
