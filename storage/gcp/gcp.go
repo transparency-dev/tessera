@@ -31,6 +31,7 @@ package gcp
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -1512,10 +1513,135 @@ type mirrorWriter struct {
 
 var _ tessera.MirrorWriter = &mirrorWriter{}
 
-func (w *mirrorWriter) IntegrateBundles(ctx context.Context, from uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
-	return 0, nil, errors.New("not implemented")
+// IntegrateBundles integrates a sequence of entry bundles into the tree, starting at the provided bundle index bundleIdx.
+// Returns the new size and root hash of the tree if successful.
+func (w *mirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
+	currentSize := bundleIdx << layout.TileHeight
+
+	currBundleIdx := bundleIdx
+	var newLeafHashes [][]byte
+	seenPartialBundle := false
+
+	for b, err := range bundles {
+		if err != nil {
+			return 0, nil, err
+		}
+		if b == nil {
+			return 0, nil, fmt.Errorf("bundle iterator yielded nil bundle at index %d", currBundleIdx)
+		}
+		if seenPartialBundle {
+			return 0, nil, fmt.Errorf("bundle index %d follows a partial bundle", currBundleIdx)
+		}
+
+		var partial uint8
+		switch le := len(b.Entries); {
+		case le == 0:
+			return 0, nil, fmt.Errorf("zero-length entry bundle at index %d", currBundleIdx)
+		case le > layout.EntryBundleWidth:
+			return 0, nil, fmt.Errorf("bundle index %d has too many entries (%d)", currBundleIdx, le)
+		case le < layout.EntryBundleWidth:
+			seenPartialBundle = true
+			partial = uint8(le)
+		}
+
+		bundleRaw, err := marshalEntryBundle(b)
+		if err != nil {
+			return 0, nil, fmt.Errorf("failed to marshal entry bundle %d: %v", currBundleIdx, err)
+		}
+
+		bundleStartSeq := currBundleIdx * layout.EntryBundleWidth
+		if bundleStartSeq > currentSize+uint64(len(newLeafHashes)) {
+			return 0, nil, fmt.Errorf("bundle index %d (seq %d) has gap from current tree size %d", currBundleIdx, bundleStartSeq, currentSize+uint64(len(newLeafHashes)))
+		}
+		for i, entry := range b.Entries {
+			seq := bundleStartSeq + uint64(i)
+			if seq >= currentSize {
+				lh := rfc6962.DefaultHasher.HashLeaf(entry)
+				newLeafHashes = append(newLeafHashes, lh)
+			}
+		}
+
+		if err := w.logStore.setEntryBundle(ctx, currBundleIdx, partial, bundleRaw); err != nil {
+			return 0, nil, fmt.Errorf("failed to store entry bundle %d: %w", currBundleIdx, err)
+		}
+		currBundleIdx++
+	}
+
+	if len(newLeafHashes) == 0 {
+		return w.seq.currentTree(ctx)
+	}
+
+	newSize := currentSize + uint64(len(newLeafHashes))
+	var rootHash []byte
+
+	_, err := w.seq.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+		row, err := txn.ReadRowWithOptions(ctx, w.seq.table("IntCoord"), spanner.Key{0}, []string{"seq", "rootHash"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+		if err != nil {
+			return fmt.Errorf("failed to read IntCoord: %v", err)
+		}
+		var fromSeq int64 // Spanner doesn't support uint64
+		if err := row.Columns(&fromSeq, &rootHash); err != nil {
+			return fmt.Errorf("failed to read integration coordination info: %v", err)
+		}
+		storedSeq := uint64(fromSeq)
+
+		if newSize <= storedSeq {
+			newSize = storedSeq
+			return nil
+		}
+
+		activeSize := bundleIdx << layout.TileHeight
+		activeHashes := newLeafHashes
+
+		if storedSeq > activeSize {
+			diff := storedSeq - activeSize
+			if diff > uint64(len(newLeafHashes)) {
+				// Should not happen since we checked newSize <= storedSeq above.
+				return fmt.Errorf("IntCoord seq advanced beyond new entries: %d > %d", storedSeq, activeSize+uint64(len(newLeafHashes)))
+			}
+			activeHashes = newLeafHashes[diff:]
+			activeSize = storedSeq
+		} else if storedSeq < activeSize {
+			return fmt.Errorf("bundle index %d (seq %d) has gap from current tree size %d", bundleIdx, activeSize, storedSeq)
+		}
+
+		rootHash, err = integrate(ctx, activeSize, activeHashes, w.logStore)
+		if err != nil {
+			return fmt.Errorf("failed to integrate tree tiles: %w", err)
+		}
+		newSize = activeSize + uint64(len(activeHashes))
+		if newSize > math.MaxInt64 {
+			return fmt.Errorf("checkpoint size %d exceeds maximum supported size %d", newSize, int64(math.MaxInt64))
+		}
+
+		return txn.BufferWrite([]*spanner.Mutation{spanner.Update(w.seq.table("IntCoord"), []string{"id", "seq", "rootHash"}, []any{0, int64(newSize), rootHash})})
+	}, spanner.TransactionOptions{TransactionTag: "tessera.op=mirrorIntegrateBundles"})
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to update IntCoord: %w", err)
+	}
+
+	return newSize, rootHash, nil
 }
 
+// marshalEntryBundle returns a tlog-tiles compatible serialization of the provided entry bundle.
+func marshalEntryBundle(b *api.EntryBundle) ([]byte, error) {
+	var size int
+	for i, e := range b.Entries {
+		if len(e) >= 1<<16 {
+			return nil, fmt.Errorf("entry #%d has length %d >= 1<<16", i, len(e))
+		}
+		size += 2 + len(e)
+	}
+
+	data := make([]byte, 0, size)
+	for _, e := range b.Entries {
+		data = binary.BigEndian.AppendUint16(data, uint16(len(e)))
+		data = append(data, e...)
+	}
+	return data, nil
+}
+
+// IntegratedSize returns the size of the local integrated tree.
 func (w *mirrorWriter) IntegratedSize(ctx context.Context) (uint64, error) {
 	size, _, err := w.seq.currentTree(ctx)
 	if err != nil {
@@ -1524,6 +1650,7 @@ func (w *mirrorWriter) IntegratedSize(ctx context.Context) (uint64, error) {
 	return size, nil
 }
 
+// UpdateCheckpoint atomically updates the local published checkpoint for the log mirror.
 func (w *mirrorWriter) UpdateCheckpoint(ctx context.Context, fn func(oldCP []byte) (newCP []byte, err error)) error {
 	_, err := w.seq.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 		if _, err := txn.ReadRowWithOptions(ctx, w.seq.table("PubCoord"), spanner.Key{0}, []string{"publishedAt"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE}); err != nil {
