@@ -1496,7 +1496,10 @@ func (s *Storage) MirrorWriter(ctx context.Context, opts *tessera.MirrorOptions)
 	lr := &LogReader{
 		lrs:            *m.logStore,
 		integratedSize: m.IntegratedSize,
-		nextIndex:      seq.nextIndex,
+		// Mirrors don't assign indices (they come from the source log) and never advance
+		// SeqCoord, so seq.nextIndex would always return 0. Bundles persisted by an in-flight
+		// upload aren't counted until they're integrated, so the next index is the integrated size.
+		nextIndex: m.IntegratedSize,
 	}
 	return m, lr, nil
 }
@@ -1521,8 +1524,39 @@ func (w *mirrorWriter) IntegratedSize(ctx context.Context) (uint64, error) {
 	return size, nil
 }
 
-func (w *mirrorWriter) UpdateCheckpoint(ctx context.Context, g func(oldCP []byte) (newCP []byte, err error)) error {
-	return errors.New("not implemented")
+func (w *mirrorWriter) UpdateCheckpoint(ctx context.Context, fn func(oldCP []byte) (newCP []byte, err error)) error {
+	_, err := w.seq.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+		if _, err := txn.ReadRowWithOptions(ctx, w.seq.table("PubCoord"), spanner.Key{0}, []string{"publishedAt"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE}); err != nil {
+			return fmt.Errorf("failed to lock PubCoord: %w", err)
+		}
+
+		oldCP, err := w.logStore.getCheckpoint(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to read checkpoint: %w", err)
+		}
+
+		newCP, err := fn(oldCP)
+		if err != nil {
+			return fmt.Errorf("failed to update checkpoint: %w", err)
+		}
+		_, newSize, _, err := parse.CheckpointUnsafe(newCP)
+		if err != nil {
+			return fmt.Errorf("failed to parse checkpoint: %v", err)
+		}
+		if newSize > math.MaxInt64 {
+			return fmt.Errorf("checkpoint size %d exceeds maximum supported size %d", newSize, int64(math.MaxInt64))
+		}
+
+		// TODO: Ensure partial tiles and entry bundles for the new checkpoint exist.
+
+		if err := w.logStore.setCheckpoint(ctx, newCP); err != nil {
+			return fmt.Errorf("failed to set checkpoint: %w", err)
+		}
+
+		return txn.BufferWrite([]*spanner.Mutation{spanner.Update(w.seq.table("PubCoord"), []string{"id", "publishedAt", "size"}, []any{0, time.Now(), int64(newSize)})})
+	}, spanner.TransactionOptions{TransactionTag: "tessera.op=mirrorUpdateCheckpoint"})
+
+	return err
 }
 
 // MigrationWriter creates a new GCP storage for the MigrationTarget lifecycle mode.
