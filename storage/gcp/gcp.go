@@ -1543,6 +1543,9 @@ func (w *mirrorWriter) UpdateCheckpoint(ctx context.Context, fn func(oldCP []byt
 		if err != nil {
 			return fmt.Errorf("failed to parse checkpoint: %v", err)
 		}
+		if newSize > math.MaxInt64 {
+			return fmt.Errorf("checkpoint size %d exceeds maximum supported size %d", newSize, int64(math.MaxInt64))
+		}
 
 		// TODO: Ensure partial tiles and entry bundles for the new checkpoint exist.
 
