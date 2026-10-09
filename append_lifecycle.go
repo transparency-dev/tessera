@@ -900,9 +900,12 @@ func witnessCheckpoint(ctx context.Context, cosign cosigSource, wPol policy.TLog
 		witAttr := []attribute.KeyValue{}
 
 		sigs, err := gatherCosignatures(ctx, "witness", cosign, wPol, cp, cpSize, failOpen, greedy)
+		d := time.Since(start)
 		if err != nil {
 			if !errors.Is(err, errFailedOpen) {
-				appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(attribute.String("error.type", "failed")))
+				witAttr = append(witAttr, attribute.String("error.type", "failed"))
+				appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(witAttr...))
+				appenderWitnessHistogram.Record(ctx, d.Milliseconds(), metric.WithAttributes(witAttr...))
 				slog.WarnContext(ctx, "Failed to collect witness signatures", slog.Any("error", err))
 				return nil, err
 			}
@@ -910,7 +913,6 @@ func witnessCheckpoint(ctx context.Context, cosign cosigSource, wPol policy.TLog
 		}
 		appenderWitnessRequests.Add(ctx, 1, metric.WithAttributes(witAttr...))
 		appenderWitnessedSize.Record(ctx, otel.Clamp64(cpSize))
-		d := time.Since(start)
 		appenderWitnessHistogram.Record(ctx, d.Milliseconds(), metric.WithAttributes(witAttr...))
 		return sigs, nil
 	})
