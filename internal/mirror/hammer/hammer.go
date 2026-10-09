@@ -17,11 +17,9 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"math/rand/v2"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,7 +33,6 @@ import (
 	"github.com/transparency-dev/tessera/client/mirror"
 	"github.com/transparency-dev/tessera/internal/mirror/hammer/loadtest"
 	"github.com/transparency-dev/tessera/storage/posix"
-	"golang.org/x/net/http2"
 
 	sdbNote "golang.org/x/mod/sumdb/note"
 
@@ -87,24 +84,21 @@ func main() {
 	flag.Parse()
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 
-	hc = &http.Client{
-		Transport: &http.Transport{
-			MaxIdleConns:        *numWriters,
-			MaxIdleConnsPerHost: *numWriters,
-			DisableKeepAlives:   false,
-		},
-		Timeout: *httpTimeout,
+	t := &http.Transport{
+		MaxIdleConns:        *numWriters,
+		MaxIdleConnsPerHost: *numWriters,
+		DisableKeepAlives:   false,
 	}
 	if *forceHTTP2 {
-		hc.Transport = &http2.Transport{
-			// So http2.Transport doesn't complain the URL scheme isn't 'https'
-			AllowHTTP: true,
-			// Pretend we are dialing a TLS endpoint. (Note, we ignore the passed tls.Config)
-			DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, network, addr)
-			},
-		}
+		p := http.Protocols{}
+		p.SetHTTP1(false)
+		p.SetHTTP2(true)
+		p.SetUnencryptedHTTP2(true)
+		t.Protocols = &p
+	}
+	hc = &http.Client{
+		Transport: t,
+		Timeout:   *httpTimeout,
 	}
 
 	// If bearerTokenWrite is unset, default it to whatever bearerToken has (which may too be unset).

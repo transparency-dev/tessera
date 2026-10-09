@@ -18,12 +18,10 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
 	"math/rand/v2"
-	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -33,10 +31,9 @@ import (
 	"sync"
 	"time"
 
+	f_note "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera/client"
 	"github.com/transparency-dev/tessera/internal/hammer/loadtest"
-	f_note "github.com/transparency-dev/formats/note"
-	"golang.org/x/net/http2"
 
 	"log/slog"
 )
@@ -81,24 +78,21 @@ func main() {
 	flag.Parse()
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(*slogLevel)})))
 
-	hc = &http.Client{
-		Transport: &http.Transport{
-			MaxIdleConns:        *numWriters + *numReadersFull + *numReadersRandom,
-			MaxIdleConnsPerHost: *numWriters + *numReadersFull + *numReadersRandom,
-			DisableKeepAlives:   false,
-		},
-		Timeout: *httpTimeout,
+	t := &http.Transport{
+		MaxIdleConns:        *numWriters + *numReadersFull + *numReadersRandom,
+		MaxIdleConnsPerHost: *numWriters + *numReadersFull + *numReadersRandom,
+		DisableKeepAlives:   false,
 	}
 	if *forceHTTP2 {
-		hc.Transport = &http2.Transport{
-			// So http2.Transport doesn't complain the URL scheme isn't 'https'
-			AllowHTTP: true,
-			// Pretend we are dialing a TLS endpoint. (Note, we ignore the passed tls.Config)
-			DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, network, addr)
-			},
-		}
+		p := http.Protocols{}
+		p.SetHTTP1(false)
+		p.SetHTTP2(true)
+		p.SetUnencryptedHTTP2(true)
+		t.Protocols = &p
+	}
+	hc = &http.Client{
+		Transport: t,
+		Timeout:   *httpTimeout,
 	}
 
 	// If bearerTokenWrite is unset, default it to whatever bearerToken has (which may too be unset).
@@ -289,7 +283,9 @@ func mustCreateWriters(ctx context.Context, us []string) loadtest.LeafWriter {
 
 func httpWriter(ctx context.Context, u *url.URL, hc *http.Client, bearerToken string) loadtest.LeafWriter {
 	cTrace := &httptrace.ClientTrace{
-		GotConn: func(info httptrace.GotConnInfo) { slog.InfoContext(ctx, "connection established", slog.Any("info", info)) },
+		GotConn: func(info httptrace.GotConnInfo) {
+			slog.InfoContext(ctx, "connection established", slog.Any("info", info))
+		},
 	}
 	return func(ctx context.Context, newLeaf []byte) (uint64, error) {
 		req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(newLeaf))
