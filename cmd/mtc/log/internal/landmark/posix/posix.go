@@ -88,6 +88,7 @@ func (s *Storage) UpdateLandmarks(ctx context.Context, fn func(old []byte, oldMo
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return time.Time{}, fmt.Errorf("read landmarks for update: %w", err)
 	}
+	exists := err == nil
 
 	newData, err := fn(oldData, oldModTime)
 	if err != nil {
@@ -98,23 +99,19 @@ func (s *Storage) UpdateLandmarks(ctx context.Context, fn func(old []byte, oldMo
 		return oldModTime, nil
 	}
 
-	if bytes.Equal(oldData, newData) && len(oldData) > 0 {
+	if exists && bytes.Equal(oldData, newData) {
 		now := time.Now()
 		if err := os.Chtimes(s.path, now, now); err != nil {
-			return time.Time{}, fmt.Errorf("failed to update landmark mtime")
+			return time.Time{}, fmt.Errorf("failed to update landmark mtime: %v", err)
 		}
 		slog.DebugContext(ctx, "refreshed landmarks modification time", slog.String("path", s.path))
-		info, err := os.Stat(s.path)
-		if err != nil {
-			return now, nil
+	} else {
+		if err := overwrite(s.path, newData); err != nil {
+			return time.Time{}, err
 		}
-		return info.ModTime(), nil
+		slog.DebugContext(ctx, "wrote landmarks file", slog.String("path", s.path))
 	}
 
-	if err := overwrite(s.path, newData); err != nil {
-		return time.Time{}, err
-	}
-	slog.DebugContext(ctx, "wrote landmarks file", slog.String("path", s.path))
 	info, err := os.Stat(s.path)
 	// In case the write succeeded but we then fail to read mod time, use the
 	// current time as a proxy.

@@ -87,9 +87,14 @@ type LandmarksStorage interface {
 	// Returns os.ErrNotExist if no landmark resource exists yet.
 	ReadLandmarks(ctx context.Context) (data []byte, modTime time.Time, err error)
 
-	// UpdateLandmarks passes the current stored raw landmarks and its modification time to fn under an advisory lock.
-	// If fn returns nil, no update is performed and the existing modification time is returned.
-	// If fn returns data (even if identical to old), storage updates the resource's modification time.
+	// UpdateLandmarks allows the stored representation of landmark data to be updated.
+	//
+	// Implementations MUST:
+	//   - Ensure that updates to the stored landmarks data are atomic.
+	//   - Call the provided `fn` function, passing it the current stored raw landmarks data and the time of its last modification:
+	//     + If `fn` returns nil, the landmark data should not be updated.
+	//     + Otherwise the stored landmark data and its associated modification time should be updated.
+	//   - Return the current modification time of the landmark data (regardless of whether or not it was updated), or an error.
 	UpdateLandmarks(ctx context.Context, fn func(old []byte, oldModTime time.Time) (new []byte, err error)) (modTime time.Time, err error)
 }
 
