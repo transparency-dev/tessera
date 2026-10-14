@@ -1527,6 +1527,8 @@ func (w *mirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, b
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.SetLimit(mirrorBundleWriteConcurrency)
 	// Ensure that no bundle writes outlive this call, even if we return early.
+	// The error can be ignored here: on success it's checked by the eg.Wait() call
+	// below, and on early returns we're already returning an error.
 	defer func() { _ = eg.Wait() }()
 
 	for b, err := range bundles {
