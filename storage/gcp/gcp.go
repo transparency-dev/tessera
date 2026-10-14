@@ -1564,6 +1564,9 @@ func (w *mirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, b
 	// startSize is the index of the first entry in the provided bundles.
 	startSize := bundleIdx * layout.EntryBundleWidth
 	newSize := startSize + uint64(len(newLeafHashes))
+	if newSize > math.MaxInt64 {
+		return 0, nil, fmt.Errorf("checkpoint size %d exceeds maximum supported size %d", newSize, int64(math.MaxInt64))
+	}
 	var rootHash []byte
 
 	_, err := w.seq.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
@@ -1602,9 +1605,6 @@ func (w *mirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, b
 			return fmt.Errorf("failed to integrate tree tiles: %w", err)
 		}
 		newSize = activeSize + uint64(len(activeHashes))
-		if newSize > math.MaxInt64 {
-			return fmt.Errorf("checkpoint size %d exceeds maximum supported size %d", newSize, int64(math.MaxInt64))
-		}
 
 		return txn.BufferWrite([]*spanner.Mutation{spanner.Update(w.seq.table("IntCoord"), []string{"id", "seq", "rootHash"}, []any{0, int64(newSize), rootHash})})
 	}, spanner.TransactionOptions{TransactionTag: "tessera.op=mirrorIntegrateBundles"})
