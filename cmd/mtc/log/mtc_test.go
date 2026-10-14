@@ -19,7 +19,6 @@ import (
 	"context"
 	stdasn1 "encoding/asn1"
 	"encoding/base64"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -908,7 +907,7 @@ func setupTestWitness(t *testing.T) (policy.TLogPolicy, note.SubtreeVerifier) {
 				http.Error(w, fmt.Sprintf("sign subtree: %v", err), http.StatusInternalServerError)
 				return
 			}
-			if _, err := w.Write(rawSig); err != nil {
+			if _, err := fmt.Fprintf(w, "%s\n", base64.StdEncoding.EncodeToString(rawSig)); err != nil {
 				t.Errorf("write /sign-subtree response: %v", err)
 			}
 		}
@@ -1030,7 +1029,7 @@ func TestMTCLog_AddTBS(t *testing.T) {
 		}
 	})
 
-	tests := []struct {
+	for _, test := range []struct {
 		name         string
 		entryIdx     int
 		wantStart    uint64
@@ -1042,33 +1041,31 @@ func TestMTCLog_AddTBS(t *testing.T) {
 		{name: "entry 2 in subtree [2, 4)", entryIdx: 2, wantStart: 2, wantEnd: 4, wantProofLen: 1},
 		{name: "entry 3 in subtree [2, 4)", entryIdx: 3, wantStart: 2, wantEnd: 4, wantProofLen: 1},
 		{name: "entry 4 in single-entry subtree [4, 5)", entryIdx: 4, wantStart: 4, wantEnd: 5, wantProofLen: 0},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			rsp := responses[tc.entryIdx]
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rsp := responses[test.entryIdx]
 			if rsp == nil {
-				t.Fatalf("responses[%d] is nil", tc.entryIdx)
+				t.Fatalf("responses[%d] is nil", test.entryIdx)
 			}
-			if rsp.Index != uint64(tc.entryIdx) {
-				t.Errorf("Index = %d, want %d", rsp.Index, tc.entryIdx)
+			if rsp.Index != uint64(test.entryIdx) {
+				t.Errorf("Index = %d, want %d", rsp.Index, test.entryIdx)
 			}
 			proofData, err := unmarshalMTCProof(rsp.MTCProof)
 			if err != nil {
 				t.Fatalf("unmarshalMTCProof error: %v", err)
 			}
-			if proofData.Start != tc.wantStart || proofData.End != tc.wantEnd {
-				t.Errorf("subtree = [%d, %d), want [%d, %d)", proofData.Start, proofData.End, tc.wantStart, tc.wantEnd)
+			if proofData.Start != test.wantStart || proofData.End != test.wantEnd {
+				t.Errorf("subtree = [%d, %d), want [%d, %d)", proofData.Start, proofData.End, test.wantStart, test.wantEnd)
 			}
 			if len(proofData.Extensions) != 0 {
 				t.Errorf("Extensions = %q, want empty", proofData.Extensions)
 			}
-			if len(proofData.InclusionProof) != tc.wantProofLen {
-				t.Errorf("InclusionProof length = %d, want %d", len(proofData.InclusionProof), tc.wantProofLen)
+			if len(proofData.InclusionProof) != test.wantProofLen {
+				t.Errorf("InclusionProof length = %d, want %d", len(proofData.InclusionProof), test.wantProofLen)
 			}
-			m, err := entriesByIndex[tc.entryIdx].Marshal()
+			m, err := entriesByIndex[test.entryIdx].Marshal()
 			if err != nil {
-				t.Fatalf("entries[%d].Marshal error: %v", tc.entryIdx, err)
+				t.Fatalf("entries[%d].Marshal error: %v", test.entryIdx, err)
 			}
 			e := entry.New(m)
 			eb, err := e.Marshal()
@@ -1076,11 +1073,11 @@ func TestMTCLog_AddTBS(t *testing.T) {
 				t.Fatalf("entry.Marshal error: %v", err)
 			}
 			leafHash := rfc6962.DefaultHasher.HashLeaf(eb)
-			offset := uint64(tc.entryIdx) - tc.wantStart
-			treeSize := tc.wantEnd - tc.wantStart
+			offset := uint64(test.entryIdx) - test.wantStart
+			treeSize := test.wantEnd - test.wantStart
 			subRoot, err := proof.RootFromInclusionProof(rfc6962.DefaultHasher, offset, treeSize, leafHash, proofData.InclusionProof)
 			if err != nil {
-				t.Fatalf("RootFromInclusionProof(entry%d): %v", tc.entryIdx, err)
+				t.Fatalf("RootFromInclusionProof(entry%d): %v", test.entryIdx, err)
 			}
 			if len(subRoot) != 32 {
 				t.Fatalf("subRoot length = %d, want 32", len(subRoot))
@@ -1088,27 +1085,14 @@ func TestMTCLog_AddTBS(t *testing.T) {
 			if len(proofData.Signatures) != 2 {
 				t.Fatalf("got %d signatures, want 2", len(proofData.Signatures))
 			}
-			// SPEC: draft-ietf-plants-merkle-tree-certs section 6.2.
-			// SubtreeSignature.Signature contains the raw signature.
-			// SPEC: https://c2sp.org/tlog-cosignature
-			// note.SubtreeVerifier expects a C2SP timestamped_signature prefixed with the 8-byte u64 timestamp.
-			reconstructCosig := func(v note.SubtreeVerifier, rawSig []byte) []byte {
-				s := make([]byte, 4+8+len(rawSig))
-				binary.BigEndian.PutUint32(s[0:], v.KeyHash())
-				binary.BigEndian.PutUint64(s[4:], 0)
-				copy(s[12:], rawSig)
-				r := fmt.Appendf(nil, "— %s %s\n", v.Name(), base64.StdEncoding.EncodeToString(s))
-				t.Logf("reconstructed sig: %s", r)
-				return r
-			}
-			if !mtcLog.subtreeSigner.Verifier().VerifySubtree(mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, reconstructCosig(mtcLog.subtreeSigner.Verifier(), proofData.Signatures[0].Signature)) {
-				t.Errorf("VerifySubtree failed for log signature on entry%d", tc.entryIdx)
+			if !mtcLog.subtreeSigner.Verifier().VerifySubtree(mtcLog.origin, test.wantStart, test.wantEnd, subRoot, proofData.Signatures[0].Signature) {
+				t.Errorf("VerifySubtree failed for log signature on entry%d", test.entryIdx)
 			}
 			if !bytes.Equal(proofData.Signatures[0].CosignerID, mtcLog.logCosignerID) {
 				t.Errorf("CosignerID = %x, want %x", proofData.Signatures[0].CosignerID, mtcLog.logCosignerID)
 			}
-			if !witVerifier.VerifySubtree(mtcLog.origin, tc.wantStart, tc.wantEnd, subRoot, reconstructCosig(witVerifier, proofData.Signatures[1].Signature)) {
-				t.Errorf("VerifySubtree failed for witness signature on entry%d", tc.entryIdx)
+			if !witVerifier.VerifySubtree(mtcLog.origin, test.wantStart, test.wantEnd, subRoot, proofData.Signatures[1].Signature) {
+				t.Errorf("VerifySubtree failed for witness signature on entry%d", test.entryIdx)
 			}
 		})
 	}
