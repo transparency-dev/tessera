@@ -1577,7 +1577,7 @@ func (w *mirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, b
 	_, err := w.seq.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 		row, err := txn.ReadRowWithOptions(ctx, w.seq.table("IntCoord"), spanner.Key{0}, []string{"seq", "rootHash"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 		if err != nil {
-			return fmt.Errorf("failed to read IntCoord: %v", err)
+			return fmt.Errorf("failed to read IntCoord: %w", err)
 		}
 		var fromSeq int64 // Spanner doesn't support uint64
 		if err := row.Columns(&fromSeq, &rootHash); err != nil {
