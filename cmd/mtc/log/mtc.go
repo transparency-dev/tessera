@@ -498,12 +498,11 @@ func (l *MTCLog) getSubtreeSigs(ctx context.Context, start, end uint64, rawCp []
 	if err != nil {
 		return nil, fmt.Errorf("cannot sign subtree [%d, %d): %v", start, end, err)
 	}
-	selfSubSig, err := mtcproof.NewSubtreeSignatureFromCosig(selfSig)
-	if err != nil {
-		return nil, fmt.Errorf("cannot format self subtree signature: %w", err)
-	}
 
-	allSigs := []mtcproof.SubtreeSignature{selfSubSig}
+	allSigs := []mtcproof.SubtreeSignature{{
+		CosignerID: l.logCosignerID,
+		Signature:  selfSig,
+	}}
 
 	if l.subtreeGateway != nil {
 		consProof, err := pb.SubtreeConsistencyProof(ctx, start, end)
