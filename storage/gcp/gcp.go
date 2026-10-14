@@ -87,6 +87,9 @@ const (
 
 	DefaultIntegrationSizeLimit = 5 * 4096
 
+	// mirrorBundleWriteConcurrency is the maximum number of entry bundles the mirror writer will write to GCS concurrently.
+	mirrorBundleWriteConcurrency = 32
+
 	// defaultSeqTableMaxBatchByteSize is the default maximum byte size of a batch of entries to be written to the
 	// "V" field in the "Seq" table. This is set to just under 10 MiB, the maximum size of the Spanner
 	// BYTES column, with some headroom for the gob encoding.
@@ -1520,9 +1523,20 @@ func (w *mirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, b
 	var newLeafHashes [][]byte
 	seenPartialBundle := false
 
+	// Bundles are written to GCS concurrently.
+	eg, egCtx := errgroup.WithContext(ctx)
+	eg.SetLimit(mirrorBundleWriteConcurrency)
+	// Ensure that no bundle writes outlive this call, even if we return early.
+	defer func() { _ = eg.Wait() }()
+
 	for b, err := range bundles {
 		if err != nil {
 			return 0, nil, err
+		}
+		if egCtx.Err() != nil {
+			// A bundle write has failed (or ctx is done), so stop consuming bundles.
+			// The error is returned by eg.Wait() below.
+			break
 		}
 		if b == nil {
 			return 0, nil, fmt.Errorf("bundle iterator yielded nil bundle at index %d", currBundleIdx)
@@ -1551,10 +1565,19 @@ func (w *mirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, b
 			newLeafHashes = append(newLeafHashes, rfc6962.DefaultHasher.HashLeaf(entry))
 		}
 
-		if err := w.logStore.setEntryBundle(ctx, currBundleIdx, partial, bundleRaw); err != nil {
-			return 0, nil, fmt.Errorf("failed to store entry bundle %d: %w", currBundleIdx, err)
-		}
+		idx := currBundleIdx
+		eg.Go(func() error {
+			if err := w.logStore.setEntryBundle(egCtx, idx, partial, bundleRaw); err != nil {
+				return fmt.Errorf("failed to store entry bundle %d: %w", idx, err)
+			}
+			return nil
+		})
 		currBundleIdx++
+	}
+
+	// All bundles MUST be durably stored before IntCoord is updated to include them.
+	if err := eg.Wait(); err != nil {
+		return 0, nil, err
 	}
 
 	if len(newLeafHashes) == 0 {
