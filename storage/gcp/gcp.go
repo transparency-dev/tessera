@@ -1516,8 +1516,6 @@ var _ tessera.MirrorWriter = &mirrorWriter{}
 // IntegrateBundles integrates a sequence of entry bundles into the tree, starting at the provided bundle index bundleIdx.
 // Returns the new size and root hash of the tree if successful.
 func (w *mirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, bundles iter.Seq2[*api.EntryBundle, error]) (uint64, []byte, error) {
-	currentSize := bundleIdx << layout.TileHeight
-
 	currBundleIdx := bundleIdx
 	var newLeafHashes [][]byte
 	seenPartialBundle := false
@@ -1549,16 +1547,8 @@ func (w *mirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, b
 			return 0, nil, fmt.Errorf("failed to marshal entry bundle %d: %v", currBundleIdx, err)
 		}
 
-		bundleStartSeq := currBundleIdx * layout.EntryBundleWidth
-		if bundleStartSeq > currentSize+uint64(len(newLeafHashes)) {
-			return 0, nil, fmt.Errorf("bundle index %d (seq %d) has gap from current tree size %d", currBundleIdx, bundleStartSeq, currentSize+uint64(len(newLeafHashes)))
-		}
-		for i, entry := range b.Entries {
-			seq := bundleStartSeq + uint64(i)
-			if seq >= currentSize {
-				lh := rfc6962.DefaultHasher.HashLeaf(entry)
-				newLeafHashes = append(newLeafHashes, lh)
-			}
+		for _, entry := range b.Entries {
+			newLeafHashes = append(newLeafHashes, rfc6962.DefaultHasher.HashLeaf(entry))
 		}
 
 		if err := w.logStore.setEntryBundle(ctx, currBundleIdx, partial, bundleRaw); err != nil {
@@ -1571,7 +1561,9 @@ func (w *mirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, b
 		return w.seq.currentTree(ctx)
 	}
 
-	newSize := currentSize + uint64(len(newLeafHashes))
+	// startSize is the index of the first entry in the provided bundles.
+	startSize := bundleIdx * layout.EntryBundleWidth
+	newSize := startSize + uint64(len(newLeafHashes))
 	var rootHash []byte
 
 	_, err := w.seq.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
@@ -1590,7 +1582,7 @@ func (w *mirrorWriter) IntegrateBundles(ctx context.Context, bundleIdx uint64, b
 			return nil
 		}
 
-		activeSize := bundleIdx << layout.TileHeight
+		activeSize := startSize
 		activeHashes := newLeafHashes
 
 		if storedSeq > activeSize {
