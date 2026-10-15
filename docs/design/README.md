@@ -10,6 +10,7 @@ The following documents are available:
 - [philosophy.md](./philosophy.md): The guiding principles and rationale behind Tessera's design.
 - [lifecycle.md](./lifecycle.md): The various states a Tessera log can be in.
 - [antispam.md](./antispam.md): How Tessera handles duplicate entries.
+- [pruning.md](./pruning.md): Design for log pruning and archiving.
 - [performance.md](../performance.md): A high-level overview of the performance characteristics of the different storage backends.
 
 ## Objective
