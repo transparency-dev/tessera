@@ -126,14 +126,6 @@ func New(httpClient *http.Client, pol policy.TLogPolicy) (*Gateway, error) {
 // checkpoint have been collected.
 // TODO: implement subtree cosignature policy matching directly.
 func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end uint64, subRoot []byte, consProof [][]byte, rawCp []byte) ([]mtcproof.SubtreeSignature, error) {
-	// TODO: consider disallowing this if empty policies are not allowed.
-	if len(gw.witnesses) == 0 {
-		if gw.policy.Satisfied(rawCp) {
-			return nil, nil
-		}
-		return nil, ErrPolicyNotSatisfied
-	}
-
 	// Open the checkpoint without verifying it to extract all signatures.
 	_, err := note.Open(rawCp, note.VerifierList())
 	var unverified *note.UnverifiedNoteError
@@ -144,6 +136,11 @@ func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end 
 
 	// reconstructedCp is used for policy checking.
 	reconstructedCp := fmt.Appendf(nil, "%s\n", n.Text)
+
+	// TODO: consider disallowing this if empty policies are not allowed.
+	if gw.policy.Satisfied(reconstructedCp) {
+		return nil, nil
+	}
 
 	// Figure out which witnesses signed the checkpoint so we know who the candidates for getting
 	// subtree cosignatures from are, and store their note-formatted checkpoint cosignatures.
