@@ -203,6 +203,17 @@ func TestGateway_CosignSubtree(t *testing.T) {
 		t.Fatalf("ParseCosignerID: %v", err)
 	}
 
+	skey2, vkey2, _ := f_note.GenerateMLDSAKey("oid/1.3.6.1.4.1.32473.107")
+	signer2, _ := f_note.NewMLDSASigner(skey2)
+	ver2, err := f_note.NewMLDSAVerifier(vkey2)
+	if err != nil {
+		t.Fatalf("NewMLDSAVerifier: %v", err)
+	}
+	cosignerID2, err := mtcproof.ParseCosignerID(ver2.Name())
+	if err != nil {
+		t.Fatalf("ParseCosignerID: %v", err)
+	}
+
 	rawCpWithWit, err := note.Sign(&note.Note{Text: cpText}, logSigner, signer1)
 	if err != nil {
 		t.Fatalf("note.Sign: %v", err)
@@ -212,10 +223,28 @@ func TestGateway_CosignSubtree(t *testing.T) {
 		t.Fatalf("note.Sign: %v", err)
 	}
 
+	// Construct a checkpoint where signer1's signature is valid, but signer2's signature
+	// was computed over different checkpoint text and is therefore invalid for cpText.
+	otherCp := f_log.Checkpoint{
+		Origin: origin,
+		Size:   end + 1,
+		Hash:   root,
+	}
+	otherSignedBy2, err := note.Sign(&note.Note{Text: string(otherCp.Marshal())}, signer2)
+	if err != nil {
+		t.Fatalf("note.Sign: %v", err)
+	}
+	_, sig2Line, ok := bytes.Cut(otherSignedBy2, []byte("\n\n"))
+	if !ok {
+		t.Fatalf("expected signature separator in signed note")
+	}
+	rawCpWithCorruptWit2 := append(bytes.Clone(rawCpWithWit), sig2Line...)
+
 	rawSubSig := mustSignSubtree(t, signer1, origin, start, end, root)
 	corruptSubSig := mustSignSubtree(t, signer1, origin, start, end, bytes.Repeat([]byte{0xee}, 32))
 
 	u1, _ := url.Parse("https://wit1.example.com")
+	u2, _ := url.Parse("https://wit2.example.com")
 	policy1 := policy.TLogPolicy{
 		Witnesses: []policy.Witness{
 			{
@@ -226,6 +255,30 @@ func TestGateway_CosignSubtree(t *testing.T) {
 			},
 		},
 		Quorum: ver1.Name(),
+	}
+	policyAnyOf2 := policy.TLogPolicy{
+		Witnesses: []policy.Witness{
+			{
+				Name:     ver1.Name(),
+				URL:      u1,
+				VKey:     vkey1,
+				Verifier: ver1,
+			},
+			{
+				Name:     ver2.Name(),
+				URL:      u2,
+				VKey:     vkey2,
+				Verifier: ver2,
+			},
+		},
+		Groups: []policy.Group{
+			{
+				Name:      "any2",
+				Threshold: 1,
+				Members:   []string{ver1.Name(), ver2.Name()},
+			},
+		},
+		Quorum: "any2",
 	}
 
 	for _, test := range []struct {
@@ -258,6 +311,34 @@ func TestGateway_CosignSubtree(t *testing.T) {
 			},
 			policy:     policy1,
 			rawCp:      rawCpWithWit,
+			wantSigs:   1,
+			wantSubSig: rawSubSig,
+		},
+		{
+			name: "policy satisfied when another witness has a corrupted checkpoint signature",
+			witnesses: map[witnessKey]witness{
+				{name: ver1.Name(), keyHash: ver1.KeyHash()}: {
+					client: &mockSubtreeClient{
+						signFunc: func(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, rawCp []byte) ([]byte, error) {
+							return rawSubSig, nil
+						},
+					},
+					verifier:   ver1,
+					cosignerID: cosignerID1,
+				},
+				{name: ver2.Name(), keyHash: ver2.KeyHash()}: {
+					client: &mockSubtreeClient{
+						signFunc: func(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, rawCp []byte) ([]byte, error) {
+							t.Errorf("SignSubtree should not be called for witness with invalid checkpoint signature")
+							return nil, errors.New("unexpected call")
+						},
+					},
+					verifier:   ver2,
+					cosignerID: cosignerID2,
+				},
+			},
+			policy:     policyAnyOf2,
+			rawCp:      rawCpWithCorruptWit2,
 			wantSigs:   1,
 			wantSubSig: rawSubSig,
 		},
@@ -324,12 +405,39 @@ func TestGateway_CosignSubtree(t *testing.T) {
 			wantErr:   ErrPolicyNotSatisfied,
 		},
 		{
+			name:      "policy not satisfied when gateway has no witnesses even if checkpoint satisfies policy",
+			witnesses: map[witnessKey]witness{},
+			policy:    policy1,
+			rawCp:     rawCpWithWit,
+			wantSigs:  0,
+			wantErr:   ErrPolicyNotSatisfied,
+		},
+		{
 			name:      "empty policy satisfied with empty gateway",
 			witnesses: map[witnessKey]witness{},
 			policy:    policy.TLogPolicy{Quorum: "none"},
 			rawCp:     rawCpNoWit,
 			wantSigs:  0,
 			wantErr:   nil,
+		},
+		{
+			name: "empty policy satisfied with non-empty gateway and no witness on checkpoint",
+			witnesses: map[witnessKey]witness{
+				{name: ver1.Name(), keyHash: ver1.KeyHash()}: {
+					client: &mockSubtreeClient{
+						signFunc: func(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, rawCp []byte) ([]byte, error) {
+							t.Errorf("SignSubtree should not be called when policy is already satisfied")
+							return nil, errors.New("unexpected call")
+						},
+					},
+					verifier:   ver1,
+					cosignerID: cosignerID1,
+				},
+			},
+			policy:   policy.TLogPolicy{Quorum: "none"},
+			rawCp:    rawCpNoWit,
+			wantSigs: 0,
+			wantErr:  nil,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
