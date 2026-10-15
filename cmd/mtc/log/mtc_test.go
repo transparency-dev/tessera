@@ -974,6 +974,10 @@ func setupTestMTCLog(t *testing.T) (*MTCLog, note.SubtreeVerifier) {
 func TestMTCLog_AddTBS(t *testing.T) {
 	ctx := t.Context()
 	mtcLog, witVerifier := setupTestMTCLog(t)
+	witCosignerID, err := mtcproof.ParseCosignerID(witVerifier.Name())
+	if err != nil {
+		t.Fatalf("Invalid witness cosigner ID: %q: %v", witVerifier.Name(), err)
+	}
 	now := time.Now().Truncate(time.Second)
 
 	makeEntry := func(id int) TBSCertificateLogEntry {
@@ -1089,7 +1093,10 @@ func TestMTCLog_AddTBS(t *testing.T) {
 				t.Errorf("VerifySubtree failed for log signature on entry%d", test.entryIdx)
 			}
 			if !bytes.Equal(proofData.Signatures[0].CosignerID, mtcLog.logCosignerID) {
-				t.Errorf("CosignerID = %x, want %x", proofData.Signatures[0].CosignerID, mtcLog.logCosignerID)
+				t.Errorf("Log CosignerID = %x, want %x", proofData.Signatures[0].CosignerID, mtcLog.logCosignerID)
+			}
+			if !bytes.Equal(proofData.Signatures[1].CosignerID, witCosignerID) {
+				t.Errorf("Witness CosignerID = %x, want %x", proofData.Signatures[1].CosignerID, witCosignerID)
 			}
 			if !witVerifier.VerifySubtree(mtcLog.origin, test.wantStart, test.wantEnd, subRoot, proofData.Signatures[1].Signature) {
 				t.Errorf("VerifySubtree failed for witness signature on entry%d", test.entryIdx)
