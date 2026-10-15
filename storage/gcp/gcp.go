@@ -1674,8 +1674,9 @@ func (w *mirrorWriter) UpdateCheckpoint(ctx context.Context, fn func(oldCP []byt
 			return fmt.Errorf("failed to lock PubCoord: %w", err)
 		}
 
+		// A missing checkpoint is not an error: fn is called with a nil oldCP, per the tessera.MirrorWriter contract.
 		oldCP, err := w.logStore.getCheckpoint(ctx)
-		if err != nil {
+		if err != nil && !errors.Is(err, gcs.ErrObjectNotExist) {
 			return fmt.Errorf("failed to read checkpoint: %w", err)
 		}
 

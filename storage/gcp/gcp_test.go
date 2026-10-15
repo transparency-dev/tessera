@@ -18,8 +18,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"iter"
 	"log"
 	"log/slog"
 	"net/http"
@@ -1052,4 +1054,356 @@ func defaultMerkleLeafHasher(bundle []byte) ([][]byte, error) {
 		r = append(r, h[:])
 	}
 	return r, nil
+}
+
+// newTestMirrorWriter returns a mirrorWriter backed by an in-memory object store and a test Spanner
+// instance, along with a LogReader wired up in the same way as Storage.MirrorWriter does.
+func newTestMirrorWriter(t *testing.T, opts *tessera.MirrorOptions) (*mirrorWriter, tessera.LogReader, *memObjStore) {
+	t.Helper()
+	db, closeDB := newSpannerDB(t)
+	t.Cleanup(closeDB)
+	t.Cleanup(db.Close)
+
+	seq, err := newSpannerCoordinator(t.Context(), db, prefixTable(""), 0)
+	if err != nil {
+		t.Fatalf("newSpannerCoordinator: %v", err)
+	}
+	m := newMemObjStore()
+	mw := &mirrorWriter{
+		seq: seq,
+		logStore: &logResourceStore{
+			objStore:    m,
+			entriesPath: opts.EntriesPath(),
+		},
+	}
+	lr := &LogReader{
+		lrs:            *mw.logStore,
+		integratedSize: mw.IntegratedSize,
+		nextIndex:      mw.IntegratedSize,
+	}
+	return mw, lr, m
+}
+
+func TestMirrorWriter_IntegrateBundles(t *testing.T) {
+	baseBundle := &api.EntryBundle{
+		Entries: [][]byte{[]byte("entry1"), []byte("entry2")},
+	}
+
+	bundlesFunc := func(b *api.EntryBundle) func(yield func(*api.EntryBundle, error) bool) {
+		return func(yield func(*api.EntryBundle, error) bool) {
+			yield(b, nil)
+		}
+	}
+
+	for _, tc := range []struct {
+		name         string
+		bundleIdx    uint64
+		bundle       *api.EntryBundle
+		expectedSize uint64
+		wantErr      bool
+		errSubstring string
+	}{
+		{
+			name:         "integrate bundle with common prefix (extend)",
+			bundleIdx:    0,
+			bundle:       &api.EntryBundle{Entries: append(append([][]byte{}, baseBundle.Entries...), []byte("entry3"))},
+			expectedSize: 3,
+		},
+		{
+			name:         "re-integrate base bundle (idempotency)",
+			bundleIdx:    0,
+			bundle:       baseBundle,
+			expectedSize: 2,
+		},
+		{
+			name:         "re-integrate modified basebundle (conflict error)",
+			bundleIdx:    0,
+			bundle:       &api.EntryBundle{Entries: append(append([][]byte{}, baseBundle.Entries[:len(baseBundle.Entries)-1]...), []byte("entry2_modified"))},
+			wantErr:      true,
+			errSubstring: "precondition failed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := tessera.NewMirrorOptions()
+			ctx := t.Context()
+			mw, _, _ := newTestMirrorWriter(t, opts)
+
+			// Set up the storage with the base bundle.
+			if size, _, err := mw.IntegrateBundles(ctx, 0, bundlesFunc(baseBundle)); err != nil {
+				t.Fatalf("Failed to set up test, IntegrateBundles: %v", err)
+			} else if size != uint64(len(baseBundle.Entries)) {
+				t.Fatalf("Failed to set up test, expected size %d, got %d", len(baseBundle.Entries), size)
+			}
+
+			// Now run the test case.
+			size, _, err := mw.IntegrateBundles(ctx, tc.bundleIdx, bundlesFunc(tc.bundle))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.errSubstring)
+				}
+				if !strings.Contains(err.Error(), tc.errSubstring) {
+					t.Fatalf("expected error containing %q, got %v", tc.errSubstring, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if size != tc.expectedSize {
+				t.Fatalf("got size %d, want %d", size, tc.expectedSize)
+			}
+		})
+	}
+}
+
+func TestMirrorWriter_UpdateCheckpoint(t *testing.T) {
+	cp := func(size uint64) []byte {
+		return fmt.Appendf(nil, "origin\n%d\n%s\nsig\n", size, base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	}
+	errUpdate := errors.New("update failed")
+
+	for _, test := range []struct {
+		name string
+		// publishedCP, if non-nil, is stored as the published checkpoint before calling UpdateCheckpoint.
+		publishedCP []byte
+		// fnErr, if non-nil, is returned by the update function instead of a new checkpoint.
+		fnErr error
+	}{
+		{
+			name: "no published checkpoint",
+		},
+		{
+			name:        "published checkpoint",
+			publishedCP: cp(1),
+		},
+		{
+			name:  "update function error, no published checkpoint",
+			fnErr: errUpdate,
+		},
+		{
+			name:        "update function error, published checkpoint",
+			publishedCP: cp(1),
+			fnErr:       errUpdate,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			mw, lr, m := newTestMirrorWriter(t, tessera.NewMirrorOptions())
+
+			// Integrate a couple of entries so that the new checkpoint doesn't commit to more entries than the tree contains.
+			if _, _, err := mw.IntegrateBundles(ctx, 0, generateBundles(t, 2)); err != nil {
+				t.Fatalf("IntegrateBundles: %v", err)
+			}
+			if test.publishedCP != nil {
+				if err := m.setObject(ctx, layout.CheckpointPath, test.publishedCP, nil, "", ""); err != nil {
+					t.Fatalf("setObject: %v", err)
+				}
+			}
+
+			newCP := cp(2)
+			var gotOldCP []byte
+			err := mw.UpdateCheckpoint(ctx, func(oldCP []byte) ([]byte, error) {
+				gotOldCP = oldCP
+				if test.fnErr != nil {
+					return nil, test.fnErr
+				}
+				return newCP, nil
+			})
+			switch {
+			case test.fnErr == nil && err != nil:
+				t.Fatalf("UpdateCheckpoint: %v", err)
+			case test.fnErr != nil && !errors.Is(err, test.fnErr):
+				t.Fatalf("UpdateCheckpoint: got error %v, want %v", err, test.fnErr)
+			}
+
+			// The witness relies on a nil (rather than merely empty) checkpoint to recognise that none has
+			// been published yet, so check for that explicitly.
+			if test.publishedCP == nil && gotOldCP != nil {
+				t.Errorf("fn called with %q, want nil", gotOldCP)
+			} else if !bytes.Equal(gotOldCP, test.publishedCP) {
+				t.Errorf("fn called with %q, want %q", gotOldCP, test.publishedCP)
+			}
+
+			// If fn returned an error, the published checkpoint must be unchanged.
+			wantCP := newCP
+			if test.fnErr != nil {
+				wantCP = test.publishedCP
+			}
+			gotCP, err := lr.ReadCheckpoint(ctx)
+			switch {
+			case wantCP == nil && !errors.Is(err, os.ErrNotExist):
+				t.Errorf("ReadCheckpoint: got (%q, %v), want os.ErrNotExist", gotCP, err)
+			case wantCP != nil && err != nil:
+				t.Errorf("ReadCheckpoint: %v", err)
+			case !bytes.Equal(gotCP, wantCP):
+				t.Errorf("published checkpoint: got %q, want %q", gotCP, wantCP)
+			}
+		})
+	}
+}
+
+func TestMirrorWriter_UpdateCheckpointGeometry(t *testing.T) {
+	// TODO: Unskip once mirrorWriter.UpdateCheckpoint ensures the partial tiles and entry bundles
+	// implied by the new checkpoint exist.
+	t.Skip("mirrorWriter.UpdateCheckpoint does not yet ensure checkpoint geometry")
+
+	ctx := t.Context()
+	opts := tessera.NewMirrorOptions()
+	mw, lr, m := newTestMirrorWriter(t, opts)
+
+	// Create 66000 entries to span multiple tile levels and multiple tiles at level 1.
+	const treeSize = 66000
+	size, _, err := mw.IntegrateBundles(ctx, 0, generateBundles(t, treeSize))
+	if err != nil {
+		t.Fatalf("IntegrateBundles: %v", err)
+	}
+	if size != treeSize {
+		t.Fatalf("expected integrated size %d, got %d", treeSize, size)
+	}
+
+	for _, test := range []struct {
+		size uint64
+		// wantRHSizes[l] is the expected node count for the rightmost tile at level l:
+		//   - 1..255: partial tile with that many nodes (read via .p/N)
+		//   - 256:    full tile (read via p=0, asserting 256 nodes)
+		//   - 0:      no tile exists at this coordinate for this checkpoint (asserts full tile object is absent)
+		wantRHSizes []int
+	}{
+		{0, []int{}},
+		{1, []int{1}},
+		{129, []int{129}},
+		{256, []int{256, 1}},
+		{300, []int{44, 1}},
+		{600, []int{88, 2}},
+		{65536, []int{256, 256, 1}},
+		{65537, []int{1, 0, 1}},
+		{66000, []int{208, 1, 1}},
+	} {
+		t.Run(fmt.Sprintf("size_%d", test.size), func(t *testing.T) {
+			h := make([]byte, 32)
+			cpStr1 := fmt.Sprintf("origin\n%d\n%s\nsig\n", test.size, base64.StdEncoding.EncodeToString(h))
+			if err := mw.UpdateCheckpoint(ctx, func(old []byte) ([]byte, error) {
+				return []byte(cpStr1), nil
+			}); err != nil {
+				t.Fatalf("UpdateCheckpoint (size %d): %v", test.size, err)
+			}
+
+			if test.size == 0 {
+				return
+			}
+
+			idx := (test.size - 1) / layout.EntryBundleWidth
+			p := uint8(test.wantRHSizes[0])
+			eb := mustReadEntryBundle(t, lr, idx, p)
+			if l := len(eb.Entries); l != test.wantRHSizes[0] {
+				t.Fatalf("expected %d entries in partial bundle %d.%d, got %d", test.wantRHSizes[0], idx, p, l)
+			}
+
+			// Verify the existence/correctness of the partial tiles for the given size,
+			// and ensure that full tiles whose range extends beyond the tree are not created.
+			for level, wantNodes := range test.wantRHSizes {
+				fullTilePath := layout.TilePath(uint64(level), idx, 0)
+				treeP := layout.PartialTileSize(uint64(level), idx, treeSize)
+
+				if wantNodes == 0 {
+					// Tile does not exist at this checkpoint size.
+					// A full tile _may_ legitimately exist in the tree if it's large enough.
+					// However, since our treeSize is 66000 we know that one cannot be present for
+					// these test cases, so we'll assert that it doesn't exist in order to verify that we
+					// haven't incorrectly created one.
+					if d, _, err := m.getObject(ctx, fullTilePath); err == nil {
+						t.Fatalf("Level %d tile %d: full tile %s should not exist for size %d (found %d bytes)", level, idx, fullTilePath, test.size, len(d))
+					} else if !errors.Is(err, gcs.ErrObjectNotExist) {
+						t.Fatalf("Failed to get %s: %v", fullTilePath, err)
+					}
+				} else {
+					tile := mustReadTile(t, lr, uint64(level), idx, uint8(wantNodes))
+					if len(tile.Nodes) != wantNodes {
+						t.Errorf("Expected %d nodes in partial tile %d/%d.%d, got %d", wantNodes, level, idx, uint8(wantNodes), len(tile.Nodes))
+					}
+					// If the integrated tree does not have a full tile at this position (treeP > 0),
+					// no full tile object should have been written.
+					if treeP > 0 {
+						if d, _, err := m.getObject(ctx, fullTilePath); err == nil {
+							t.Errorf("Level %d tile %d: full tile %s should not exist for size %d (found %d bytes)", level, idx, fullTilePath, test.size, len(d))
+						} else if !errors.Is(err, gcs.ErrObjectNotExist) {
+							t.Fatalf("Failed to get %s: %v", fullTilePath, err)
+						}
+					}
+				}
+				idx >>= layout.TileHeight
+			}
+		})
+	}
+}
+
+func mustReadTile(t *testing.T, lr tessera.LogReader, level, idx uint64, p uint8) *api.HashTile {
+	t.Helper()
+	d, err := lr.ReadTile(t.Context(), level, idx, p)
+	if err != nil {
+		t.Fatalf("failed to read tile: %v", err)
+	}
+	tile := &api.HashTile{}
+	if err := tile.UnmarshalText(d); err != nil {
+		t.Fatalf("failed to unmarshal tile: %v", err)
+	}
+	return tile
+}
+
+func mustReadEntryBundle(t *testing.T, lr tessera.LogReader, idx uint64, p uint8) *api.EntryBundle {
+	t.Helper()
+	d, err := lr.ReadEntryBundle(t.Context(), idx, p)
+	if err != nil {
+		t.Fatalf("failed to read entry bundle: %v", err)
+	}
+	eb := &api.EntryBundle{}
+	if err := eb.UnmarshalText(d); err != nil {
+		t.Fatalf("failed to unmarshal entry bundle: %v", err)
+	}
+	return eb
+}
+
+func BenchmarkMarshalEntryBundle(b *testing.B) {
+	for _, entrySize := range []int{32, 128, 1024} {
+		b.Run(fmt.Sprintf("entrySize=%dB", entrySize), func(b *testing.B) {
+			bundle := &api.EntryBundle{
+				Entries: make([][]byte, layout.EntryBundleWidth),
+			}
+			for i := range bundle.Entries {
+				bundle.Entries[i] = bytes.Repeat([]byte("a"), entrySize)
+			}
+			b.ReportAllocs()
+			b.SetBytes(int64(layout.EntryBundleWidth * entrySize))
+			b.ResetTimer()
+			for b.Loop() {
+				res, err := marshalEntryBundle(bundle)
+				if err != nil {
+					b.Fatal(err)
+				}
+				_ = res
+			}
+		})
+	}
+}
+
+func generateBundles(t *testing.T, totalEntries int) iter.Seq2[*api.EntryBundle, error] {
+	t.Helper()
+
+	return func(yield func(*api.EntryBundle, error) bool) {
+		remaining := totalEntries
+
+		N := 0
+		for remaining > 0 {
+			count := min(remaining, layout.EntryBundleWidth)
+			entries := make([][]byte, count)
+			for i := range entries {
+				entries[i] = fmt.Appendf(nil, "entry %d", N+i)
+			}
+			if !yield(&api.EntryBundle{Entries: entries}, nil) {
+				return
+			}
+			remaining -= count
+			N += count
+		}
+	}
 }
