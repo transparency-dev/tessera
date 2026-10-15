@@ -16,6 +16,7 @@ package testonly
 
 import (
 	"context"
+	"io"
 	"testing"
 
 	"github.com/transparency-dev/tessera"
@@ -46,14 +47,17 @@ func NewTestLog(t *testing.T, opts *tessera.AppendOptions) (*TestLog, func(conte
 	}
 
 	root := t.TempDir()
-	driver, err := posix.New(t.Context(), posix.Config{Path: root})
+	logCtx, cancel := context.WithCancel(t.Context())
+	driver, err := posix.New(logCtx, posix.Config{Path: root})
 	if err != nil {
+		cancel()
 		t.Fatalf("posix.New: %v", err)
 	}
 
 	opts.WithCheckpointSigner(s)
-	a, shutdown, lr, err := tessera.NewAppender(t.Context(), driver, opts)
+	a, shutdown, lr, err := tessera.NewAppender(logCtx, driver, opts)
 	if err != nil {
+		cancel()
 		t.Fatalf("NewAppender: %v", err)
 	}
 
@@ -64,7 +68,14 @@ func NewTestLog(t *testing.T, opts *tessera.AppendOptions) (*TestLog, func(conte
 		Appender:    a,
 	}
 
-	return r, shutdown
+	return r, func(ctx context.Context) error {
+		err := shutdown(ctx)
+		cancel()
+		if c, ok := driver.(io.Closer); ok {
+			_ = c.Close()
+		}
+		return err
+	}
 }
 
 // TestLog represents an ephemeral POSIX log instance intended for use in tests.

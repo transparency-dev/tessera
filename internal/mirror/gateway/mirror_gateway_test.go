@@ -72,12 +72,9 @@ func TestGateway(t *testing.T) {
 				f = testLog.Appender.Add(t.Context(), entry)
 			}
 			a := tessera.NewPublicationAwaiter(t.Context(), testLog.LogReader.ReadCheckpoint, 100*time.Millisecond)
-			if _, _, err := a.Await(t.Context(), f); err != nil {
-				t.Fatalf("failed to add entry: %v", err)
-			}
-			goalCP, err := testLog.LogReader.ReadCheckpoint(t.Context())
+			_, goalCP, err := a.Await(t.Context(), f)
 			if err != nil {
-				t.Fatalf("failed to read checkpoint: %v", err)
+				t.Fatalf("failed to add entry: %v", err)
 			}
 
 			var verifiers []note.Verifier
