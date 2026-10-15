@@ -611,8 +611,10 @@ func (l *MTCLog) ProofToLandmark(ctx context.Context, index uint64) ([]byte, tim
 		return nil, retryAfter + landmarkPublicationBuffer + jitter, nil
 	}
 
+	treeSize := l.cpReader.LatestSize()
+
 	// Construct the inclusion proof to the active landmark.
-	pb, err := client.NewProofBuilder(ctx, end, l.reader.ReadTile)
+	pb, err := client.NewProofBuilder(ctx, treeSize, l.reader.ReadTile)
 	if err != nil {
 		return nil, 0, fmt.Errorf("cannot create proof builder: %v", err)
 	}
@@ -626,7 +628,7 @@ func (l *MTCLog) ProofToLandmark(ctx context.Context, index uint64) ([]byte, tim
 	// "extensions MUST contain the log entry's extensions value (Section 5.2.1)."
 	bundleIndex := index / layout.EntryBundleWidth
 	entryOffset := index % layout.EntryBundleWidth
-	eb, err := client.GetEntryBundle(ctx, l.reader.ReadEntryBundle, bundleIndex, end)
+	eb, err := client.GetEntryBundle(ctx, l.reader.ReadEntryBundle, bundleIndex, treeSize)
 	if err != nil {
 		return nil, 0, fmt.Errorf("cannot read entry bundle for entry %d: %v", index, err)
 	}
