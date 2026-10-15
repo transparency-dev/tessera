@@ -479,9 +479,12 @@ func NewMTCLog(ctx context.Context, a *tessera.Appender, opts *Options) (*MTCLog
 }
 
 func (l *MTCLog) getSubtreeSigs(ctx context.Context, start, end uint64, rawCp []byte) ([]mtcproof.SubtreeSignature, error) {
-	_, cpSize, _, err := parse.CheckpointUnsafe(rawCp)
+	origin, cpSize, _, err := parse.CheckpointUnsafe(rawCp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse checkpoint: %v", err)
+	}
+	if origin != l.origin {
+		return nil, fmt.Errorf("checkpoint origin %q != log origin %q", origin, l.origin)
 	}
 
 	pb, err := client.NewProofBuilder(ctx, cpSize, l.reader.ReadTile)

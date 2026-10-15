@@ -939,8 +939,11 @@ func setupTestMTCLog(t *testing.T) (*MTCLog, note.SubtreeVerifier) {
 		t.Fatalf("Failed to initialize POSIX storage: %v", err)
 	}
 
-	sk := "PRIVATE+KEY+example.com/log/testdata+33d7b496+AeymY/SZAX0jZcJ8enZ5FY1Dz+wTML2yWSkK+9DSF3eg"
-	signer, err := snote.NewSigner(sk)
+	sk, _, err := note.GenerateMLDSAKey(testOrigin)
+	if err != nil {
+		t.Fatalf("Failed to generate test key: %v", err)
+	}
+	signer, err := note.NewMLDSASigner(sk)
 	if err != nil {
 		t.Fatalf("Failed to create test signer: %v", err)
 	}
