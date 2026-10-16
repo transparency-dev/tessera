@@ -32,6 +32,27 @@ import (
 	"github.com/transparency-dev/witness/witness"
 )
 
+func TestAddEntriesRejectsUint16OriginLength(t *testing.T) {
+	mux := NewMirrorMux()
+	h := New(mux, nil)
+
+	var body bytes.Buffer
+	origin := "example.com/log"
+	_ = binary.Write(&body, binary.BigEndian, uint16(len(origin)))
+	_, _ = body.WriteString(origin)
+	_ = binary.Write(&body, binary.BigEndian, uint64(0))
+	_ = binary.Write(&body, binary.BigEndian, uint64(0))
+	_ = binary.Write(&body, binary.BigEndian, uint16(0))
+
+	req := httptest.NewRequest(http.MethodPost, "/add-entries", &body)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code < http.StatusBadRequest || response.Code >= http.StatusInternalServerError {
+		t.Fatalf("got status %d, want a 4xx rejection; body %q", response.Code, response.Body.String())
+	}
+}
+
 func TestAddEntries(t *testing.T) {
 	const (
 		testOrigin      = "example-log"
@@ -73,7 +94,7 @@ func TestAddEntries(t *testing.T) {
 	var rawBody bytes.Buffer
 
 	// Write preamble
-	_ = binary.Write(&rawBody, binary.BigEndian, uint16(len(testOrigin)))
+	_ = binary.Write(&rawBody, binary.BigEndian, uint8(len(testOrigin)))
 	_, _ = rawBody.WriteString(testOrigin)
 	_ = binary.Write(&rawBody, binary.BigEndian, uint64(testUploadStart))
 	_ = binary.Write(&rawBody, binary.BigEndian, uint64(testUploadEnd))
@@ -278,7 +299,7 @@ func TestAddEntries_StatusCodes(t *testing.T) {
 			h := New(mux, nil)
 
 			var rawBody bytes.Buffer
-			_ = binary.Write(&rawBody, binary.BigEndian, uint16(len(test.origin)))
+			_ = binary.Write(&rawBody, binary.BigEndian, uint8(len(test.origin)))
 			_, _ = rawBody.WriteString(test.origin)
 			_ = binary.Write(&rawBody, binary.BigEndian, uint64(testUploadStart))
 			_ = binary.Write(&rawBody, binary.BigEndian, uint64(testUploadEnd))
