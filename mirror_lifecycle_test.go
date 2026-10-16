@@ -1001,7 +1001,6 @@ func TestMirrorTarget_SignSubtree(t *testing.T) {
 	}
 
 	otherMirrorSigner, _ := mustGenerateKey("other-mirror-signer")
-	otherOriginSigner, _ := mustGenerateKey("other-origin")
 
 	opts := NewMirrorOptions().
 		WithLogVerifier(testLogVerifier).
@@ -1032,7 +1031,7 @@ func TestMirrorTarget_SignSubtree(t *testing.T) {
 			end:       4,
 			subRoot:   validSubRoot,
 			proof:     validProof,
-			cp:        mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testLogSigner, testMirrorSigner),
+			cp:        mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testMirrorSigner),
 			wantCosig: true,
 		},
 		{
@@ -1045,12 +1044,21 @@ func TestMirrorTarget_SignSubtree(t *testing.T) {
 			wantErr: witness.ErrNoWitnessSignature,
 		},
 		{
+			name:    "checkpoint has too many signatures",
+			start:   0,
+			end:     4,
+			subRoot: validSubRoot,
+			proof:   validProof,
+			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testLogSigner, testMirrorSigner),
+			wantErr: witness.ErrBadRequest,
+		},
+		{
 			name:    "checkpoint signed by wrong mirror key",
 			start:   0,
 			end:     4,
 			subRoot: validSubRoot,
 			proof:   validProof,
-			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testLogSigner, otherMirrorSigner),
+			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, otherMirrorSigner),
 			wantErr: witness.ErrNoWitnessSignature,
 		},
 		{
@@ -1059,7 +1067,7 @@ func TestMirrorTarget_SignSubtree(t *testing.T) {
 			end:     4,
 			subRoot: validSubRoot,
 			proof:   validProof,
-			cp:      mustCosignCP(t, "other-origin", treeSize, rootHash, otherOriginSigner, testMirrorSigner),
+			cp:      mustCosignCP(t, "other-origin", treeSize, rootHash, testMirrorSigner),
 			wantErr: witness.ErrUnknownLog,
 		},
 		{
@@ -1068,7 +1076,7 @@ func TestMirrorTarget_SignSubtree(t *testing.T) {
 			end:     16,
 			subRoot: validSubRoot,
 			proof:   validProof,
-			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testLogSigner, testMirrorSigner),
+			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testMirrorSigner),
 			wantErr: witness.ErrSubtreeRangeInvalid,
 		},
 		{
@@ -1077,7 +1085,7 @@ func TestMirrorTarget_SignSubtree(t *testing.T) {
 			end:     3,
 			subRoot: validSubRoot,
 			proof:   validProof,
-			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testLogSigner, testMirrorSigner),
+			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testMirrorSigner),
 			wantErr: witness.ErrSubtreeRangeInvalid,
 		},
 		{
@@ -1086,7 +1094,7 @@ func TestMirrorTarget_SignSubtree(t *testing.T) {
 			end:     4,
 			subRoot: validSubRoot,
 			proof:   [][]byte{[]byte("corrupted-proof-hash-of-32-bytes")},
-			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testLogSigner, testMirrorSigner),
+			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testMirrorSigner),
 			wantErr: witness.ErrInvalidProof,
 		},
 		{
@@ -1095,7 +1103,7 @@ func TestMirrorTarget_SignSubtree(t *testing.T) {
 			end:     4,
 			subRoot: make([]byte, 32),
 			proof:   validProof,
-			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testLogSigner, testMirrorSigner),
+			cp:      mustCosignCP(t, testPendingCPOrigin, treeSize, rootHash, testMirrorSigner),
 			wantErr: witness.ErrInvalidProof,
 		},
 		{

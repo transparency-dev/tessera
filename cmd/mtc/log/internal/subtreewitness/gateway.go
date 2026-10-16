@@ -42,8 +42,9 @@ type witnessKey struct {
 }
 
 type witness struct {
-	client   SubtreeWitnessClient
-	verifier f_note.SubtreeVerifier
+	client     SubtreeWitnessClient
+	verifier   f_note.SubtreeVerifier
+	cosignerID []byte
 }
 
 // SubtreeWitnessClient defines the interface for calling a witness's sign-subtree endpoint.
@@ -94,7 +95,8 @@ func New(httpClient *http.Client, pol policy.TLogPolicy) (*Gateway, error) {
 			)
 			continue
 		}
-		if _, err := mtcproof.ParseCosignerID(sv.Name()); err != nil {
+		cosignerID, err := mtcproof.ParseCosignerID(sv.Name())
+		if err != nil {
 			return nil, fmt.Errorf("invalid cosigner name in subtree verifier %q: %v", sv.Name(), err)
 		}
 		k := witnessKey{name: sv.Name(), keyHash: sv.KeyHash()}
@@ -103,8 +105,9 @@ func New(httpClient *http.Client, pol policy.TLogPolicy) (*Gateway, error) {
 		}
 		client := wc.NewWitness(w.URL, httpClient)
 		witnesses[k] = witness{
-			client:   client,
-			verifier: sv,
+			client:     client,
+			verifier:   sv,
+			cosignerID: cosignerID,
 		}
 	}
 
@@ -114,8 +117,8 @@ func New(httpClient *http.Client, pol policy.TLogPolicy) (*Gateway, error) {
 	}, nil
 }
 
-// CosignSubtree sends concurrent subtree cosigning requests to all witnesses and returns gathered
-// SubtreeSignatures as soon as the policy the Gateway was constructed with is satisfied.
+// CosignSubtree sends concurrent subtree cosigning requests to all witnesses which cosigned the checkpoint,
+// and returns gathered SubtreeSignatures as soon as the policy the Gateway was constructed with is satisfied.
 //
 // CosignSubtree checks for policy satisfaction on a reconstructed checkpoint, containing the
 // checkpoint signatures corresponding to the collected subtree cosignatures. This means that policy
@@ -142,32 +145,46 @@ func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end 
 	// reconstructedCp is used for policy checking.
 	reconstructedCp := fmt.Appendf(nil, "%s\n", n.Text)
 
-	cpSigs := make(map[witnessKey]string)
+	// Figure out which witnesses signed the checkpoint so we know who the candidates for getting
+	// subtree cosignatures from are, and store their note-formatted checkpoint cosignatures.
+	cpSigs := make(map[witnessKey][]byte)
 	for _, s := range n.UnverifiedSigs {
-		cpSigs[witnessKey{name: s.Name, keyHash: s.Hash}] = s.Base64
+		cpSigs[witnessKey{name: s.Name, keyHash: s.Hash}] = fmt.Appendf(nil, "— %s %s\n", s.Name, s.Base64)
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	var waitGroup sync.WaitGroup
 	type sigOrErr struct {
+		k   witnessKey
 		sig []byte
 		err error
 	}
 	results := make(chan sigOrErr, len(gw.witnesses))
 
-	// Kick off a goroutine for each witness and send result to results chan
-	for _, w := range gw.witnesses {
-		waitGroup.Add(1)
-		go func(w witness) {
-			defer waitGroup.Done()
-			sig, err := w.client.SignSubtree(ctx, start, end, subRoot, consProof, rawCp)
+	// Kick off a goroutine for each witness that signed the checkpoint and send result to results chan
+	var waitGroup sync.WaitGroup
+	for k, w := range gw.witnesses {
+		cpSig, ok := cpSigs[k]
+		if !ok {
+			slog.DebugContext(ctx, "Skipping witness not present on checkpoint",
+				slog.String("witness", k.name),
+				slog.String("key_hash", fmt.Sprintf("%08x", k.keyHash)),
+			)
+			continue
+		}
+		// The checkpoint we send must carry exactly one signature, and it MUST be the
+		// checkpoint cosignature from the witness we're sending to.
+		witCp := fmt.Appendf(nil, "%s\n%s", n.Text, cpSig)
+
+		waitGroup.Go(func() {
+			sig, err := w.client.SignSubtree(ctx, start, end, subRoot, consProof, witCp)
 			results <- sigOrErr{
+				k:   k,
 				sig: sig,
 				err: err,
 			}
-		}(w)
+		})
 	}
 
 	go func() {
@@ -185,62 +202,21 @@ func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end 
 			continue
 		}
 
-		var sigNote *note.UnverifiedNoteError
-		// Use note.Open on a synthetic note to enforce strict signature formatting.
-		_, sigErr := note.Open(append([]byte("text\n\n"), r.sig...), note.VerifierList())
-		if !errors.As(sigErr, &sigNote) {
-			slog.WarnContext(ctx, "Failed to parse witness subtree signature response", slog.Any("error", sigErr))
+		w := gw.witnesses[r.k]
+		if !w.verifier.VerifySubtree(origin, start, end, subRoot, r.sig) {
+			slog.ErrorContext(ctx, "Subtree signature verification failed",
+				slog.String("witness", r.k.name),
+				slog.Uint64("start", start),
+				slog.Uint64("end", end),
+			)
 			continue
 		}
 
-		for _, s := range sigNote.Note.UnverifiedSigs {
-			k := witnessKey{name: s.Name, keyHash: s.Hash}
-			// SPEC: draft-ietf-plants-merkle-tree-certs section 6.2.
-			// "An MTCProof parser MUST reject the input if there are duplicate cosigner_id values"
-			if _, ok := verifiedSubtreeSigs[k]; ok {
-				continue
-			}
-
-			b64, ok := cpSigs[k]
-			if !ok {
-				slog.WarnContext(ctx, "Received subtree signature from witness not present on checkpoint",
-					slog.String("witness", s.Name),
-					slog.String("key_hash", fmt.Sprintf("%08x", s.Hash)),
-				)
-				continue
-			}
-
-			w, ok := gw.witnesses[k]
-			if !ok {
-				slog.ErrorContext(ctx, "Received subtree signature from unknown witness key",
-					slog.String("witness", s.Name),
-					slog.String("key_hash", fmt.Sprintf("%08x", s.Hash)),
-				)
-				continue
-			}
-
-			sigLine := fmt.Appendf(nil, "— %s %s\n", s.Name, s.Base64)
-			if !w.verifier.VerifySubtree(origin, start, end, subRoot, sigLine) {
-				slog.ErrorContext(ctx, "Subtree signature verification failed",
-					slog.String("witness", s.Name),
-					slog.Uint64("start", start),
-					slog.Uint64("end", end),
-				)
-				continue
-			}
-
-			subSig, err := mtcproof.NewSubtreeSignatureFromCosig(sigLine)
-			if err != nil {
-				slog.ErrorContext(ctx, "Failed to extract raw subtree signature",
-					slog.String("witness", s.Name),
-					slog.Any("error", err),
-				)
-				continue
-			}
-
-			verifiedSubtreeSigs[k] = subSig
-			reconstructedCp = fmt.Appendf(reconstructedCp, "— %s %s\n", s.Name, b64)
+		verifiedSubtreeSigs[r.k] = mtcproof.SubtreeSignature{
+			CosignerID: w.cosignerID,
+			Signature:  r.sig,
 		}
+		reconstructedCp = append(reconstructedCp, cpSigs[r.k]...)
 
 		if gw.policy.Satisfied(reconstructedCp) {
 			return slices.Collect(maps.Values(verifiedSubtreeSigs)), nil
