@@ -31,9 +31,12 @@ import (
 
 const (
 	// maxOriginLen is the maximum length of a valid log origin.
-	// This value comes from the MLDSA cosigner spec.
+	// SPEC: https://c2sp.org/tlog-cosignature#ml-dsa-44-signed-message
+	// "opaque log_origin<1..2^8-1>;"
 	maxOriginLen = 255
 	// maxTicketSize is the maximum length of a tlog-mirror ticket.
+	// SPEC: https://c2sp.org/tlog-mirror#request-body
+	// "2 bytes, encoding a big-endian uint16: `ticket_size`"
 	maxTicketSize = 1<<16 - 1
 )
 
@@ -48,10 +51,12 @@ func New(m *MirrorMux, w *witness.Witness) http.Handler {
 
 func addEntries(m *MirrorMux) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// SPEC: When sending responses, mirrors SHOULD send an Accept-Encoding header that includes gzip
+		// SPEC: https://c2sp.org/tlog-mirror#request-body
+		// "When sending responses, mirrors SHOULD send an `Accept-Encoding` header that includes `gzip`"
 		w.Header().Add("Accept-Encoding", "gzip")
 
-		// SPEC: The request body MUST have Content-Type of application/octet-stream ...
+		// SPEC: https://c2sp.org/tlog-mirror#request-body
+		// "The request body MUST have `Content-Type` of `application/octet-stream`"
 		if t := strings.ToLower(r.Header.Get("Content-Type")); t != "application/octet-stream" {
 			http.Error(w, fmt.Sprintf("invalid Content-Type %q", t), http.StatusBadRequest)
 			return
@@ -59,7 +64,8 @@ func addEntries(m *MirrorMux) http.HandlerFunc {
 		defer func() {
 			_ = r.Body.Close()
 		}()
-		// SPEC: Mirrors MUST support receiving Content-Encoding: gzip in add-entries requests
+		// SPEC: https://c2sp.org/tlog-mirror#request-body
+		// "Mirrors MUST support receiving `Content-Encoding: gzip` in `add-entries` requests."
 		reader := r.Body
 		switch ce := strings.ToLower(r.Header.Get("Content-Encoding")); ce {
 		case "":
@@ -92,27 +98,31 @@ func addEntries(m *MirrorMux) http.HandlerFunc {
 		nextEntry, pendingSize, ticket, cosigs, err := m.AddEntries(r.Context(), req.logOrigin, req.uploadStart, req.uploadEnd, req.ticket, req.NextPackage)
 		switch {
 		case errors.Is(err, ErrUnknownLog):
-			// SPEC: If log_origin is not a known log, the mirror MUST respond with a "404 Not Found" HTTP status code.
+			// SPEC: https://c2sp.org/tlog-mirror#processing
+			// "If `log_origin` is not a known log, the mirror MUST respond with a "404 Not Found" HTTP status code."
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 
 		case errors.Is(err, tessera.ErrConflict):
-			// SPEC: When sending a "409 Conflict" or "202 Accepted" response, the response body MUST have a Content-Type of text/x.tlog.mirror-info and consist of three lines, each followed by a newline (U+000A):
-			// The tree size of a valid pending checkpoint, in decimal
-			// The next entry, in decimal
-			// An opaque, possibly zero length, ticket value, encoded in base64
+			// SPEC: https://c2sp.org/tlog-mirror#processing
+			// "When sending a "409 Conflict" or "202 Accepted" response, the response body MUST have a `Content-Type` of `text/x.tlog.mirror-info` and consist of three lines, each followed by a newline (U+000A):
+			// * The tree size of a valid pending checkpoint, in decimal
+			// * The next entry, in decimal
+			// * An opaque, possibly zero length, ticket value, encoded in base64"
 			w.Header().Set("Content-Type", "text/x.tlog.mirror-info")
 			w.WriteHeader(http.StatusConflict)
 			_, _ = fmt.Fprintf(w, "%d\n%d\n%s\n", pendingSize, nextEntry, base64.StdEncoding.EncodeToString(ticket))
 			return
 
 		case errors.Is(err, tessera.ErrNoPendingCheckpoint):
+			// SPEC: https://c2sp.org/tlog-mirror#processing
+			// "If the mirror has never received a pending checkpoint signed by the log, the mirror MUST respond with a "422 Unprocessable Entity" HTTP status code."
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 
 		case errors.Is(err, tessera.ErrInvalidProof):
-			// SPEC: If this (subtree consistency proof) verification process fails, it MUST respond with a "422 Unprocessable Entity"
-			// HTTP status code and end processing.
+			// SPEC: https://c2sp.org/tlog-mirror#processing
+			// "If this verification process fails, it MUST respond with a "422 Unprocessable Entity" HTTP status code and end processing."
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 
@@ -122,21 +132,23 @@ func addEntries(m *MirrorMux) http.HandlerFunc {
 			return
 
 		case nextEntry >= req.uploadEnd:
-			// SPEC: If next_entry == upload_end, and no cosignatures are provided by the mirror,
-			// the mirror MUST respond with a "200 OK" status code and an empty response body.
-			// If next_entry == upload_end, and cosignatures are provided by the mirror,
-			// the mirror MUST respond with a "200 OK" status code and the cosignatures.
+			// SPEC: https://c2sp.org/tlog-mirror#processing
+			// "Once all expected entry packages are successfully validated and committed, the next entry will be greater or equal to `upload_end`."
+			// ...
+			// "Otherwise, the mirror MUST respond with a "200 Success" HTTP status code. The response body MUST be formatted as in a [witness][]'s successful `add-checkpoint` response: a sequence of one or more [note][] signature lines, each starting with the `—` character (U+2014) and ending with a newline character (U+000A). The signatures MUST be [cosignatures][cosignature] from the mirror key(s) on the checkpoint."
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(cosigs) // We don't care about failures here.
 			return
 
 		case nextEntry == req.uploadStart:
-			// SPEC: If no entry package was authenticated and saved before the body ended (for example, the request header itself was malformed, or the first package's bytes were truncated mid-package), the mirror MUST respond with a "400 Bad Request" HTTP status code.
+			// SPEC: https://c2sp.org/tlog-mirror#processing
+			// "If the canonical sequence is not empty, and no entry package was authenticated and saved before the body ended (for example, the request header itself was malformed, or the first package's bytes were truncated mid-package), the mirror MUST respond with a "400 Bad Request" HTTP status code."
 			http.Error(w, "truncated or malformed body: no entry packages saved", http.StatusBadRequest)
 			return
 
 		case nextEntry > req.uploadStart:
-			// SPEC: If at least one entry package was authenticated and saved, but the mirror has not yet received all packages covering [upload_start, upload_end), the mirror MUST respond with a "202 Accepted" response carrying the advanced next entry.
+			// SPEC: https://c2sp.org/tlog-mirror#processing
+			// "If at least one entry package was authenticated and saved, but the mirror has not yet received all packages covering `[upload_start, upload_end)`, the mirror MUST respond with a "202 Accepted" response carrying the advanced next entry."
 			w.Header().Set("Content-Type", "text/x.tlog.mirror-info")
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = fmt.Fprintf(w, "%d\n%d\n%s\n", pendingSize, nextEntry, base64.StdEncoding.EncodeToString(ticket)) // We don't care about failures here.
@@ -182,10 +194,11 @@ func (a *addEntriesRequest) NextPackage() (*tessera.MirrorPackage, error) {
 
 	// Now parse the package.
 	//
-	// SPEC: The package MUST contain the following values, concatenated.
-	//         - The log entries in [start, end), each with a big-endian uint16 length prefix,
-	//         - 1 byte, encoding an 8-bit unsigned integer, num_hashes, which MUST be at most 63,
-	//         - num_hashes subtree consistency proof hash values.
+	// SPEC: https://c2sp.org/tlog-mirror#request-body
+	// "Each package MUST contain the following values, concatenated.
+	// * The log entries in `[start, end)`, each with a big-endian uint16 length prefix
+	// * 1 byte, encoding an 8-bit unsigned integer, `num_hashes`, which MUST be at most 63
+	// * `num_hashes` [subtree consistency proof][] hash values"
 
 	// First the entries themselves.
 	var entries [][]byte
@@ -232,14 +245,16 @@ func (a *addEntriesRequest) NextPackage() (*tessera.MirrorPackage, error) {
 //
 // Returns a struct which represents the request, and provides streaming access to the entry packages.
 func parseAddEntriesPreamble(r io.Reader) (*addEntriesRequest, error) {
-	// SPEC: The request body MUST ... contain the following values, concatenated:
-	//         2 bytes, encoding a big-endian uint16: log_origin_size
-	//         log_origin_size bytes, containing the log origin: log_origin
-	//         8 bytes, encoding a big-endian uint64: upload_start
-	//         8 bytes, encoding a big-endian uint64: upload_end
-	//         2 bytes, encoding a big-endian uint16: ticket_size
-	//         ticket_size bytes, containing an opaque ticket value, described below
-	//         A sequence of entry packages
+	// SPEC: https://c2sp.org/tlog-mirror#request-body
+	// "The request body MUST have `Content-Type` of `application/octet-stream` and
+	// contain the following values, concatenated.
+	// * 1 byte, encoding a uint8: `log_origin_size`
+	// * `log_origin_size` bytes, containing the log origin: `log_origin`
+	// * 8 bytes, encoding a big-endian uint64: `upload_start`
+	// * 8 bytes, encoding a big-endian uint64: `upload_end`
+	// * 2 bytes, encoding a big-endian uint16: `ticket_size`
+	// * `ticket_size` bytes, containing an opaque `ticket` value, described below
+	// * A sequence of *entry packages*, described below"
 	var logOriginSize uint16
 	if err := binary.Read(r, binary.BigEndian, &logOriginSize); err != nil {
 		return nil, err
@@ -277,7 +292,8 @@ func parseAddEntriesPreamble(r io.Reader) (*addEntriesRequest, error) {
 		}
 	}
 
-	// SPEC: upload_start MUST be less or equal to upload_end
+	// SPEC: https://c2sp.org/tlog-mirror#request-body
+	// "`upload_start` MUST be less or equal to `upload_end`."
 	if uploadStart > uploadEnd {
 		return nil, fmt.Errorf("uploadStart (%d) > uploadEnd (%d)", uploadStart, uploadEnd)
 	}
