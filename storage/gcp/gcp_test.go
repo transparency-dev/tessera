@@ -16,12 +16,17 @@ package gcp
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -43,6 +48,7 @@ import (
 	"github.com/transparency-dev/tessera/fsck"
 	storage "github.com/transparency-dev/tessera/storage/internal"
 	"golang.org/x/mod/sumdb/note"
+	"google.golang.org/api/option"
 )
 
 func init() {
@@ -610,7 +616,7 @@ func TestPublishTree(t *testing.T) {
 				t.Fatalf("publishTree: %v", err)
 			}
 			cpOld := []byte("bananas")
-			if err := m.setObject(ctx, layout.CheckpointPath, cpOld, nil, "", ""); err != nil {
+			if err := m.setObject(ctx, layout.CheckpointPath, cpOld, nil, "", "", ""); err != nil {
 				t.Fatalf("setObject(bananas): %v", err)
 			}
 			updatesSeen := 0
@@ -904,7 +910,7 @@ func (m *memObjStore) getObject(_ context.Context, obj string) ([]byte, *gcs.Rea
 }
 
 // TODO(phboneff): add content type tests
-func (m *memObjStore) setObject(_ context.Context, obj string, data []byte, cond *gcs.Conditions, _, _ string) error {
+func (m *memObjStore) setObject(_ context.Context, obj string, data []byte, cond *gcs.Conditions, _, _, _ string) error {
 	m.Lock()
 	defer m.Unlock()
 
@@ -1012,7 +1018,7 @@ func TestSetObjectBucketPrefixIdempotentRecovery(t *testing.T) {
 	}()
 
 	s := &gcsStorage{gcsClient: c, bucket: bucket, bucketPrefix: prefix}
-	err = s.setObject(ctx, objName, data, &gcs.Conditions{DoesNotExist: true}, "application/octet-stream", "")
+	err = s.setObject(ctx, objName, data, &gcs.Conditions{DoesNotExist: true}, "application/octet-stream", "", "")
 	mu.Lock()
 	got := gotReadObj
 	mu.Unlock()
@@ -1021,6 +1027,249 @@ func TestSetObjectBucketPrefixIdempotentRecovery(t *testing.T) {
 	}
 	if got != wantObj {
 		t.Fatalf("recovery getObject read %q, want %q (double-prefix bug)", got, wantObj)
+	}
+}
+
+func TestGCSStorageGzipEntryBundle(t *testing.T) {
+	const bucket = "test-bucket"
+	bundleData := makeBundle(t, 0, 20)
+	tileData := []byte("raw-tile-bytes")
+
+	type storedObj struct {
+		contentEncoding string
+		contentType     string
+		cacheControl    string
+		rawBody         []byte
+	}
+
+	var mu sync.Mutex
+	objects := make(map[string]storedObj)
+	var force412 bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/upload/"):
+			mu.Lock()
+			fail412 := force412
+			mu.Unlock()
+			if fail412 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusPreconditionFailed)
+				_, _ = fmt.Fprint(w, `{"error":{"code":412,"message":"conditionNotMet"}}`)
+				return
+			}
+
+			_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err != nil {
+				t.Errorf("ParseMediaType: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			mr := multipart.NewReader(r.Body, params["boundary"])
+
+			// Part 1: JSON object metadata
+			metaPart, err := mr.NextPart()
+			if err != nil {
+				t.Errorf("NextPart(meta): %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			var meta struct {
+				Name            string `json:"name"`
+				ContentType     string `json:"contentType"`
+				ContentEncoding string `json:"contentEncoding"`
+				CacheControl    string `json:"cacheControl"`
+			}
+			if err := json.NewDecoder(metaPart).Decode(&meta); err != nil {
+				t.Errorf("Decode(meta): %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			// Part 2: object media payload
+			dataPart, err := mr.NextPart()
+			if err != nil {
+				t.Errorf("NextPart(data): %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			body, err := io.ReadAll(dataPart)
+			if err != nil {
+				t.Errorf("ReadAll(data): %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			mu.Lock()
+			objects[meta.Name] = storedObj{
+				contentEncoding: meta.ContentEncoding,
+				contentType:     meta.ContentType,
+				cacheControl:    meta.CacheControl,
+				rawBody:         body,
+			}
+			mu.Unlock()
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"name":%q,"bucket":%q,"generation":"1"}`, meta.Name, bucket)
+
+		case r.Method == http.MethodGet:
+			p := strings.TrimPrefix(r.URL.Path, "/download")
+			objName, _ := url.PathUnescape(strings.TrimPrefix(p, "/storage/v1/b/"+bucket+"/o/"))
+			mu.Lock()
+			obj, ok := objects[objName]
+			mu.Unlock()
+			if !ok {
+				http.Error(w, "object not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", obj.contentType)
+			if obj.contentEncoding != "" {
+				w.Header().Set("Content-Encoding", obj.contentEncoding)
+			}
+			w.Header().Set("X-Goog-Generation", "1")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(obj.rawBody)
+
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected", http.StatusNotImplemented)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("STORAGE_EMULATOR_HOST", strings.TrimPrefix(srv.URL, "http://"))
+	ctx := context.Background()
+
+	httpClient, err := gcs.NewClient(ctx, gcs.WithJSONReads())
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer func() { _ = httpClient.Close() }()
+
+	lrs := &logResourceStore{
+		objStore:    &gcsStorage{gcsClient: httpClient, bucket: bucket},
+		entriesPath: layout.EntriesPath,
+	}
+
+	// 1. Writing an entry bundle should store gzip-compressed bytes with Content-Encoding: gzip.
+	if err := lrs.setEntryBundle(ctx, 0, 20, bundleData); err != nil {
+		t.Fatalf("setEntryBundle: %v", err)
+	}
+	bundleObjName := layout.EntriesPath(0, 20)
+	mu.Lock()
+	storedBundle, ok := objects[bundleObjName]
+	mu.Unlock()
+	if !ok {
+		t.Fatalf("bundle object %q was not stored", bundleObjName)
+	}
+	if storedBundle.contentEncoding != "gzip" {
+		t.Errorf("bundle ContentEncoding = %q, want %q", storedBundle.contentEncoding, "gzip")
+	}
+	if bytes.Equal(storedBundle.rawBody, bundleData) {
+		t.Fatal("stored bundle rawBody is uncompressed, want gzip-compressed wire bytes")
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(storedBundle.rawBody))
+	if err != nil {
+		t.Fatalf("stored bundle rawBody is not valid gzip: %v", err)
+	}
+	gunzipped, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("reading gunzipped bundle: %v", err)
+	}
+	if !bytes.Equal(gunzipped, bundleData) {
+		t.Fatal("gunzipped stored bundle does not match original bundleData")
+	}
+
+	// 2. Writing a hash tile should remain uncompressed with empty Content-Encoding.
+	if err := lrs.setTile(ctx, 0, 0, 20, tileData); err != nil {
+		t.Fatalf("setTile: %v", err)
+	}
+	tileObjName := layout.TilePath(0, 0, 20)
+	mu.Lock()
+	storedTile, ok := objects[tileObjName]
+	mu.Unlock()
+	if !ok {
+		t.Fatalf("tile object %q was not stored", tileObjName)
+	}
+	if storedTile.contentEncoding != "" {
+		t.Errorf("tile ContentEncoding = %q, want empty", storedTile.contentEncoding)
+	}
+	if !bytes.Equal(storedTile.rawBody, tileData) {
+		t.Error("stored tile rawBody does not match uncompressed tileData")
+	}
+
+	// 3. Reading the gzipped entry bundle via the standard HTTP client (where Go's
+	// http.Transport transparently decompresses) returns uncompressed bundleData.
+	gotBundleHTTP, err := lrs.getEntryBundle(ctx, 0, 20)
+	if err != nil {
+		t.Fatalf("getEntryBundle (HTTP auto-decompressed): %v", err)
+	}
+	if !bytes.Equal(gotBundleHTTP, bundleData) {
+		t.Fatal("getEntryBundle (HTTP auto-decompressed) returned different data")
+	}
+
+	// 4. Reading the gzipped entry bundle when the transport does NOT auto-decompress
+	// (r.Attrs.ContentEncoding == "gzip" && !r.Attrs.Decompressed, as happens with
+	// the gRPC GCS client) must also return uncompressed bundleData.
+	noDecompressHTTP := &http.Client{
+		Transport: &http.Transport{DisableCompression: true},
+	}
+	rawGCSClient, err := gcs.NewClient(ctx, gcs.WithJSONReads(), option.WithHTTPClient(noDecompressHTTP), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatalf("NewClient(noDecompressHTTP): %v", err)
+	}
+	defer func() { _ = rawGCSClient.Close() }()
+
+	rawLRS := &logResourceStore{
+		objStore:    &gcsStorage{gcsClient: rawGCSClient, bucket: bucket},
+		entriesPath: layout.EntriesPath,
+	}
+	gotBundleRaw, err := rawLRS.getEntryBundle(ctx, 0, 20)
+	if err != nil {
+		t.Fatalf("getEntryBundle (raw gzip / gRPC path): %v", err)
+	}
+	if !bytes.Equal(gotBundleRaw, bundleData) {
+		t.Fatal("getEntryBundle (raw gzip / gRPC path) returned different data")
+	}
+
+	// 5. Backward compatibility: reading a pre-existing uncompressed entry bundle
+	// (Content-Encoding: "") works across both clients.
+	legacyObjName := layout.EntriesPath(1, 0)
+	mu.Lock()
+	objects[legacyObjName] = storedObj{
+		contentEncoding: "",
+		contentType:     logContType,
+		cacheControl:    logCacheControl,
+		rawBody:         bundleData,
+	}
+	mu.Unlock()
+	for _, tc := range []struct {
+		name  string
+		store *logResourceStore
+	}{
+		{name: "standard-http", store: lrs},
+		{name: "no-auto-decompress", store: rawLRS},
+	} {
+		gotLegacy, err := tc.store.getEntryBundle(ctx, 1, 0)
+		if err != nil {
+			t.Fatalf("getEntryBundle legacy (%s): %v", tc.name, err)
+		}
+		if !bytes.Equal(gotLegacy, bundleData) {
+			t.Fatalf("getEntryBundle legacy (%s) returned different data", tc.name)
+		}
+	}
+
+	// 6. Precondition-failed (412) idempotent write recovery on a gzipped entry bundle:
+	// identical uncompressed payload succeeds, different uncompressed payload fails.
+	mu.Lock()
+	force412 = true
+	mu.Unlock()
+	if err := rawLRS.setEntryBundle(ctx, 0, 20, bundleData); err != nil {
+		t.Fatalf("setEntryBundle idempotent retry on gzipped bundle failed: %v", err)
+	}
+	if err := rawLRS.setEntryBundle(ctx, 0, 20, []byte("different-bundle-payload")); err == nil {
+		t.Fatal("setEntryBundle non-idempotent retry on gzipped bundle succeeded, want error")
 	}
 }
 
