@@ -219,11 +219,23 @@ func (wg *WitnessGateway) CosignCheckpoint(ctx context.Context, cp []byte, cpSiz
 					return err
 				}
 				cpWithSig := append(slices.Clone(cp), sig...)
-				if _, err := note.Open(cpWithSig, note.VerifierList(w.verifiers...)); err != nil {
+				n, err := note.Open(cpWithSig, note.VerifierList(w.verifiers...))
+				if err != nil {
 					slog.ErrorContext(ctx, "WitnessGateway: invalid signature(s) from witness", slog.String("url", w.url), slog.Any("error", err))
 					return err
 				}
-				out <- sig
+				// Let the operator know if we encountered any unknown signatures, they may need to update policy if e.g. the witness is rolling its key.
+				if len(n.UnverifiedSigs) > 0 {
+					for _, uv := range n.UnverifiedSigs {
+						slog.ErrorContext(ctx, "WitnessGateway: invalid signature from witness", slog.String("url", w.url), slog.String("name", uv.Name), slog.String("keyhash", fmt.Sprintf("%x", uv.Hash)))
+					}
+				}
+				// Ensure we only return known verified signatures
+				rSig := make([]byte, 0, len(sig))
+				for _, s := range n.Sigs {
+					rSig = fmt.Appendf(rSig, "— %s %s\n", s.Name, s.Base64)
+				}
+				out <- rSig
 				return nil
 			})
 		}()

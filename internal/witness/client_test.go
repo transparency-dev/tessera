@@ -161,6 +161,12 @@ func TestWitnessGateway(t *testing.T) {
 			wantWitnessCalls: exactly(1),
 		},
 		{
+			desc:             "one witness with two keys (one unknown)",
+			witnesses:        []witness.Witness{{URL: witMulti1URL, Verifiers: []note.Verifier{witMulti1Verifier}}},
+			wantSigs:         1,
+			wantWitnessCalls: exactly(1),
+		},
+		{
 			desc: "two witnesses with same URL but different keys",
 			witnesses: []witness.Witness{
 				{URL: witMulti1URL, Verifiers: []note.Verifier{witMulti1Verifier}},
@@ -207,12 +213,24 @@ func TestWitnessGateway(t *testing.T) {
 
 			cpSigs, _ := collectSigs(t, g.CosignCheckpoint(ctx, logSignedCheckpoint, logSignedCheckpointSize))
 			witnessedCP := append(slices.Clone(logSignedCheckpoint), cpSigs...)
-			n, err := note.Open(witnessedCP, note.VerifierList(logVerifier, wit1Verifier, wit2Verifier))
+			// Set up the expected verifiers: the log, plus all configured verifiers for all configured witnesses in the test case.
+			verifiers := []note.Verifier{logVerifier}
+			for _, w := range test.witnesses {
+				for _, v := range w.Verifiers {
+					if !slices.Contains(verifiers, v) {
+						verifiers = append(verifiers, v)
+					}
+				}
+			}
+			n, err := note.Open(witnessedCP, note.VerifierList(verifiers...))
 			if err != nil {
 				t.Fatalf("failed to open note %q: %v", witnessedCP, err)
 			}
-			if len(n.Sigs)-1 < test.wantSigs {
-				t.Errorf("wanted %d sigs but got %d", test.wantSigs, len(n.Sigs)-1)
+			if got := len(n.Sigs) - 1; got != test.wantSigs {
+				t.Errorf("wanted %d sigs but got %d", test.wantSigs, got)
+			}
+			if len(n.UnverifiedSigs) > 0 {
+				t.Fatalf("Accepted unverified witness sig(s): %+v", n.UnverifiedSigs)
 			}
 			if test.wantWitnessCalls != nil {
 				if err := test.wantWitnessCalls(witCalls.Load()); err != nil {
