@@ -36,18 +36,14 @@ func (m *mockSubtreeClient) SignSubtree(ctx context.Context, start, end uint64, 
 	return m.signFunc(ctx, start, end, subRoot, proof, rawCp)
 }
 
-// mustSignSubtree signs a subtree and formats the signature as a note-style signature line.
-func mustSignSubtree(t *testing.T, s f_note.SubtreeSigner, origin string, start, end uint64, root []byte) (rawSig []byte, sigLine []byte) {
+// mustSignSubtree signs a subtree and returns the raw signature bytes.
+func mustSignSubtree(t *testing.T, s f_note.SubtreeSigner, origin string, start, end uint64, root []byte) []byte {
 	t.Helper()
-	sigLine, err := s.SignSubtree(origin, start, end, root)
+	rawSig, err := s.SignSubtree(origin, start, end, root)
 	if err != nil {
 		t.Fatalf("SignSubtree: %v", err)
 	}
-	sigObj, err := mtcproof.NewSubtreeSignatureFromCosig(sigLine)
-	if err != nil {
-		t.Fatalf("NewSubtreeSignatureFromCosig: %v", err)
-	}
-	return sigObj.Signature, sigLine
+	return rawSig
 }
 
 func TestNew(t *testing.T) {
@@ -110,7 +106,7 @@ func TestNew(t *testing.T) {
 		Verifier: verFromPolicy,
 	}
 
-	tests := []struct {
+	for _, test := range []struct {
 		name          string
 		policy        policy.TLogPolicy
 		wantWitnesses int
@@ -168,9 +164,7 @@ func TestNew(t *testing.T) {
 			wantWitnesses: 0,
 			wantErr:       true,
 		},
-	}
-
-	for _, test := range tests {
+	} {
 		t.Run(test.name, func(t *testing.T) {
 			gw, err := New(nil, test.policy)
 			if (err != nil) != test.wantErr {
@@ -204,6 +198,10 @@ func TestGateway_CosignSubtree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMLDSAVerifier: %v", err)
 	}
+	cosignerID1, err := mtcproof.ParseCosignerID(ver1.Name())
+	if err != nil {
+		t.Fatalf("ParseCosignerID: %v", err)
+	}
 
 	rawCpWithWit, err := note.Sign(&note.Note{Text: cpText}, logSigner, signer1)
 	if err != nil {
@@ -214,8 +212,8 @@ func TestGateway_CosignSubtree(t *testing.T) {
 		t.Fatalf("note.Sign: %v", err)
 	}
 
-	rawSubSig, subSigLine := mustSignSubtree(t, signer1, origin, start, end, root)
-	_, corruptSubSigLine := mustSignSubtree(t, signer1, origin, start, end, bytes.Repeat([]byte{0xee}, 32))
+	rawSubSig := mustSignSubtree(t, signer1, origin, start, end, root)
+	corruptSubSig := mustSignSubtree(t, signer1, origin, start, end, bytes.Repeat([]byte{0xee}, 32))
 
 	u1, _ := url.Parse("https://wit1.example.com")
 	policy1 := policy.TLogPolicy{
@@ -230,7 +228,7 @@ func TestGateway_CosignSubtree(t *testing.T) {
 		Quorum: ver1.Name(),
 	}
 
-	tests := []struct {
+	for _, test := range []struct {
 		name       string
 		witnesses  map[witnessKey]witness
 		policy     policy.TLogPolicy
@@ -245,27 +243,17 @@ func TestGateway_CosignSubtree(t *testing.T) {
 				{name: ver1.Name(), keyHash: ver1.KeyHash()}: {
 					client: &mockSubtreeClient{
 						signFunc: func(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, rawCp []byte) ([]byte, error) {
-							return subSigLine, nil
+							n, err := note.Open(rawCp, note.VerifierList(ver1))
+							if err != nil {
+								t.Errorf("expected checkpoint signed by witness: %v", err)
+							} else if len(n.Sigs) != 1 || len(n.UnverifiedSigs) != 0 {
+								t.Errorf("expected checkpoint with exactly 1 signature, got %d verified and %d unverified", len(n.Sigs), len(n.UnverifiedSigs))
+							}
+							return rawSubSig, nil
 						},
 					},
-					verifier: ver1,
-				},
-			},
-			policy:     policy1,
-			rawCp:      rawCpWithWit,
-			wantSigs:   1,
-			wantSubSig: rawSubSig,
-		},
-		{
-			name: "duplicate witness signature response is deduplicated",
-			witnesses: map[witnessKey]witness{
-				{name: ver1.Name(), keyHash: ver1.KeyHash()}: {
-					client: &mockSubtreeClient{
-						signFunc: func(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, rawCp []byte) ([]byte, error) {
-							return append(bytes.Clone(subSigLine), subSigLine...), nil
-						},
-					},
-					verifier: ver1,
+					verifier:   ver1,
+					cosignerID: cosignerID1,
 				},
 			},
 			policy:     policy1,
@@ -279,10 +267,11 @@ func TestGateway_CosignSubtree(t *testing.T) {
 				{name: ver1.Name(), keyHash: ver1.KeyHash()}: {
 					client: &mockSubtreeClient{
 						signFunc: func(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, rawCp []byte) ([]byte, error) {
-							return subSigLine, nil
+							return rawSubSig, nil
 						},
 					},
-					verifier: ver1,
+					verifier:   ver1,
+					cosignerID: cosignerID1,
 				},
 			},
 			policy:   policy1,
@@ -296,10 +285,11 @@ func TestGateway_CosignSubtree(t *testing.T) {
 				{name: ver1.Name(), keyHash: ver1.KeyHash()}: {
 					client: &mockSubtreeClient{
 						signFunc: func(ctx context.Context, start, end uint64, subRoot []byte, proof [][]byte, rawCp []byte) ([]byte, error) {
-							return corruptSubSigLine, nil
+							return corruptSubSig, nil
 						},
 					},
-					verifier: ver1,
+					verifier:   ver1,
+					cosignerID: cosignerID1,
 				},
 			},
 			policy:   policy1,
@@ -316,7 +306,8 @@ func TestGateway_CosignSubtree(t *testing.T) {
 							return nil, errors.New("witness down")
 						},
 					},
-					verifier: ver1,
+					verifier:   ver1,
+					cosignerID: cosignerID1,
 				},
 			},
 			policy:   policy1,
@@ -340,9 +331,7 @@ func TestGateway_CosignSubtree(t *testing.T) {
 			wantSigs:  0,
 			wantErr:   nil,
 		},
-	}
-
-	for _, test := range tests {
+	} {
 		t.Run(test.name, func(t *testing.T) {
 			gw := &Gateway{
 				witnesses: test.witnesses,
@@ -355,8 +344,13 @@ func TestGateway_CosignSubtree(t *testing.T) {
 			if len(verified) != test.wantSigs {
 				t.Fatalf("got %d verified sigs, want %d", len(verified), test.wantSigs)
 			}
-			if test.wantSigs > 0 && !bytes.Equal(verified[0].Signature, test.wantSubSig) {
-				t.Errorf("got signature %x, want %x", verified[0].Signature, test.wantSubSig)
+			if test.wantSigs > 0 {
+				if !bytes.Equal(verified[0].CosignerID, cosignerID1) {
+					t.Errorf("got cosigner ID %x, want %x", verified[0].CosignerID, cosignerID1)
+				}
+				if !bytes.Equal(verified[0].Signature, test.wantSubSig) {
+					t.Errorf("got signature %x, want %x", verified[0].Signature, test.wantSubSig)
+				}
 			}
 		})
 	}

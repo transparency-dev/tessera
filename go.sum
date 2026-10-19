@@ -25,8 +25,8 @@ cloud.google.com/go/trace v1.16.0 h1:GmQovzFc5F0CNfl0VLgL64aoTtu7xsM0YajW2GlG9+E
 cloud.google.com/go/trace v1.16.0/go.mod h1:r+bdAn16dKLSV1G2D5v3e58IlQlizfxWrUfjx7kM7X0=
 filippo.io/edwards25519 v1.2.0 h1:crnVqOiS4jqYleHd9vaKZ+HKtHfllngJIiOpNpoJsjo=
 filippo.io/edwards25519 v1.2.0/go.mod h1:xzAOLCNug/yB62zG1bQ8uziwrIqIuxhctzJT18Q77mc=
-filippo.io/mldsa v0.0.0-20260215214346-43d0283efc3e h1:VsUbObBMxXlc23Eb9VeeJYE4jvTs87qa5RqSN2U5FJU=
-filippo.io/mldsa v0.0.0-20260215214346-43d0283efc3e/go.mod h1:32qQ5yj3R24Eu03iWFWchdC3OB653wPvoepWejkefbY=
+filippo.io/mldsa v1.0.0 h1:DSyjDhIEKrGEO/RZfI60iuXI83Yzy8jDcbqMuPySK5U=
+filippo.io/mldsa v1.0.0/go.mod h1:32qQ5yj3R24Eu03iWFWchdC3OB653wPvoepWejkefbY=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/GoogleCloudPlatform/grpc-gcp-go/grpcgcp v1.6.0 h1:BzsL0qE7LvtTEtXG7Dt5NS1EP0CQwI21HZfj9aGghhw=
 github.com/GoogleCloudPlatform/grpc-gcp-go/grpcgcp v1.6.0/go.mod h1:I7kE2kM3qCr9QPT4cU4cCFYkEpVyVr16YOGUHzy+nR0=
@@ -242,12 +242,12 @@ github.com/stretchr/testify v1.8.0/go.mod h1:yNjHg4UonilssWZ8iaSj1OCr/vHnekPRkoO
 github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
-github.com/transparency-dev/formats v0.1.2-0.20260916152522-091ce41666c0 h1:4DbKePWYXXMREYF/A9dcBEOTvZ2E4NHzh866NnbdSqM=
-github.com/transparency-dev/formats v0.1.2-0.20260916152522-091ce41666c0/go.mod h1:94kWdZfyStngLTYo2R0k1zM+n7FXldAkih6W04vyTnc=
+github.com/transparency-dev/formats v0.1.2-0.20261013130728-340a9e55b2b7 h1:056Vwr7LMccbSvkjWZJt+Htfrk1nla8Ug1EEgQiAxlI=
+github.com/transparency-dev/formats v0.1.2-0.20261013130728-340a9e55b2b7/go.mod h1:7Kp0eHvAqS+HmFA3oOIrdZbiWc2fW9AztZ9J3y6nPYs=
 github.com/transparency-dev/merkle v0.0.3-0.20260727102338-4491f478b7dc h1:DaUOzC/KJOVtUqxKoFiEAQhoRu+TV8GaMKXQg94zRqs=
 github.com/transparency-dev/merkle v0.0.3-0.20260727102338-4491f478b7dc/go.mod h1:E+iHk6bS+tIgIJGD4TMeAjSjhQ9wPfL/ST4pXyITjdU=
-github.com/transparency-dev/witness v0.0.0-20260918124936-55a5a0bf332a h1:OOj8z9FYso9cHA+ZHf/zUzF8zH/lzGhu0fOkGK0B9U0=
-github.com/transparency-dev/witness v0.0.0-20260918124936-55a5a0bf332a/go.mod h1:/jLSvnpaCUkqTIvWOS+TkbOZ830HxQr1jVhX1xiowGQ=
+github.com/transparency-dev/witness v0.0.0-20261014123032-539715523ab9 h1:stSGpwkttvZrI5MHMcq7PluZdqpsulroZU9NvKWB8Bw=
+github.com/transparency-dev/witness v0.0.0-20261014123032-539715523ab9/go.mod h1:DoW27RnDDy0bIJt3k8QkRJF+yCTRWAJdaPcztwEqucs=
 github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e h1:JVG44RsyaB9T2KIHavMF/ppJZNG9ZpyihvCd0w101no=
 github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e/go.mod h1:RbqR21r5mrJuqunuUZ/Dhy/avygyECGrLceyNeo4LiM=
 github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=

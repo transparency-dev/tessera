@@ -364,7 +364,7 @@ func TestSignSubtree_StatusCodes(t *testing.T) {
 				},
 			},
 			wantStatus: http.StatusOK,
-			wantBody:   testCosig,
+			wantBody:   base64.StdEncoding.EncodeToString([]byte(testCosig)) + "\n",
 		},
 		{
 			name: "400 malformed request body - invalid range line",
