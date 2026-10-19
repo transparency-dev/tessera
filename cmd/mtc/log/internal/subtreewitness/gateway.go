@@ -126,14 +126,6 @@ func New(httpClient *http.Client, pol policy.TLogPolicy) (*Gateway, error) {
 // checkpoint have been collected.
 // TODO: implement subtree cosignature policy matching directly.
 func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end uint64, subRoot []byte, consProof [][]byte, rawCp []byte) ([]mtcproof.SubtreeSignature, error) {
-	// TODO: consider disallowing this if empty policies are not allowed.
-	if len(gw.witnesses) == 0 {
-		if gw.policy.Satisfied(rawCp) {
-			return nil, nil
-		}
-		return nil, ErrPolicyNotSatisfied
-	}
-
 	// Open the checkpoint without verifying it to extract all signatures.
 	_, err := note.Open(rawCp, note.VerifierList())
 	var unverified *note.UnverifiedNoteError
@@ -145,11 +137,35 @@ func (gw *Gateway) CosignSubtree(ctx context.Context, origin string, start, end 
 	// reconstructedCp is used for policy checking.
 	reconstructedCp := fmt.Appendf(nil, "%s\n", n.Text)
 
+	// TODO: consider disallowing this if empty policies are not allowed.
+	if gw.policy.Satisfied(reconstructedCp) {
+		return nil, nil
+	}
+
 	// Figure out which witnesses signed the checkpoint so we know who the candidates for getting
 	// subtree cosignatures from are, and store their note-formatted checkpoint cosignatures.
 	cpSigs := make(map[witnessKey][]byte)
 	for _, s := range n.UnverifiedSigs {
-		cpSigs[witnessKey{name: s.Name, keyHash: s.Hash}] = fmt.Appendf(nil, "— %s %s\n", s.Name, s.Base64)
+		// Check whether this signature is from a witness we know.
+		w, ok := gw.witnesses[witnessKey{name: s.Name, keyHash: s.Hash}]
+		if !ok {
+			continue
+		}
+		sig := fmt.Appendf(nil, "— %s %s\n", s.Name, s.Base64)
+		// Verify that the signature is valid for the checkpoint.
+		// We can't do this en-masse, as a single invalid signature from a known verifier will cause the open to fail
+		// in a way where we cannot recover the other signatures.
+		_, err := note.Open(fmt.Appendf(nil, "%s\n%s", n.Text, sig), note.VerifierList(w.verifier))
+		if err != nil {
+			slog.WarnContext(ctx, "Failed to verify checkpoint signature",
+				slog.String("witness", s.Name),
+				slog.Any("error", err),
+			)
+			// Skip this witness; we can't get a subtree signature from it with a broken
+			// checkpoint signature.
+			continue
+		}
+		cpSigs[witnessKey{name: s.Name, keyHash: s.Hash}] = sig
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
