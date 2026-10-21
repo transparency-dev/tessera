@@ -73,7 +73,7 @@ func TestAddEntries(t *testing.T) {
 	var rawBody bytes.Buffer
 
 	// Write preamble
-	_ = binary.Write(&rawBody, binary.BigEndian, uint16(len(testOrigin)))
+	_ = binary.Write(&rawBody, binary.BigEndian, uint8(len(testOrigin)))
 	_, _ = rawBody.WriteString(testOrigin)
 	_ = binary.Write(&rawBody, binary.BigEndian, uint64(testUploadStart))
 	_ = binary.Write(&rawBody, binary.BigEndian, uint64(testUploadEnd))
@@ -229,6 +229,11 @@ func TestAddEntries_StatusCodes(t *testing.T) {
 			},
 			wantStatus: http.StatusBadRequest,
 		}, {
+			name:       "400 empty origin",
+			origin:     "",
+			mockTarget: &mockTarget{},
+			wantStatus: http.StatusBadRequest,
+		}, {
 			name:       "404 unknown log",
 			origin:     "unknown-origin",
 			mockTarget: &mockTarget{},
@@ -278,7 +283,7 @@ func TestAddEntries_StatusCodes(t *testing.T) {
 			h := New(mux, nil)
 
 			var rawBody bytes.Buffer
-			_ = binary.Write(&rawBody, binary.BigEndian, uint16(len(test.origin)))
+			_ = binary.Write(&rawBody, binary.BigEndian, uint8(len(test.origin)))
 			_, _ = rawBody.WriteString(test.origin)
 			_ = binary.Write(&rawBody, binary.BigEndian, uint64(testUploadStart))
 			_ = binary.Write(&rawBody, binary.BigEndian, uint64(testUploadEnd))
