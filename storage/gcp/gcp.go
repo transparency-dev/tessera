@@ -31,8 +31,10 @@ package gcp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/gob"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +45,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"cloud.google.com/go/spanner"
@@ -110,6 +113,29 @@ const (
 	defaultIntegrationTimeout = 10 * time.Second
 	// defaultGCTimeout is the default context timeout applied when undertaking a garbage collection task.
 	defaultGCTimeout = 30 * time.Second
+
+	// Singleton-jobs lease parameters (experimental).
+	//
+	// Only the instance holding the lease in LeaseCoord(0) runs the singleton background jobs
+	// (integration, checkpoint publication, GC, antispam following). All instances keep sequencing.
+	//
+	// NOTE: the lease is purely a contention-reduction optimisation, NOT a safety mechanism: every
+	// singleton job still runs inside its own exclusively-locked Spanner transaction on its own
+	// coordination row, so brief overlaps of two "holders" (e.g. during handoff, clock skew) are safe.
+
+	// leaseTTL is how long a lease remains valid after the holder last renewed it.
+	leaseTTL = 6 * time.Second
+	// leaseRenewInterval is how often all instances attempt to acquire/renew the lease.
+	leaseRenewInterval = 2 * time.Second
+	// leaseSafetyMargin is subtracted from the TTL when computing how long the holder locally
+	// believes it holds the lease, so that it stops running singleton jobs before others may take over.
+	leaseSafetyMargin = 1 * time.Second
+	// leaseIntegrationPollInterval is how often integrateEntriesJob polls for work. The holder can't
+	// rely on the in-process entriesAssigned signal since other instances sequence entries too.
+	leaseIntegrationPollInterval = 100 * time.Millisecond
+	// leaseSkipPollInterval is the publishCheckpointJob ticker period used while not holding the lease,
+	// so that a newly elected holder starts publishing promptly.
+	leaseSkipPollInterval = 100 * time.Millisecond
 )
 
 // Storage is a GCP based storage implementation for Tessera.
@@ -193,6 +219,21 @@ type LogReader struct {
 	lrs            logResourceStore
 	integratedSize func(context.Context) (uint64, error)
 	nextIndex      func(context.Context) (uint64, error)
+	// hasLease reports whether this process currently holds the singleton-jobs lease.
+	// May be nil, in which case HasLease always returns true.
+	hasLease func() bool
+}
+
+// HasLease reports whether this process currently holds the lease which permits it to run singleton
+// background jobs.
+//
+// This is exposed so that followers (e.g. the GCP antispam follower), which are handed this LogReader,
+// can discover the lease state via an interface type assertion without any further plumbing.
+func (lr *LogReader) HasLease() bool {
+	if lr.hasLease == nil {
+		return true
+	}
+	return lr.hasLease()
 }
 
 func (lr *LogReader) ReadCheckpoint(ctx context.Context) ([]byte, error) {
@@ -290,6 +331,7 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoord
 			entriesPath: opts.EntriesPath(),
 		},
 		sequencer:       seq,
+		hasLease:        seq.hasLease,
 		cpUpdated:       make(chan struct{}),
 		entriesAssigned: make(chan struct{}, 1),
 	}
@@ -313,6 +355,7 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoord
 			return s, err
 		},
 		nextIndex: a.sequencer.nextIndex,
+		hasLease:  seq.hasLease,
 	}
 	var err error
 	a.newCP, err = opts.CheckpointPublisherContext(ctx, reader, s.cfg.HTTPClient)
@@ -323,6 +366,11 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoord
 	if err := a.init(ctx); err != nil {
 		return nil, nil, fmt.Errorf("failed to initialise log storage: %v", err)
 	}
+
+	// Try to grab the lease synchronously so that a single instance starts integrating
+	// immediately, then keep acquiring/renewing it in the background.
+	seq.tryAcquireOrRenewLease(ctx)
+	go seq.maintainLeaseJob(ctx)
 
 	go a.integrateEntriesJob(ctx)
 	go a.publishCheckpointJob(ctx, opts.CheckpointInterval(), opts.CheckpointRepublishInterval(), opts.CheckpointPublicationTimeout())
@@ -339,6 +387,9 @@ type Appender struct {
 
 	sequencer sequencer
 	logStore  *logResourceStore
+
+	// hasLease reports whether this process holds the singleton-jobs lease.
+	hasLease func() bool
 
 	queue *storage.Queue
 
@@ -363,9 +414,13 @@ func (a *Appender) Add(ctx context.Context, e *tessera.Entry) tessera.IndexFutur
 
 // integrateEntriesJob periodically append newly sequenced entries.
 //
+// Only the lease holder integrates. Because entries may be sequenced by *other*
+// instances (which can't trigger our in-process entriesAssigned signal), the holder polls on a fast
+// ticker and drain-loops for as long as each integration pass consumes entries.
+//
 // Blocks until ctx is done.
 func (a *Appender) integrateEntriesJob(ctx context.Context) {
-	t := time.NewTicker(1 * time.Second)
+	t := time.NewTicker(leaseIntegrationPollInterval)
 	defer t.Stop()
 	for {
 		select {
@@ -375,28 +430,37 @@ func (a *Appender) integrateEntriesJob(ctx context.Context) {
 		case <-t.C:
 		}
 
-		if err := otel.TraceErr(ctx, "tessera.storage.gcp.integrateEntriesJob", tracer, func(ctx context.Context, span trace.Span) error {
-			start := time.Now()
-			defer func() {
-				opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("integrateEntries")))
-			}()
+		// Drain loop: keep integrating while we hold the lease and there's work being done.
+		for a.hasLease() && ctx.Err() == nil {
+			workDone := false
+			if err := otel.TraceErr(ctx, "tessera.storage.gcp.integrateEntriesJob", tracer, func(ctx context.Context, span trace.Span) error {
+				start := time.Now()
+				defer func() {
+					opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("integrateEntries")))
+				}()
 
-			ctx, cancel := context.WithTimeout(ctx, defaultIntegrationTimeout)
-			defer cancel() // Note: ok because we're in a func passed to TraceErr here!
+				ctx, cancel := context.WithTimeout(ctx, defaultIntegrationTimeout)
+				defer cancel() // Note: ok because we're in a func passed to TraceErr here!
 
-			workDone, err := a.sequencer.consumeEntries(ctx, DefaultIntegrationSizeLimit, a.integrateEntries, false)
-			if err != nil {
-				return fmt.Errorf("integrateEntriesJob: %v", err)
-			}
-			if workDone {
-				select {
-				case a.cpUpdated <- struct{}{}:
-				default:
+				var err error
+				workDone, err = a.sequencer.consumeEntries(ctx, DefaultIntegrationSizeLimit, a.integrateEntries, false)
+				if err != nil {
+					return fmt.Errorf("integrateEntriesJob: %v", err)
 				}
+				if workDone {
+					select {
+					case a.cpUpdated <- struct{}{}:
+					default:
+					}
+				}
+				return nil
+			}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
+				slog.ErrorContext(ctx, "integrateEntriesJob failed", slog.Any("error", err))
+				break
 			}
-			return nil
-		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
-			slog.ErrorContext(ctx, "integrateEntriesJob failed", slog.Any("error", err))
+			if !workDone {
+				break
+			}
 		}
 	}
 }
@@ -414,6 +478,13 @@ func (a *Appender) publishCheckpointJob(ctx context.Context, pubInterval, republ
 			return
 		case <-a.cpUpdated:
 		case <-t.C:
+		}
+		// Only the lease holder publishes checkpoints.
+		// The ticker may previously have been Reset to a very short period, so explicitly reset it to
+		// a modest polling period while we don't hold the lease to avoid spinning.
+		if !a.hasLease() {
+			t.Reset(leaseSkipPollInterval)
+			continue
 		}
 		if err := otel.TraceErr(ctx, "tessera.storage.gcp.publishCheckpointJob", tracer, func(ctx context.Context, span trace.Span) error {
 
@@ -449,6 +520,10 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		}
+		// Only the lease holder garbage collects.
+		if !a.hasLease() {
+			continue
 		}
 		if err := otel.TraceErr(ctx, "tessera.storage.gcp.garbageCollectJob", tracer, func(ctx context.Context, span trace.Span) error {
 			ctx, cancel := context.WithTimeout(ctx, defaultGCTimeout)
@@ -789,6 +864,15 @@ type spannerCoordinator struct {
 
 	// seqTableMaxBatchByteSize is the maximum byte size of a batch of entries to be written to the "V" field in the "Seq" table.
 	seqTableMaxBatchByteSize int
+
+	// Singleton-jobs lease state (experimental).
+	//
+	// holderID uniquely identifies this process in LeaseCoord. Note that os.Hostname() alone is not
+	// sufficient as it returns "localhost" on Cloud Run.
+	holderID string
+	// leaseDeadline is the local wall-clock time (UnixNano) until which this process believes it
+	// holds the lease; zero if it does not hold the lease.
+	leaseDeadline atomic.Int64
 }
 
 // newSpannerCoordinator returns a new spannerSequencer struct which uses the provided
@@ -799,6 +883,7 @@ func newSpannerCoordinator(ctx context.Context, dbPool *spanner.Client, table fu
 		table:                    table,
 		maxOutstanding:           maxOutstanding,
 		seqTableMaxBatchByteSize: defaultSeqTableMaxBatchByteSize,
+		holderID:                 newLeaseHolderID(),
 	}
 	if err := r.checkDataCompatibility(ctx); err != nil {
 		return nil, fmt.Errorf("schema is not compatible with this version of the Tessera library: %v", err)
@@ -825,6 +910,9 @@ func newSpannerCoordinator(ctx context.Context, dbPool *spanner.Client, table fu
 //   - GCCoord
 //     This table coordinates garbage collection of unneeded partial tiles
 //     and entry bundles.
+//   - LeaseCoord (experimental)
+//     This table holds a single row recording which process currently holds the
+//     lease permitting it to run the singleton background jobs, and when it expires.
 func initDB(ctx context.Context, spannerDB string, table func(string) string) error {
 	return createAndPrepareTables(ctx, spannerDB,
 		[]string{
@@ -834,6 +922,8 @@ func initDB(ctx context.Context, spannerDB string, table func(string) string) er
 			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INT64 NOT NULL, seq INT64 NOT NULL, rootHash BYTES(32)) PRIMARY KEY (id)", table("IntCoord")),
 			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INT64 NOT NULL, publishedAt TIMESTAMP NOT NULL, size INT64) PRIMARY KEY (id)", table("PubCoord")),
 			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INT64 NOT NULL, fromSize INT64 NOT NULL) PRIMARY KEY (id)", table("GCCoord")),
+			// Safe to add to an existing DB; ignored by binaries which don't use the lease.
+			fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INT64 NOT NULL, holder STRING(128) NOT NULL, expiresAt TIMESTAMP NOT NULL) PRIMARY KEY (id)", table("LeaseCoord")),
 		},
 		[]string{
 			fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS size INT64", table("PubCoord")),
@@ -844,7 +934,115 @@ func initDB(ctx context.Context, spannerDB string, table func(string) string) er
 			{spanner.Insert(table("IntCoord"), []string{"id", "seq", "rootHash"}, []any{0, 0, rfc6962.DefaultHasher.EmptyRoot()})},
 			{spanner.Insert(table("PubCoord"), []string{"id", "publishedAt", "size"}, []any{0, time.Unix(0, 0), 0})},
 			{spanner.Insert(table("GCCoord"), []string{"id", "fromSize"}, []any{0, 0})},
+			// Seed an already-expired, unheld lease. AlreadyExists is ignored by
+			// createAndPrepareTables, so this is idempotent.
+			{spanner.Insert(table("LeaseCoord"), []string{"id", "holder", "expiresAt"}, []any{0, "", time.Unix(0, 0)})},
 		})
+}
+
+// newLeaseHolderID returns a process-unique lease holder ID of the form "<hostname>-<random hex>".
+func newLeaseHolderID() string {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		h = "unknown"
+	}
+	if len(h) > 64 {
+		h = h[:64]
+	}
+	b := make([]byte, 8)
+	_, _ = rand.Read(b) // crypto/rand.Read never returns an error.
+	return h + "-" + hex.EncodeToString(b)
+}
+
+// hasLease reports whether this process currently believes it holds the singleton-jobs lease.
+func (s *spannerCoordinator) hasLease() bool {
+	return time.Now().UnixNano() < s.leaseDeadline.Load()
+}
+
+// maintainLeaseJob periodically attempts to acquire, or renew, the singleton-jobs lease.
+//
+// Blocks until ctx is done.
+func (s *spannerCoordinator) maintainLeaseJob(ctx context.Context) {
+	t := time.NewTicker(leaseRenewInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		s.tryAcquireOrRenewLease(ctx)
+	}
+}
+
+// tryAcquireOrRenewLease attempts to acquire the lease if it is unheld or expired, or renew it if we
+// already hold it.
+//
+// Expiry is evaluated using local wall-clocks (as is done for PubCoord's publishedAt). Cloud Run
+// instances are NTP synced, and the lease is not relied upon for safety, so skew is tolerable.
+func (s *spannerCoordinator) tryAcquireOrRenewLease(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, leaseRenewInterval)
+	defer cancel()
+	now := time.Now()
+	had := s.hasLease()
+
+	// Lock-free pre-check, so that non-holders don't take locks on LeaseCoord(0) while the lease is
+	// validly held by somebody else.
+	if row, err := s.dbPool.Single().ReadRowWithOptions(ctx, s.table("LeaseCoord"), spanner.Key{0}, []string{"holder", "expiresAt"}, &spanner.ReadOptions{RequestTag: "tessera.op=checkLease"}); err == nil {
+		var holder string
+		var expiresAt time.Time
+		if err := row.Columns(&holder, &expiresAt); err == nil && holder != s.holderID && now.Before(expiresAt) {
+			s.setLease(ctx, had, false, time.Time{}, holder)
+			return
+		}
+	} else {
+		slog.WarnContext(ctx, "lease pre-check failed", slog.Any("error", err))
+		// Fall through to the transaction, which will surface any persistent errors.
+	}
+
+	won, holder := false, ""
+	_, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+		won = false
+		now = time.Now()
+		row, err := txn.ReadRowWithOptions(ctx, s.table("LeaseCoord"), spanner.Key{0}, []string{"holder", "expiresAt"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
+		if err != nil {
+			return fmt.Errorf("failed to read LeaseCoord: %w", err)
+		}
+		var expiresAt time.Time
+		if err := row.Columns(&holder, &expiresAt); err != nil {
+			return fmt.Errorf("failed to parse LeaseCoord: %v", err)
+		}
+		if holder != s.holderID && now.Before(expiresAt) {
+			// Somebody else validly holds the lease.
+			return nil
+		}
+		won = true
+		return txn.BufferWrite([]*spanner.Mutation{
+			spanner.Update(s.table("LeaseCoord"), []string{"id", "holder", "expiresAt"}, []any{0, s.holderID, now.Add(leaseTTL)}),
+		})
+	}, spanner.TransactionOptions{TransactionTag: "tessera.op=maintainLease"})
+	if err != nil {
+		// Leave leaseDeadline untouched: if we were the holder, hasLease() will naturally turn false
+		// once the (safety-margined) local deadline from our last successful renewal passes.
+		slog.WarnContext(ctx, "lease acquire/renew failed", slog.Bool("hadLease", had), slog.Any("error", err))
+		return
+	}
+	s.setLease(ctx, had, won, now.Add(leaseTTL-leaseSafetyMargin), holder)
+}
+
+// setLease updates the local lease state, logging any transitions.
+func (s *spannerCoordinator) setLease(ctx context.Context, had, won bool, deadline time.Time, holder string) {
+	if won {
+		s.leaseDeadline.Store(deadline.UnixNano())
+	} else {
+		s.leaseDeadline.Store(0)
+	}
+	switch {
+	case won && !had:
+		slog.InfoContext(ctx, "Acquired singleton-jobs lease", slog.String("holderID", s.holderID), slog.String("previousHolder", holder))
+	case !won && had:
+		slog.InfoContext(ctx, "Lost singleton-jobs lease", slog.String("holderID", s.holderID), slog.String("newHolder", holder))
+	}
 }
 
 // checkDataCompatibility compares the Tessera library SchemaCompatibilityVersion with the one stored in the

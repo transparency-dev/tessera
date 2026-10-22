@@ -1407,3 +1407,48 @@ func generateBundles(t *testing.T, totalEntries int) iter.Seq2[*api.EntryBundle,
 		}
 	}
 }
+
+// TestLease exercises the singleton-jobs lease.
+func TestLease(t *testing.T) {
+	ctx := t.Context()
+	db, closeDB := newSpannerDB(t)
+	defer closeDB()
+
+	// Note: we can't re-run initDB here to check idempotency on an existing DB, because spannertest
+	// ignores "IF NOT EXISTS" in DDL. The seed Insert's AlreadyExists is ignored by createAndPrepareTables.
+
+	a, err := newSpannerCoordinator(ctx, db, prefixTable(""), 1000)
+	if err != nil {
+		t.Fatalf("newSpannerCoordinator: %v", err)
+	}
+	b, err := newSpannerCoordinator(ctx, db, prefixTable(""), 1000)
+	if err != nil {
+		t.Fatalf("newSpannerCoordinator: %v", err)
+	}
+	if a.holderID == b.holderID {
+		t.Fatalf("holder IDs not unique: %q", a.holderID)
+	}
+
+	a.tryAcquireOrRenewLease(ctx)
+	b.tryAcquireOrRenewLease(ctx)
+	if !a.hasLease() || b.hasLease() {
+		t.Fatalf("after first acquire: a=%v b=%v, want a=true b=false", a.hasLease(), b.hasLease())
+	}
+
+	// Renewal by the holder keeps the lease; the other still can't take it.
+	a.tryAcquireOrRenewLease(ctx)
+	b.tryAcquireOrRenewLease(ctx)
+	if !a.hasLease() || b.hasLease() {
+		t.Fatalf("after renew: a=%v b=%v, want a=true b=false", a.hasLease(), b.hasLease())
+	}
+
+	// Simulate a's lease expiring (e.g. a died): b should take over, and a should notice it lost it.
+	if _, err := db.Apply(ctx, []*spanner.Mutation{spanner.Update("LeaseCoord", []string{"id", "holder", "expiresAt"}, []any{0, a.holderID, time.Now().Add(-time.Second)})}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	b.tryAcquireOrRenewLease(ctx)
+	a.tryAcquireOrRenewLease(ctx)
+	if a.hasLease() || !b.hasLease() {
+		t.Fatalf("after expiry: a=%v b=%v, want a=false b=true", a.hasLease(), b.hasLease())
+	}
+}
