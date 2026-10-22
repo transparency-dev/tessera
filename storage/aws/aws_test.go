@@ -912,3 +912,32 @@ func TestSetObjectIfNoneMatchBucketPrefixIdempotentRecovery(t *testing.T) {
 		t.Fatalf("recovery getObject read %q, want %q (double-prefix bug)", got, wantKey)
 	}
 }
+
+// TestStorageUsesProvidedDB checks that Storage sequences with the DB set in its
+// Config, rather than opening one for its DSN.
+func TestStorageUsesProvidedDB(t *testing.T) {
+	ctx := context.Background()
+	if canSkipMySQLTest(t, ctx) {
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
+		t.Skip("MySQL not available, skipping test")
+	}
+	mustDropTables(t, ctx)
+	db, err := sql.Open("mysql", *mySQLURI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// As documented on Config.DB, the caller retains ownership of the DB's lifecycle.
+	defer func() { _ = db.Close() }()
+
+	s := &Storage{cfg: Config{DB: db, DSN: "nobody:nothing@tcp(127.0.0.1:1)/nowhere"}}
+	seq, err := s.sequencer(ctx, 1000)
+	if err != nil {
+		t.Fatalf("sequencer: %v", err)
+	}
+	if seq.dbPool != db {
+		t.Fatal("the sequencer does not use the provided DB")
+	}
+	if err := seq.assignEntries(ctx, []*tessera.Entry{tessera.NewEntry([]byte("entry"))}); err != nil {
+		t.Fatalf("assignEntries: %v", err)
+	}
+}

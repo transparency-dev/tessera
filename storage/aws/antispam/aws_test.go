@@ -25,6 +25,7 @@ import (
 
 	"log/slog"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/testonly"
@@ -42,15 +43,43 @@ func TestMain(m *testing.M) {
 }
 
 func TestAntispam(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		sharedDB bool
+	}{
+		{name: "own DB"},
+		{name: "shared DB", sharedDB: true},
+	} {
+		t.Run(test.name, func(t *testing.T) { testAntispam(t, test.sharedDB) })
+	}
+}
+
+// testAntispam drives the full append, follow and duplicate lookup cycle, through a DB
+// provided in AntispamOpts if sharedDB is set.
+func testAntispam(t *testing.T, sharedDB bool) {
 	ctx := t.Context()
 	if canSkipMySQLTest(t, ctx) {
 		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
 		t.Skip("MySQL not available, skipping test")
 	}
 	mustDropTables(t, ctx)
-	as, err := NewAntispam(ctx, *mySQLURI, AntispamOpts{})
+	opts := AntispamOpts{}
+	if sharedDB {
+		db, err := sql.Open("mysql", *mySQLURI)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// As documented on AntispamOpts.DB, the caller retains ownership of the DB's
+		// lifecycle. Cleanup runs after this function's defers have shut down the log.
+		t.Cleanup(func() { _ = db.Close() })
+		opts.DB = db
+	}
+	as, err := NewAntispam(ctx, *mySQLURI, opts)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if sharedDB && as.dbPool != opts.DB {
+		t.Fatal("NewAntispam did not use the provided DB")
 	}
 	fl, shutdown := testonly.NewTestLog(t, tessera.NewAppendOptions().WithCheckpointInterval(time.Second))
 	defer func() {
@@ -259,4 +288,37 @@ func testBundleHasher(b []byte) ([][]byte, error) {
 		r[i] = testIDHash(e)
 	}
 	return r, err
+}
+
+func TestAntispamSharedDBWrongDatabase(t *testing.T) {
+	ctx := t.Context()
+	if canSkipMySQLTest(t, ctx) {
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
+		t.Skip("MySQL not available, skipping test")
+	}
+	// A second, empty database that the provided DB is connected to instead.
+	admin, err := sql.Open("mysql", *mySQLURI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = admin.Close() }()
+	const other = "test_tessera_other"
+	if _, err := admin.ExecContext(ctx, "CREATE DATABASE IF NOT EXISTS "+other); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = admin.ExecContext(context.Background(), "DROP DATABASE "+other) }()
+	cfg, err := mysql.ParseDSN(*mySQLURI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DBName = other
+	db, err := sql.Open("mysql", cfg.FormatDSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if _, err := NewAntispam(ctx, *mySQLURI, AntispamOpts{DB: db}); err == nil {
+		t.Error("NewAntispam accepted a DB connected to a different database, want error")
+	}
 }
