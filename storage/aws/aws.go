@@ -1589,6 +1589,12 @@ func (s *s3Storage) deleteObjectsWithPrefix(ctx context.Context, objPrefix strin
 		if err != nil {
 			return fmt.Errorf("failed to list objects with prefix %q: %v", objPrefix, err)
 		}
+		// Most full tiles and entry bundles never had a partial version, so there
+		// is often nothing to delete, and S3 rejects a DeleteObjects request which
+		// lists no objects with MalformedXML.
+		if len(l.Contents) == 0 {
+			return nil
+		}
 		di := &s3.DeleteObjectsInput{
 			Bucket: aws.String(s.bucket),
 			Delete: &types.Delete{
