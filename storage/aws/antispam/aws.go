@@ -115,7 +115,7 @@ func NewAntispam(ctx context.Context, dsn string, opts AntispamOpts) (*AntispamS
 	if opts.MaxOpenConns > 0 {
 		dbPool.SetMaxOpenConns(opts.MaxOpenConns)
 	}
-	if opts.MaxIdleConns >= 0 {
+	if opts.MaxIdleConns > 0 {
 		dbPool.SetMaxIdleConns(opts.MaxIdleConns)
 	}
 

@@ -161,6 +161,7 @@ type Config struct {
 	// Maximum connections to the MySQL database.
 	MaxOpenConns int
 	// Maximum idle database connections in the connection pool.
+	// If zero, the database/sql default is used.
 	MaxIdleConns int
 
 	// HTTPClient will be used for other HTTP requests. If unset, Tessera will use the net/http DefaultClient.
@@ -903,7 +904,7 @@ func newMySQLSequencer(ctx context.Context, dsn string, maxOutstanding uint64, m
 	if maxOpenConns > 0 {
 		dbPool.SetMaxOpenConns(maxOpenConns)
 	}
-	if maxIdleConns >= 0 {
+	if maxIdleConns > 0 {
 		dbPool.SetMaxIdleConns(maxIdleConns)
 	}
 
