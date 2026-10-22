@@ -727,14 +727,7 @@ type logResourceStore struct {
 }
 
 func (lr *logResourceStore) ReadCheckpoint(ctx context.Context) ([]byte, error) {
-	r, err := lr.get(ctx, layout.CheckpointPath)
-	if err != nil {
-		var nske *types.NoSuchKey
-		if errors.As(err, &nske) {
-			return r, os.ErrNotExist
-		}
-	}
-	return r, err
+	return lr.get(ctx, layout.CheckpointPath)
 }
 
 func (lr *logResourceStore) ReadTile(ctx context.Context, l, i uint64, p uint8) ([]byte, error) {
@@ -757,12 +750,23 @@ func (lr *logResourceStore) NextIndex(ctx context.Context) (uint64, error) {
 	return lr.nextIndex(ctx)
 }
 
-// get returns the requested object.
+// get returns the requested object, or a wrapped os.ErrNotExist if it does not exist.
 //
 // This is indended to be used to proxy read requests through the personality for debug/testing purposes.
 func (s *logResourceStore) get(ctx context.Context, path string) ([]byte, error) {
 	d, err := s.objStore.getObject(ctx, path)
-	return d, err
+	if err != nil {
+		// Do not use errors.Is. Keep errors.As to compare by type and not by value.
+		var nske *types.NoSuchKey
+		if errors.As(err, &nske) {
+			// Return the generic NotExist error so that higher levels, such as the
+			// partial to full resource fallback, can differentiate between this and
+			// other errors.
+			return nil, fmt.Errorf("%v: %w", path, os.ErrNotExist)
+		}
+		return nil, err
+	}
+	return d, nil
 }
 
 func (lrs *logResourceStore) setCheckpoint(ctx context.Context, cpRaw []byte) error {

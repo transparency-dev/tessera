@@ -376,6 +376,50 @@ func TestBundleRoundtrip(t *testing.T) {
 	}
 }
 
+// TestLogReaderNotFound checks that the LogReader reports a missing tile, entry
+// bundle or checkpoint as os.ErrNotExist, as the POSIX driver and the client
+// fetchers do, and so that reading a partial tile or entry bundle which garbage
+// collection has removed falls back to the full one.
+func TestLogReaderNotFound(t *testing.T) {
+	ctx := t.Context()
+	m := newMemObjStore()
+	lr := &logResourceStore{objStore: m, entriesPath: layout.EntriesPath}
+	full := []byte("full resource")
+	for _, p := range []string{layout.TilePath(0, 0, 0), layout.EntriesPath(0, 0)} {
+		if err := m.setObject(ctx, p, full, "", ""); err != nil {
+			t.Fatalf("setObject(%q): %v", p, err)
+		}
+	}
+	for _, test := range []struct {
+		name string
+		read func() ([]byte, error)
+		want []byte // nil: want os.ErrNotExist
+	}{
+		{name: "partial tile, full present", read: func() ([]byte, error) { return lr.ReadTile(ctx, 0, 0, 3) }, want: full},
+		{name: "partial bundle, full present", read: func() ([]byte, error) { return lr.ReadEntryBundle(ctx, 0, 3) }, want: full},
+		{name: "missing tile", read: func() ([]byte, error) { return lr.ReadTile(ctx, 0, 1, 0) }},
+		{name: "missing partial tile", read: func() ([]byte, error) { return lr.ReadTile(ctx, 0, 1, 3) }},
+		{name: "missing bundle", read: func() ([]byte, error) { return lr.ReadEntryBundle(ctx, 1, 0) }},
+		{name: "missing checkpoint", read: func() ([]byte, error) { return lr.ReadCheckpoint(ctx) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := test.read()
+			if test.want == nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("got error %v, want os.ErrNotExist", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("got error %v, want %q", err, test.want)
+			}
+			if !bytes.Equal(got, test.want) {
+				t.Fatalf("got %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestPublishTree(t *testing.T) {
 	ctx := context.Background()
 	if canSkipMySQLTest(t, ctx) {
