@@ -162,6 +162,10 @@ type Config struct {
 	MaxOpenConns int
 	// Maximum idle database connections in the connection pool.
 	MaxIdleConns int
+	// DB will be used to interact with MySQL. If unset, Tessera will open one using DSN,
+	// MaxOpenConns and MaxIdleConns. If set, those are ignored, and it will never be
+	// closed by Tessera.
+	DB *sql.DB
 
 	// HTTPClient will be used for other HTTP requests. If unset, Tessera will use the net/http DefaultClient.
 	HTTPClient *http.Client
@@ -196,7 +200,7 @@ func New(ctx context.Context, cfg Config) (tessera.Driver, error) {
 
 // Appender creates a new tessera.Appender lifecycle object.
 func (s *Storage) Appender(ctx context.Context, opts *tessera.AppendOptions) (*tessera.Appender, tessera.LogReader, error) {
-	seq, err := newMySQLSequencer(ctx, s.cfg.DSN, uint64(opts.PushbackMaxOutstanding()), s.cfg.MaxOpenConns, s.cfg.MaxIdleConns)
+	seq, err := s.sequencer(ctx, uint64(opts.PushbackMaxOutstanding()))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create MySQL sequencer: %v", err)
 	}
@@ -553,7 +557,7 @@ func (s *Storage) MigrationWriter(ctx context.Context, opts *tessera.MigrationOp
 		},
 		entriesPath: opts.EntriesPath(),
 	}
-	seq, err := newMySQLSequencer(ctx, s.cfg.DSN, DefaultPushbackMaxOutstanding, s.cfg.MaxOpenConns, s.cfg.MaxIdleConns)
+	seq, err := s.sequencer(ctx, DefaultPushbackMaxOutstanding)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create MySQL sequencer: %v", err)
 	}
@@ -892,6 +896,15 @@ type mySQLSequencer struct {
 	maxOutstanding uint64
 }
 
+// sequencer returns a mySQLSequencer which uses the configured DB, or opens one
+// for the configured DSN.
+func (s *Storage) sequencer(ctx context.Context, maxOutstanding uint64) (*mySQLSequencer, error) {
+	if s.cfg.DB != nil {
+		return newMySQLSequencerWithDB(ctx, s.cfg.DB, maxOutstanding)
+	}
+	return newMySQLSequencer(ctx, s.cfg.DSN, maxOutstanding, s.cfg.MaxOpenConns, s.cfg.MaxIdleConns)
+}
+
 // newMySQLSequencer returns a new mysqlSequencer struct which uses the provided
 // DSN for its MySQL connection.
 func newMySQLSequencer(ctx context.Context, dsn string, maxOutstanding uint64, maxOpenConns, maxIdleConns int) (*mySQLSequencer, error) {
@@ -906,7 +919,12 @@ func newMySQLSequencer(ctx context.Context, dsn string, maxOutstanding uint64, m
 	if maxIdleConns >= 0 {
 		dbPool.SetMaxIdleConns(maxIdleConns)
 	}
+	return newMySQLSequencerWithDB(ctx, dbPool, maxOutstanding)
+}
 
+// newMySQLSequencerWithDB returns a new mysqlSequencer struct which uses the provided
+// database handle for its MySQL connections.
+func newMySQLSequencerWithDB(ctx context.Context, dbPool *sql.DB, maxOutstanding uint64) (*mySQLSequencer, error) {
 	if err := dbPool.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping MySQL db: %v", err)
 	}
