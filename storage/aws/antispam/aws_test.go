@@ -260,3 +260,29 @@ func testBundleHasher(b []byte) ([][]byte, error) {
 	}
 	return r, err
 }
+
+// TestAntispamKeepsIdleConnections checks that antispam storage created
+// without a MaxIdleConns setting keeps connections for reuse, rather than
+// closing each one after use and opening a new one for the next query.
+func TestAntispamKeepsIdleConnections(t *testing.T) {
+	ctx := context.Background()
+	if canSkipMySQLTest(t, ctx) {
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
+		t.Skip("MySQL not available, skipping test")
+	}
+
+	as, err := NewAntispam(ctx, *mySQLURI, AntispamOpts{})
+	if err != nil {
+		t.Fatalf("NewAntispam: %v", err)
+	}
+	before := as.dbPool.Stats().MaxIdleClosed
+	for range 10 {
+		var one int
+		if err := as.dbPool.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
+			t.Fatalf("query: %v", err)
+		}
+	}
+	if closed := as.dbPool.Stats().MaxIdleClosed - before; closed > 0 {
+		t.Errorf("%d of 10 sequential queries closed their connection instead of keeping it idle for reuse", closed)
+	}
+}
