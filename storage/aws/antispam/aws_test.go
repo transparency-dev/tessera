@@ -192,6 +192,44 @@ func TestAntispamIndexError(t *testing.T) {
 	}
 }
 
+// TestAntispamIdleConnections checks that antispam storage created without a
+// MaxIdleConns setting keeps connections for reuse, rather than closing each one
+// after use and opening a new one for the next query, and that a negative
+// MaxIdleConns keeps none.
+func TestAntispamIdleConnections(t *testing.T) {
+	ctx := context.Background()
+	if canSkipMySQLTest(t, ctx) {
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
+		t.Skip("MySQL not available, skipping test")
+	}
+
+	for _, test := range []struct {
+		desc         string
+		maxIdleConns int
+		wantClosed   int64
+	}{
+		{desc: "unset keeps idle connections", maxIdleConns: 0, wantClosed: 0},
+		{desc: "negative keeps none", maxIdleConns: -1, wantClosed: 10},
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			as, err := NewAntispam(ctx, *mySQLURI, AntispamOpts{MaxIdleConns: test.maxIdleConns})
+			if err != nil {
+				t.Fatalf("NewAntispam: %v", err)
+			}
+			before := as.dbPool.Stats().MaxIdleClosed
+			for range 10 {
+				var one int
+				if err := as.dbPool.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
+					t.Fatalf("query: %v", err)
+				}
+			}
+			if closed := as.dbPool.Stats().MaxIdleClosed - before; closed != test.wantClosed {
+				t.Errorf("%d of 10 sequential queries closed their connection, want %d", closed, test.wantClosed)
+			}
+		})
+	}
+}
+
 // canSkipMySQLTest checks if the test MySQL db is available and, if not, if the test can be skipped.
 //
 // Use this method before every MySQL test, and if it returns true, skip the test.

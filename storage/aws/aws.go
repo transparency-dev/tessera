@@ -158,9 +158,12 @@ type Config struct {
 	BucketPrefix string
 	// DSN is the DSN of the MySQL instance to use.
 	DSN string
-	// Maximum connections to the MySQL database.
+	// MaxOpenConns is the maximum number of open connections to the MySQL database.
+	// If zero or negative, the number of open connections is not limited.
 	MaxOpenConns int
-	// Maximum idle database connections in the connection pool.
+	// MaxIdleConns is the maximum number of idle connections kept in the MySQL connection pool.
+	// If zero, the database/sql default is used (currently 2).
+	// If negative, no idle connections are kept, so every query opens a new connection.
 	MaxIdleConns int
 
 	// HTTPClient will be used for other HTTP requests. If unset, Tessera will use the net/http DefaultClient.
@@ -907,7 +910,8 @@ func newMySQLSequencer(ctx context.Context, dsn string, maxOutstanding uint64, m
 	if maxOpenConns > 0 {
 		dbPool.SetMaxOpenConns(maxOpenConns)
 	}
-	if maxIdleConns >= 0 {
+	// Zero keeps the database/sql default; a negative value keeps no idle connections.
+	if maxIdleConns != 0 {
 		dbPool.SetMaxIdleConns(maxIdleConns)
 	}
 

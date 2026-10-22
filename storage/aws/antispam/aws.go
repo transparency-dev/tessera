@@ -72,8 +72,13 @@ type AntispamOpts struct {
 	PushbackThreshold uint
 
 	PushbackMaxOutstanding uint64
-	MaxOpenConns           int
-	MaxIdleConns           int
+	// MaxOpenConns is the maximum number of open connections to the antispam MySQL database.
+	// If zero or negative, the number of open connections is not limited.
+	MaxOpenConns int
+	// MaxIdleConns is the maximum number of idle connections kept in the antispam MySQL connection pool.
+	// If zero, the database/sql default is used (currently 2).
+	// If negative, no idle connections are kept, so every query opens a new connection.
+	MaxIdleConns int
 }
 
 type AntispamStorage struct {
@@ -115,7 +120,8 @@ func NewAntispam(ctx context.Context, dsn string, opts AntispamOpts) (*AntispamS
 	if opts.MaxOpenConns > 0 {
 		dbPool.SetMaxOpenConns(opts.MaxOpenConns)
 	}
-	if opts.MaxIdleConns >= 0 {
+	// Zero keeps the database/sql default; a negative value keeps no idle connections.
+	if opts.MaxIdleConns != 0 {
 		dbPool.SetMaxIdleConns(opts.MaxIdleConns)
 	}
 
