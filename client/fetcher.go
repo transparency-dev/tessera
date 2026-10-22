@@ -77,6 +77,14 @@ func (h HTTPFetcher) fetch(ctx context.Context, p string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get(%q): %v", u.String(), err)
 	}
+	// Close the body on every path, having read it to the end, so that the
+	// connection can be reused.
+	defer func() {
+		_, _ = io.Copy(io.Discard, r.Body)
+		if err := r.Body.Close(); err != nil {
+			slog.ErrorContext(ctx, "resp.Body.Close", slog.Any("error", err))
+		}
+	}()
 	switch r.StatusCode {
 	case http.StatusOK:
 		// All good, continue below
@@ -86,12 +94,6 @@ func (h HTTPFetcher) fetch(ctx context.Context, p string) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("get(%q): %v", u.String(), r.StatusCode)
 	}
-
-	defer func() {
-		if err := r.Body.Close(); err != nil {
-			slog.ErrorContext(ctx, "resp.Body.Close", slog.Any("error", err))
-		}
-	}()
 	return io.ReadAll(r.Body)
 }
 
