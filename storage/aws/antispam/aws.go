@@ -35,7 +35,7 @@ import (
 	"github.com/transparency-dev/tessera/internal/otel"
 	"go.opentelemetry.io/otel/trace"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 const (
@@ -74,6 +74,11 @@ type AntispamOpts struct {
 	PushbackMaxOutstanding uint64
 	MaxOpenConns           int
 	MaxIdleConns           int
+
+	// DB will be used to interact with MySQL. If unset, Tessera will open one using the
+	// dsn parameter to NewAntispam, MaxOpenConns and MaxIdleConns. If set, it must be
+	// connected to the database named by dsn, and it will never be closed by Tessera.
+	DB *sql.DB
 }
 
 type AntispamStorage struct {
@@ -107,16 +112,22 @@ func NewAntispam(ctx context.Context, dsn string, opts AntispamOpts) (*AntispamS
 		opts.PushbackThreshold = DefaultPushbackThreshold
 	}
 
-	dbPool, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to MySQL db: %v", err)
-	}
+	dbPool := opts.DB
+	if dbPool == nil {
+		var err error
+		dbPool, err = sql.Open("mysql", dsn)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to MySQL db: %v", err)
+		}
 
-	if opts.MaxOpenConns > 0 {
-		dbPool.SetMaxOpenConns(opts.MaxOpenConns)
-	}
-	if opts.MaxIdleConns >= 0 {
-		dbPool.SetMaxIdleConns(opts.MaxIdleConns)
+		if opts.MaxOpenConns > 0 {
+			dbPool.SetMaxOpenConns(opts.MaxOpenConns)
+		}
+		if opts.MaxIdleConns >= 0 {
+			dbPool.SetMaxIdleConns(opts.MaxIdleConns)
+		}
+	} else if err := checkDatabase(ctx, dbPool, dsn); err != nil {
+		return nil, err
 	}
 
 	if err := dbPool.Ping(); err != nil {
@@ -135,6 +146,24 @@ func NewAntispam(ctx context.Context, dsn string, opts AntispamOpts) (*AntispamS
 		return nil, fmt.Errorf("schema is not compatible with this version of the Tessera library: %v", err)
 	}
 	return r, nil
+}
+
+// checkDatabase returns an error unless db is connected to the database named by dsn.
+// A pool connected to another database would otherwise keep a separate, and so
+// incomplete, record of the log's entries, and fail to detect duplicates.
+func checkDatabase(ctx context.Context, db *sql.DB, dsn string) error {
+	cfg, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return fmt.Errorf("failed to parse DSN: %v", err)
+	}
+	var got sql.NullString
+	if err := db.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&got); err != nil {
+		return fmt.Errorf("failed to read the database of the provided DB: %v", err)
+	}
+	if got.String != cfg.DBName {
+		return fmt.Errorf("provided DB is connected to database %q, want %q", got.String, cfg.DBName)
+	}
+	return nil
 }
 
 func (s *AntispamStorage) initDB(ctx context.Context) error {
