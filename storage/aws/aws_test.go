@@ -26,6 +26,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/xml"
 	"errors"
 	"flag"
 	"fmt"
@@ -910,5 +911,84 @@ func TestSetObjectIfNoneMatchBucketPrefixIdempotentRecovery(t *testing.T) {
 	}
 	if got != wantKey {
 		t.Fatalf("recovery getObject read %q, want %q (double-prefix bug)", got, wantKey)
+	}
+}
+
+// TestDeleteObjectsWithPrefix exercises s3Storage.deleteObjectsWithPrefix
+// against a fake S3 server which, like S3, rejects a DeleteObjects request
+// that lists no objects with 400 MalformedXML. Most full tiles and entry
+// bundles never had a partial, so garbage collection often asks for a prefix
+// that matches nothing; that must succeed without sending a DeleteObjects
+// request, or garbage collection fails on every run (#1179).
+func TestDeleteObjectsWithPrefix(t *testing.T) {
+	const (
+		bucket = "test-bucket"
+		prefix = "tile/0/000.p/"
+	)
+	for _, test := range []struct {
+		name string
+		keys []string
+	}{
+		{name: "no objects"},
+		{name: "partials", keys: []string{"tile/0/000.p/1", "tile/0/000.p/2"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var deleted []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/xml")
+				switch {
+				case r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2":
+					if got := r.URL.Query().Get("prefix"); got != prefix {
+						t.Errorf("ListObjectsV2 prefix %q, want %q", got, prefix)
+					}
+					_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>%s</Name><Prefix>%s</Prefix><KeyCount>%d</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>`, bucket, prefix, len(test.keys))
+					for _, k := range test.keys {
+						_, _ = fmt.Fprintf(w, "<Contents><Key>%s</Key></Contents>", k)
+					}
+					_, _ = fmt.Fprint(w, "</ListBucketResult>")
+				case r.Method == http.MethodPost && r.URL.Query().Has("delete"):
+					var req struct {
+						Objects []struct {
+							Key string
+						} `xml:"Object"`
+					}
+					if err := xml.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Errorf("decoding DeleteObjects request: %v", err)
+					}
+					if len(req.Objects) == 0 {
+						w.WriteHeader(http.StatusBadRequest)
+						_, _ = fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>MalformedXML</Code><Message>The XML you provided was not well-formed or did not validate against our published schema</Message></Error>`)
+						return
+					}
+					mu.Lock()
+					for _, o := range req.Objects {
+						deleted = append(deleted, o.Key)
+					}
+					mu.Unlock()
+					_, _ = fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></DeleteResult>`)
+				default:
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+					http.Error(w, "unexpected", http.StatusNotImplemented)
+				}
+			}))
+			defer srv.Close()
+
+			c := s3.New(s3.Options{
+				BaseEndpoint: aws.String(srv.URL),
+				UsePathStyle: true,
+				Region:       "us-east-1",
+				Credentials:  credentials.NewStaticCredentialsProvider("test", "test", ""),
+			})
+			s := &s3Storage{s3Client: c, bucket: bucket}
+			if err := s.deleteObjectsWithPrefix(context.Background(), prefix); err != nil {
+				t.Fatalf("deleteObjectsWithPrefix(%q): %v", prefix, err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if diff := cmp.Diff(test.keys, deleted); diff != "" {
+				t.Errorf("deleted objects mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
