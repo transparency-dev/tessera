@@ -45,6 +45,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
+	"github.com/go-sql-driver/mysql"
 	"github.com/google/go-cmp/cmp"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera"
@@ -262,6 +263,101 @@ func TestMySQLSequencerRoundTrip(t *testing.T) {
 	}
 	if !more {
 		t.Errorf("more: false, expected true")
+	}
+}
+
+// TestMySQLSequencerAssignWhileConsuming checks that entries can be sequenced
+// while a batch is being integrated. consumeEntries keeps its transaction open
+// while its consumeFunc writes the new tiles and bundles to object storage,
+// which can take seconds, and that must not hold up sequencing.
+func TestMySQLSequencerAssignWhileConsuming(t *testing.T) {
+	ctx := context.Background()
+	if canSkipMySQLTest(t, ctx) {
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
+		t.Skip("MySQL not available, skipping test")
+	}
+	// Clean tables in case there's already something in there.
+	mustDropTables(t, ctx)
+
+	s, err := newMySQLSequencer(ctx, *mySQLURI, 1000, 0, 0)
+	if err != nil {
+		t.Fatalf("newMySQLSequencer: %v", err)
+	}
+	// MySQL refuses writes at READ COMMITTED where it logs statements to its
+	// binary log, so there integration keeps the default isolation level.
+	var logBin bool
+	var format string
+	if err := s.dbPool.QueryRowContext(ctx, "SELECT @@log_bin, @@binlog_format").Scan(&logBin, &format); err != nil {
+		t.Fatalf("reading the binary log settings: %v", err)
+	}
+	if logBin && strings.EqualFold(format, "STATEMENT") {
+		t.Skip("MySQL logs statements to its binary log")
+	}
+	if err := s.assignEntries(ctx, []*tessera.Entry{tessera.NewEntry([]byte("first"))}); err != nil {
+		t.Fatalf("assignEntries: %v", err)
+	}
+
+	consuming, release := make(chan struct{}), make(chan struct{})
+	consumed := make(chan error, 1)
+	go func() {
+		_, err := s.consumeEntries(ctx, 10, func(context.Context, uint64, []storage.SequencedEntry) ([]byte, error) {
+			close(consuming)
+			<-release // as a slow write to object storage would
+			return []byte("newroot"), nil
+		}, false)
+		consumed <- err
+	}()
+	select {
+	case <-consuming:
+	case err := <-consumed:
+		t.Fatalf("consumeEntries returned before consuming: %v", err)
+	}
+
+	// The appender gives each batch defaultAssignEntriesTimeout to be sequenced.
+	actx, cancel := context.WithTimeout(ctx, defaultAssignEntriesTimeout)
+	defer cancel()
+	err = s.assignEntries(actx, []*tessera.Entry{tessera.NewEntry([]byte("second"))})
+	close(release)
+	if err != nil {
+		t.Errorf("assignEntries while consuming: %v", err)
+	}
+	if err := <-consumed; err != nil {
+		t.Errorf("consumeEntries: %v", err)
+	}
+}
+
+// TestMySQLSequencerStatementBinlog checks that integration still works where
+// MySQL logs statements to its binary log, which refuses writes at READ
+// COMMITTED.
+func TestMySQLSequencerStatementBinlog(t *testing.T) {
+	ctx := context.Background()
+	if canSkipMySQLTest(t, ctx) {
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
+		t.Skip("MySQL not available, skipping test")
+	}
+	// Clean tables in case there's already something in there.
+	mustDropTables(t, ctx)
+
+	// The session chooses the format, as a server configured with it would.
+	cfg, err := mysql.ParseDSN(*mySQLURI)
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
+	}
+	if cfg.Params == nil {
+		cfg.Params = map[string]string{}
+	}
+	cfg.Params["binlog_format"] = "'STATEMENT'"
+	s, err := newMySQLSequencer(ctx, cfg.FormatDSN(), 1000, 0, 0)
+	if err != nil {
+		t.Fatalf("newMySQLSequencer: %v", err)
+	}
+	if err := s.assignEntries(ctx, []*tessera.Entry{tessera.NewEntry([]byte("first"))}); err != nil {
+		t.Fatalf("assignEntries: %v", err)
+	}
+	if _, err := s.consumeEntries(ctx, 10, func(context.Context, uint64, []storage.SequencedEntry) ([]byte, error) {
+		return []byte("newroot"), nil
+	}, false); err != nil {
+		t.Errorf("consumeEntries: %v", err)
 	}
 }
 
