@@ -37,11 +37,13 @@ import (
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/entry"
+	landmarkposix "github.com/transparency-dev/tessera/cmd/mtc/log/internal/landmark/posix"
 	"github.com/transparency-dev/tessera/cmd/mtc/log/internal/mtcproof"
 	tposix "github.com/transparency-dev/tessera/storage/posix"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
 	snote "golang.org/x/mod/sumdb/note"
+	"golang.org/x/sync/errgroup"
 )
 
 // unmarshal decodes the contents octets of a TBSCertificateLogEntry
@@ -952,8 +954,8 @@ func setupTestMTCLog(t *testing.T) (*MTCLog, note.SubtreeVerifier) {
 
 	opts := tessera.NewAppendOptions().
 		WithCheckpointSigner(signer).
-		WithBatching(4, 500*time.Millisecond).
-		WithCheckpointInterval(500*time.Millisecond).
+		WithBatching(4, 100*time.Millisecond).
+		WithCheckpointInterval(100*time.Millisecond).
 		WithWitnessPolicy(witPolicy, &tessera.WitnessOptions{Timeout: time.Second})
 	appender, _, reader, err := tessera.NewAppender(ctx, driver, opts)
 	if err != nil {
@@ -963,8 +965,9 @@ func setupTestMTCLog(t *testing.T) (*MTCLog, note.SubtreeVerifier) {
 	mtcLog, err := NewMTCLog(ctx, appender, NewOptions().
 		WithTesseraReader(reader).
 		WithAwaiterPollInterval(20*time.Millisecond).
-		WithLandmarksStorage(dummyLandmarksStorage{}).
-		WithMaxCertLifetime(7*24*time.Hour).
+		WithLandmarksStorage(landmarkposix.NewStorage(storageDir)).
+		WithMaxCertLifetime(60*time.Second).
+		WithLandmarkInterval(500*time.Millisecond).
 		WithOrigin(testOrigin).
 		WithSubtreeSigner(mustTestSigner()).
 		WithSubtreeWitnessPolicy(witPolicy))
@@ -986,7 +989,7 @@ func TestMTCLog_AddTBS(t *testing.T) {
 	makeEntry := func(id int) TBSCertificateLogEntry {
 		return TBSCertificateLogEntry{
 			Issuer:                    dummySeq(fmt.Sprintf("issuer%d", id)),
-			Validity:                  dummyValidity(now, now.Add(24*time.Hour)),
+			Validity:                  dummyValidity(now, now.Add(30*time.Second)),
 			Subject:                   dummySeq(fmt.Sprintf("subject%d", id)),
 			SubjectPublicKeyAlgorithm: dummySeq("algo"),
 			SubjectPublicKeyInfoHash:  make([]byte, 32),
@@ -1103,6 +1106,150 @@ func TestMTCLog_AddTBS(t *testing.T) {
 			}
 			if !witVerifier.VerifySubtree(mtcLog.origin, test.wantStart, test.wantEnd, subRoot, proofData.Signatures[1].Signature) {
 				t.Errorf("VerifySubtree failed for witness signature on entry%d", test.entryIdx)
+			}
+		})
+	}
+}
+
+func TestMTCLog_ProofToLandmark(t *testing.T) {
+	ctx := t.Context()
+	mtcLog, _ := setupTestMTCLog(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Integrate 4 entries concurrently in a single batch of size 4.
+	// Because all 4 entries are sequenced in one batch, storage writes only .p/4
+	// (no intermediate .p/1, .p/2, or .p/3 partial files exist on disk).
+	leafHashes := make([][]byte, 4)
+	var eg errgroup.Group
+	for i := range 4 {
+		eg.Go(func() error {
+			tbs := TBSCertificateLogEntry{
+				Issuer:                    dummySeq(fmt.Sprintf("issuer%d", i)),
+				Validity:                  dummyValidity(now, now.Add(30*time.Second)),
+				Subject:                   dummySeq(fmt.Sprintf("subject%d", i)),
+				SubjectPublicKeyAlgorithm: dummySeq("algo"),
+				SubjectPublicKeyInfoHash:  make([]byte, 32),
+			}
+			rsp, err := mtcLog.AddTBS(ctx, tbs)
+			if err != nil {
+				return fmt.Errorf("AddTBS(%d): %v", i, err)
+			}
+			m, err := tbs.Marshal()
+			if err != nil {
+				return fmt.Errorf("tbs[%d].Marshal: %v", i, err)
+			}
+			eb, err := entry.New(m).Marshal()
+			if err != nil {
+				return fmt.Errorf("entry[%d].Marshal: %v", i, err)
+			}
+			leafHashes[rsp.Index] = rfc6962.DefaultHasher.HashLeaf(eb)
+			return nil
+		})
+	}
+	if err := eg.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("entry not yet covered by active landmark returns retryAfter", func(t *testing.T) {
+		if _, retry, err := mtcLog.ProofToLandmark(ctx, 0); err != nil || retry == 0 {
+			t.Errorf("ProofToLandmark(0) before landmark publication: err = %v, retry = %v, want err = nil, retry > 0", err, retry)
+		}
+	})
+
+	t.Run("entry exceeding tree size returns ErrExceedsTreeSize", func(t *testing.T) {
+		if _, _, err := mtcLog.ProofToLandmark(ctx, 4); !errors.Is(err, ErrExceedsTreeSize) {
+			t.Errorf("ProofToLandmark(4) error = %v, want %v", err, ErrExceedsTreeSize)
+		}
+	})
+
+	// Wait for the background publisher to automatically publish landmark 1 at tree size 4.
+	// Note: we poll every 20ms rather than sleeping for `retry` because ProofToLandmark
+	// adds up to 15s of random jitter (maxRetryAfterJitter).
+	for {
+		_, retry, err := mtcLog.ProofToLandmark(ctx, 0)
+		if err != nil {
+			t.Fatalf("ProofToLandmark(0) while waiting for landmark: %v", err)
+		}
+		if retry == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	for _, test := range []struct {
+		name         string
+		entryIdx     uint64
+		wantStart    uint64
+		wantEnd      uint64
+		wantProofLen int
+		wantRoot     []byte
+	}{
+		{
+			name:         "entry 0 in landmark subtree [0, 2)",
+			entryIdx:     0,
+			wantStart:    0,
+			wantEnd:      2,
+			wantProofLen: 1,
+			wantRoot:     rfc6962.DefaultHasher.HashChildren(leafHashes[0], leafHashes[1]),
+		},
+		{
+			name:         "entry 1 in landmark subtree [0, 2)",
+			entryIdx:     1,
+			wantStart:    0,
+			wantEnd:      2,
+			wantProofLen: 1,
+			wantRoot:     rfc6962.DefaultHasher.HashChildren(leafHashes[0], leafHashes[1]),
+		},
+		{
+			name:         "entry 2 in landmark subtree [2, 4)",
+			entryIdx:     2,
+			wantStart:    2,
+			wantEnd:      4,
+			wantProofLen: 1,
+			wantRoot:     rfc6962.DefaultHasher.HashChildren(leafHashes[2], leafHashes[3]),
+		},
+		{
+			name:         "entry 3 in landmark subtree [2, 4)",
+			entryIdx:     3,
+			wantStart:    2,
+			wantEnd:      4,
+			wantProofLen: 1,
+			wantRoot:     rfc6962.DefaultHasher.HashChildren(leafHashes[2], leafHashes[3]),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lmProofBytes, retry, err := mtcLog.ProofToLandmark(ctx, test.entryIdx)
+			if err != nil {
+				t.Fatalf("ProofToLandmark(%d) error: %v", test.entryIdx, err)
+			}
+			if retry > 0 {
+				t.Fatalf("ProofToLandmark(%d) unexpected retry: %v", test.entryIdx, retry)
+			}
+			lmProof, err := unmarshalMTCProof(lmProofBytes)
+			if err != nil {
+				t.Fatalf("unmarshalMTCProof error: %v", err)
+			}
+			if lmProof.Start != test.wantStart || lmProof.End != test.wantEnd {
+				t.Errorf("subtree = [%d, %d), want [%d, %d)", lmProof.Start, lmProof.End, test.wantStart, test.wantEnd)
+			}
+			if len(lmProof.Extensions) != 0 {
+				t.Errorf("Extensions = %x, want empty", lmProof.Extensions)
+			}
+			if len(lmProof.InclusionProof) != test.wantProofLen {
+				t.Errorf("InclusionProof length = %d, want %d", len(lmProof.InclusionProof), test.wantProofLen)
+			}
+			if len(lmProof.Signatures) != 0 {
+				t.Errorf("Signatures length = %d, want 0", len(lmProof.Signatures))
+			}
+
+			offset := test.entryIdx - test.wantStart
+			subtreeSize := test.wantEnd - test.wantStart
+			gotRoot, err := proof.RootFromInclusionProof(rfc6962.DefaultHasher, offset, subtreeSize, leafHashes[test.entryIdx], lmProof.InclusionProof)
+			if err != nil {
+				t.Fatalf("RootFromInclusionProof(%d) error: %v", test.entryIdx, err)
+			}
+			if !bytes.Equal(gotRoot, test.wantRoot) {
+				t.Errorf("subtree root = %x, want %x", gotRoot, test.wantRoot)
 			}
 		})
 	}
