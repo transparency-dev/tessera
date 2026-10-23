@@ -53,6 +53,12 @@ func TestPosixMirrorIntegration(t *testing.T) {
 	const (
 		logOrigin    = "example.com/log/posix_mirror_test"
 		mirrorOrigin = "example.com/mirror/posix_mirror_test"
+
+		// maxAddConns limits the connections used to add entries to the log.
+		// A listener on macOS queues at most kern.ipc.somaxconn (128 by default)
+		// connections waiting to be accepted, and macOS 27 resets the rest.
+		// Batches of this size fill without waiting for their maximum age.
+		maxAddConns = 64
 	)
 
 	logSigner, logPubKey := mustGenerateMLDSACosigner(t, logOrigin)
@@ -119,7 +125,7 @@ func TestPosixMirrorIntegration(t *testing.T) {
 		WithCheckpointSigner(logSigner).
 		WithCheckpointInterval(time.Second).
 		WithCheckpointRepublishInterval(time.Minute).
-		WithBatching(256, time.Second).
+		WithBatching(maxAddConns, time.Second).
 		WithAntispam(tessera.DefaultAntispamInMemorySize, nil).
 		WithMirrorPolicy(mirrorPolicy, nil)
 
@@ -149,6 +155,10 @@ func TestPosixMirrorIntegration(t *testing.T) {
 
 	conformanceServer := httptest.NewServer(logMux)
 	t.Cleanup(conformanceServer.Close)
+	hc := &http.Client{Transport: &http.Transport{
+		MaxConnsPerHost:     maxAddConns,
+		MaxIdleConnsPerHost: maxAddConns,
+	}}
 
 	// Use the LiveIntegrationTest in integration_test.go with write_log_url set to the log and log_url set to the mirror.
 	iLog.LogIntegrationTest(t, iLog.LogIntegrationTestConfig{
@@ -157,6 +167,7 @@ func TestPosixMirrorIntegration(t *testing.T) {
 		LogReadEntryBundle: lr.ReadEntryBundle,
 		WriteLogURL:        conformanceServer.URL,
 		LogVerifier:        logSigner.Verifier(),
+		HTTPClient:         hc,
 		EntrySize:          uint64(1024),
 	})
 
