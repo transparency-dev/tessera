@@ -278,6 +278,37 @@ func (f *follower) Name() string {
 	return "GCP antispam"
 }
 
+// leaseHolder is implemented by LogReaders which know whether this process holds the lease permitting
+// it to run singleton background jobs. The GCP storage LogReader implements this.
+type leaseHolder interface {
+	HasLease() bool
+}
+
+// hasLease reports whether this process should run the follow transaction.
+// LogReaders which don't implement leaseHolder are treated as always holding the lease (stock behaviour).
+func hasLease(lr tessera.LogReader) bool {
+	if lh, ok := lr.(leaseHolder); ok {
+		return lh.HasLease()
+	}
+	return true
+}
+
+// updatePushbackLockFree keeps the local pushBack flag accurate on instances which are not running the
+// follow transaction, using only lock-free reads of the follower's progress and the integrated tree size.
+func (f *follower) updatePushbackLockFree(ctx context.Context, lr tessera.LogReader) {
+	n, err := f.EntriesProcessed(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "antispam: lock-free EntriesProcessed failed", slog.Any("error", err))
+		return
+	}
+	size, err := lr.IntegratedSize(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "antispam: lock-free IntegratedSize failed", slog.Any("error", err))
+		return
+	}
+	f.as.pushBack.Store(size > n && size-n > uint64(f.as.opts.PushbackThreshold))
+}
+
 // Follow uses entry data from the log to populate the antispam storage.
 func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 	errOutOfSync := errors.New("out-of-sync")
@@ -304,12 +335,25 @@ func (f *follower) Follow(followCtx context.Context, lr tessera.LogReader) {
 		case <-t.C:
 		}
 
+		// Only the lease holder runs the follow transaction (which exclusively locks
+		// FollowCoord(0)). Non-holders just keep their local pushback flag up to date.
+		if !hasLease(lr) {
+			// Drop any in-progress stream, it'll be stale by the time we (re)gain the lease.
+			if next != nil {
+				stop()
+				next = nil
+			}
+			curEntries = nil
+			f.updatePushbackLockFree(followCtx, lr)
+			continue
+		}
+
 		// logSize is the latest known size of the log we're following.
 		// This will get initialised below, inside the loop.
 		var logSize uint64
 
-		// Busy loop while there are entries to be consumed from the stream
-		for streamDone := false; !streamDone; {
+		// Busy loop while there are entries to be consumed from the stream (and we still hold the lease).
+		for streamDone := false; !streamDone && hasLease(lr); {
 			err := otel.TraceErr(followCtx, "tessera.antispam.gcp.FollowTask", tracer, func(ctx context.Context, span trace.Span) error {
 				ctx, cancel := context.WithTimeout(ctx, defaultBatchTimeout)
 				defer cancel()
