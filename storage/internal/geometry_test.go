@@ -27,6 +27,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
+	"github.com/transparency-dev/tessera/internal/fetcher"
 )
 
 // testTreeSize is the size of the integrated tree used by the EnsureGeometry tests.
@@ -126,8 +127,8 @@ func TestEnsureGeometryNoOp(t *testing.T) {
 			if err := EnsureGeometry(t.Context(), s.io(), cpSize, testTreeSize); err != nil {
 				t.Fatalf("EnsureGeometry(%d, %d) = %v, want nil", cpSize, testTreeSize, err)
 			}
-			if s.reads != 0 || s.writes != 0 {
-				t.Errorf("EnsureGeometry(%d, %d) did %d reads and %d writes, want none", cpSize, testTreeSize, s.reads, s.writes)
+			if s.checks != 0 || s.reads != 0 || s.writes != 0 {
+				t.Errorf("EnsureGeometry(%d, %d) did %d checks, %d reads and %d writes, want none", cpSize, testTreeSize, s.checks, s.reads, s.writes)
 			}
 		})
 	}
@@ -140,16 +141,18 @@ func TestEnsureGeometryIdempotent(t *testing.T) {
 		t.Fatalf("EnsureGeometry(%d, %d) = %v, want nil", cpSize, testTreeSize, err)
 	}
 
-	s.writes = 0
+	// The partial resources now exist, so only the existence checks should be needed.
+	s.reads, s.writes = 0, 0
 	if err := EnsureGeometry(t.Context(), s.io(), cpSize, testTreeSize); err != nil {
 		t.Fatalf("Repeated EnsureGeometry(%d, %d) = %v, want nil", cpSize, testTreeSize, err)
 	}
-	if s.writes != 0 {
-		t.Errorf("Repeated EnsureGeometry(%d, %d) did %d writes, want 0", cpSize, testTreeSize, s.writes)
+	if s.reads != 0 || s.writes != 0 {
+		t.Errorf("Repeated EnsureGeometry(%d, %d) did %d reads and %d writes, want none", cpSize, testTreeSize, s.reads, s.writes)
 	}
 }
 
 func TestEnsureGeometryErrors(t *testing.T) {
+	errCheck := errors.New("check failed")
 	errRead := errors.New("read failed")
 	for _, test := range []struct {
 		name   string
@@ -162,6 +165,11 @@ func TestEnsureGeometryErrors(t *testing.T) {
 		{
 			name:   "size_greater_than_tree",
 			cpSize: testTreeSize + 1,
+		}, {
+			name:      "check_error",
+			cpSize:    300,
+			modify:    func(_ *testing.T, s *fakeGeometryStore) { s.checkErr = errCheck },
+			wantErrIs: errCheck,
 		}, {
 			name:      "read_error",
 			cpSize:    300,
@@ -264,27 +272,27 @@ func TestMarshalTlogEntryBundle(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := MarshalTlogEntryBundle(&api.EntryBundle{Entries: test.entries})
+			got, err := marshalTlogEntryBundle(&api.EntryBundle{Entries: test.entries})
 			if err != nil {
 				if !test.wantErr {
-					t.Fatalf("MarshalTlogEntryBundle() = %v, want no error", err)
+					t.Fatalf("marshalTlogEntryBundle() = %v, want no error", err)
 				}
 				return
 			}
 			if test.wantErr {
-				t.Fatal("MarshalTlogEntryBundle() succeeded, want error")
+				t.Fatal("marshalTlogEntryBundle() succeeded, want error")
 			}
 			if diff := cmp.Diff(test.want, got); diff != "" {
-				t.Errorf("MarshalTlogEntryBundle() mismatch (-want +got):\n%s", diff)
+				t.Errorf("marshalTlogEntryBundle() mismatch (-want +got):\n%s", diff)
 			}
 
 			// The serialization must round-trip through api.EntryBundle.
 			eb := &api.EntryBundle{}
 			if err := eb.UnmarshalText(got); err != nil {
-				t.Fatalf("UnmarshalText(MarshalTlogEntryBundle()) = %v, want nil", err)
+				t.Fatalf("UnmarshalText(marshalTlogEntryBundle()) = %v, want nil", err)
 			}
 			if diff := cmp.Diff(test.entries, eb.Entries); diff != "" {
-				t.Errorf("UnmarshalText(MarshalTlogEntryBundle()) mismatch (-want +got):\n%s", diff)
+				t.Errorf("UnmarshalText(marshalTlogEntryBundle()) mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -293,9 +301,11 @@ func TestMarshalTlogEntryBundle(t *testing.T) {
 // fakeGeometryStore is an in-memory backend for PartialResourceIO.
 type fakeGeometryStore struct {
 	objects map[string][]byte
+	// checkErr, if set, is returned by every existence check.
+	checkErr error
 	// readErr, if set, is returned by every read.
-	readErr       error
-	reads, writes int
+	readErr               error
+	checks, reads, writes int
 }
 
 // newFakeGeometryStore returns a store holding all the tiles and entry bundles
@@ -316,21 +326,44 @@ func newFakeGeometryStore(t *testing.T, treeSize uint64) *fakeGeometryStore {
 	return s
 }
 
+// io returns a PartialResourceIO backed by s. Its readers fall back from
+// partial to full resources, as tessera.LogReader's do, so the tests also check
+// that EnsureGeometry only uses the existence checks to find missing partials.
 func (s *fakeGeometryStore) io() PartialResourceIO {
 	return PartialResourceIO{
-		ReadTile: func(_ context.Context, level, index uint64, p uint8) ([]byte, error) {
-			return s.read(layout.TilePath(level, index, p))
+		TileExists: func(_ context.Context, level, index uint64, p uint8) (bool, error) {
+			return s.check(layout.TilePath(level, index, p))
+		},
+		ReadTile: func(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
+			return fetcher.PartialOrFullResource(ctx, p, func(_ context.Context, p uint8) ([]byte, error) {
+				return s.read(layout.TilePath(level, index, p))
+			})
 		},
 		WriteTile: func(_ context.Context, level, index uint64, p uint8, data []byte) error {
 			return s.write(layout.TilePath(level, index, p), data)
 		},
-		ReadEntryBundle: func(_ context.Context, index uint64, p uint8) ([]byte, error) {
-			return s.read(testBundlePath(index, p))
+		EntryBundleExists: func(_ context.Context, index uint64, p uint8) (bool, error) {
+			return s.check(testBundlePath(index, p))
+		},
+		ReadEntryBundle: func(ctx context.Context, index uint64, p uint8) ([]byte, error) {
+			return fetcher.PartialOrFullResource(ctx, p, func(_ context.Context, p uint8) ([]byte, error) {
+				return s.read(testBundlePath(index, p))
+			})
 		},
 		WriteEntryBundle: func(_ context.Context, index uint64, p uint8, data []byte) error {
 			return s.write(testBundlePath(index, p), data)
 		},
 	}
+}
+
+// check reports whether exactly the named object exists.
+func (s *fakeGeometryStore) check(path string) (bool, error) {
+	s.checks++
+	if s.checkErr != nil {
+		return false, s.checkErr
+	}
+	_, ok := s.objects[path]
+	return ok, nil
 }
 
 // read returns exactly the named object: there's no partial to full fallback.
@@ -390,9 +423,9 @@ func testBundle(t *testing.T, index uint64, p uint8) []byte {
 	for i := range n {
 		b.Entries = append(b.Entries, fmt.Appendf(nil, "entry %d", index*layout.EntryBundleWidth+i))
 	}
-	d, err := MarshalTlogEntryBundle(b)
+	d, err := marshalTlogEntryBundle(b)
 	if err != nil {
-		t.Fatalf("MarshalTlogEntryBundle() = %v, want no error", err)
+		t.Fatalf("marshalTlogEntryBundle() = %v, want no error", err)
 	}
 	return d
 }

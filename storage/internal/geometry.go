@@ -17,10 +17,8 @@ package storage
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"math/bits"
-	"os"
 
 	"github.com/transparency-dev/tessera/api"
 	"github.com/transparency-dev/tessera/api/layout"
@@ -30,12 +28,18 @@ import (
 // PartialResourceIO provides EnsureGeometry with raw access to a log's tiles
 // and entry bundles.
 type PartialResourceIO struct {
-	// ReadTile returns exactly the requested tile. It must not fall back from a
-	// partial to a full tile (so never pass tessera.LogReader.ReadTile), and must
-	// return an error wrapping os.ErrNotExist if the tile is absent.
+	// TileExists reports whether exactly the requested tile is present. It must
+	// not fall back from a partial to the full tile: if it did, a missing partial
+	// tile would never be created whenever the full tile exists.
+	TileExists func(ctx context.Context, level, index uint64, p uint8) (bool, error)
+	// ReadTile returns the requested tile, or an error wrapping os.ErrNotExist if
+	// it's absent. Unlike TileExists, it may fall back from a partial to the full
+	// tile, so tessera.LogReader.ReadTile is suitable.
 	ReadTile func(ctx context.Context, level, index uint64, p uint8) ([]byte, error)
 	// WriteTile stores a tile. It must succeed if identical data already exists.
 	WriteTile func(ctx context.Context, level, index uint64, p uint8, data []byte) error
+	// EntryBundleExists is the entry bundle equivalent of TileExists.
+	EntryBundleExists func(ctx context.Context, index uint64, p uint8) (bool, error)
 	// ReadEntryBundle is the entry bundle equivalent of ReadTile.
 	ReadEntryBundle func(ctx context.Context, index uint64, p uint8) ([]byte, error)
 	// WriteEntryBundle is the entry bundle equivalent of WriteTile.
@@ -105,13 +109,11 @@ func ensurePartialBundle(ctx context.Context, rw PartialResourceIO, idx uint64, 
 	}
 
 	// Check if the entry bundle already exists.
-	_, err := rw.ReadEntryBundle(ctx, idx, cpP)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		// Need to do the work.
-	case err != nil:
+	exists, err := rw.EntryBundleExists(ctx, idx, cpP)
+	if err != nil {
 		return fmt.Errorf("failed to check for entry bundle @%d.%d: %w", idx, cpP, err)
-	default:
+	}
+	if exists {
 		// Already exists, we're done!
 		return nil
 	}
@@ -133,7 +135,7 @@ func ensurePartialBundle(ctx context.Context, rw PartialResourceIO, idx uint64, 
 	}
 
 	eb.Entries = eb.Entries[:cpP]
-	d, err = MarshalTlogEntryBundle(eb)
+	d, err = marshalTlogEntryBundle(eb)
 	if err != nil {
 		return fmt.Errorf("failed to marshal entry bundle @%d.%d: %w", idx, cpP, err)
 	}
@@ -155,13 +157,11 @@ func ensurePartialTile(ctx context.Context, rw PartialResourceIO, l uint64, idx 
 	}
 
 	// Check if the tile already exists.
-	_, err := rw.ReadTile(ctx, l, idx, cpP)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		// Need to do the work.
-	case err != nil:
+	exists, err := rw.TileExists(ctx, l, idx, cpP)
+	if err != nil {
 		return fmt.Errorf("failed to check for tile @%d/%d.%d: %w", l, idx, cpP, err)
-	default:
+	}
+	if exists {
 		// Already exists, we're done!
 		return nil
 	}
@@ -193,8 +193,8 @@ func ensurePartialTile(ctx context.Context, rw PartialResourceIO, l uint64, idx 
 	return nil
 }
 
-// MarshalTlogEntryBundle returns a tlog-tiles compatible serialization of the provided entry bundle.
-func MarshalTlogEntryBundle(b *api.EntryBundle) ([]byte, error) {
+// marshalTlogEntryBundle returns a tlog-tiles compatible serialization of the provided entry bundle.
+func marshalTlogEntryBundle(b *api.EntryBundle) ([]byte, error) {
 	total := 0
 	for i, e := range b.Entries {
 		l := len(e)
