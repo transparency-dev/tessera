@@ -971,6 +971,14 @@ func (m *memObjStore) getObject(_ context.Context, obj string) ([]byte, *gcs.Rea
 	return d, &gcs.ReaderObjectAttrs{Generation: 1}, nil
 }
 
+func (m *memObjStore) objectExists(_ context.Context, obj string) (bool, error) {
+	m.RLock()
+	defer m.RUnlock()
+
+	_, ok := m.mem[obj]
+	return ok, nil
+}
+
 // TODO(phboneff): add content type tests
 func (m *memObjStore) setObject(_ context.Context, obj string, data []byte, cond *gcs.Conditions, _, _ string) error {
 	m.Lock()
@@ -1089,6 +1097,75 @@ func TestSetObjectBucketPrefixIdempotentRecovery(t *testing.T) {
 	}
 	if got != wantObj {
 		t.Fatalf("recovery getObject read %q, want %q (double-prefix bug)", got, wantObj)
+	}
+}
+
+// TestObjectExists checks that gcsStorage.objectExists applies bucketPrefix
+// exactly once, reports a missing object as (false, nil), surfaces other
+// errors, and only reads the object's metadata rather than its contents.
+func TestObjectExists(t *testing.T) {
+	const (
+		bucket = "test-bucket"
+		prefix = "some/prefix"
+	)
+
+	// Like the fake in TestSetObjectBucketPrefixIdempotentRecovery, this pins
+	// the cloud.google.com/go/storage client's HTTP JSON-API wire shape, here
+	// for object metadata reads.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Query().Get("alt") == "media" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected", http.StatusNotImplemented)
+			return
+		}
+		status, body := http.StatusNotFound, `{"error":{"code":404,"message":"No such object"}}`
+		switch obj := strings.TrimPrefix(r.URL.Path, "/storage/v1/b/"+bucket+"/o/"); obj {
+		case prefix + "/present":
+			status, body = http.StatusOK, fmt.Sprintf(`{"bucket":%q,"name":%q,"generation":"1"}`, bucket, obj)
+		case prefix + "/forbidden":
+			status, body = http.StatusForbidden, `{"error":{"code":403,"message":"forbidden"}}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Errorf("Write: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("STORAGE_EMULATOR_HOST", strings.TrimPrefix(srv.URL, "http://"))
+	c, err := gcs.NewClient(t.Context(), gcs.WithJSONReads())
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer func() {
+		if err := c.Close(); err != nil {
+			t.Logf("Close: %v", err)
+		}
+	}()
+	s := &gcsStorage{gcsClient: c, bucket: bucket, bucketPrefix: prefix}
+
+	for _, test := range []struct {
+		obj     string
+		want    bool
+		wantErr bool
+	}{
+		{obj: "present", want: true},
+		{obj: "missing", want: false},
+		{obj: "forbidden", wantErr: true},
+	} {
+		t.Run(test.obj, func(t *testing.T) {
+			got, err := s.objectExists(t.Context(), test.obj)
+			if gotErr := err != nil; gotErr != test.wantErr {
+				t.Fatalf("objectExists(%q) error = %v, want error presence = %t", test.obj, err, test.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if got != test.want {
+				t.Errorf("objectExists(%q) = %t, want %t", test.obj, got, test.want)
+			}
+		})
 	}
 }
 
@@ -1309,10 +1386,6 @@ func TestMirrorWriter_UpdateCheckpoint(t *testing.T) {
 }
 
 func TestMirrorWriter_UpdateCheckpointGeometry(t *testing.T) {
-	// TODO: Unskip once mirrorWriter.UpdateCheckpoint ensures the partial tiles and entry bundles
-	// implied by the new checkpoint exist.
-	t.Skip("mirrorWriter.UpdateCheckpoint does not yet ensure checkpoint geometry")
-
 	ctx := t.Context()
 	opts := tessera.NewMirrorOptions()
 	mw, lr, m := newTestMirrorWriter(t, opts)
@@ -1400,6 +1473,53 @@ func TestMirrorWriter_UpdateCheckpointGeometry(t *testing.T) {
 				idx >>= layout.TileHeight
 			}
 		})
+	}
+}
+
+// TestPartialResourceIOFallback checks that storage.EnsureGeometry, given
+// logResourceStore.partialResourceIO, derives a checkpoint's partial resources
+// from the full ones if those implied by a stale integrated size are absent,
+// e.g. because they were garbage collected after the tree grew. This relies on
+// partialResourceIO's readers returning os.ErrNotExist for missing resources.
+func TestPartialResourceIOFallback(t *testing.T) {
+	ctx := t.Context()
+	opts := tessera.NewMirrorOptions()
+	mw, lr, m := newTestMirrorWriter(t, opts)
+
+	// Integrating two full entry bundles in one go leaves the tile and entry
+	// bundle at index 1 present only in full.
+	if _, _, err := mw.IntegrateBundles(ctx, 0, generateBundles(t, 2*layout.EntryBundleWidth)); err != nil {
+		t.Fatalf("IntegrateBundles: %v", err)
+	}
+	const (
+		cpSize        = 280
+		staleTreeSize = 300
+		idx           = 1 // The index of both sizes' right-most entry bundle.
+	)
+
+	// EnsureGeometry has to fall back to the full resources, as the partial ones
+	// implied by staleTreeSize are absent.
+	staleP := layout.PartialTileSize(0, idx, staleTreeSize)
+	for _, obj := range []string{layout.TilePath(0, idx, staleP), opts.EntriesPath()(idx, staleP)} {
+		if ok, err := m.objectExists(ctx, obj); err != nil || ok {
+			t.Fatalf("objectExists(%q) = (%t, %v), want (false, nil)", obj, ok, err)
+		}
+	}
+	if err := storage.EnsureGeometry(ctx, mw.logStore.partialResourceIO(), cpSize, staleTreeSize); err != nil {
+		t.Fatalf("EnsureGeometry(%d, %d) = %v, want nil", cpSize, staleTreeSize, err)
+	}
+
+	// The partial resources implied by cpSize should be prefixes of the full ones.
+	cpP := layout.PartialTileSize(0, idx, cpSize)
+	wantNodes := mustReadTile(t, lr, 0, idx, 0).Nodes[:cpP]
+	gotNodes := mustReadTile(t, lr, 0, idx, cpP).Nodes
+	if diff := cmp.Diff(wantNodes, gotNodes); diff != "" {
+		t.Errorf("EnsureGeometry(%d, %d): tile 0/%d.%d mismatch (-want +got):\n%s", cpSize, staleTreeSize, idx, cpP, diff)
+	}
+	wantEntries := mustReadEntryBundle(t, lr, idx, 0).Entries[:cpP]
+	gotEntries := mustReadEntryBundle(t, lr, idx, cpP).Entries
+	if diff := cmp.Diff(wantEntries, gotEntries); diff != "" {
+		t.Errorf("EnsureGeometry(%d, %d): entry bundle %d.%d mismatch (-want +got):\n%s", cpSize, staleTreeSize, idx, cpP, diff)
 	}
 }
 

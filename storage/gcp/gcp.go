@@ -523,6 +523,7 @@ func (a *Appender) updateCheckpoint(ctx context.Context, size uint64, root []byt
 // objStore describes a type which can store and retrieve objects.
 type objStore interface {
 	getObject(ctx context.Context, obj string) ([]byte, *gcs.ReaderObjectAttrs, error)
+	objectExists(ctx context.Context, obj string) (bool, error)
 	setObject(ctx context.Context, obj string, data []byte, cond *gcs.Conditions, contType string, cacheCtl string) error
 	deleteObjectsWithPrefix(ctx context.Context, prefix string) error
 }
@@ -648,6 +649,23 @@ func (s *logResourceStore) setEntryBundle(ctx context.Context, bundleIndex uint6
 
 	}
 	return nil
+}
+
+// partialResourceIO returns a storage.PartialResourceIO which provides storage.EnsureGeometry
+// with access to the tiles and entry bundles in this store.
+func (s *logResourceStore) partialResourceIO() storage.PartialResourceIO {
+	return storage.PartialResourceIO{
+		TileExists: func(ctx context.Context, level, index uint64, p uint8) (bool, error) {
+			return s.objStore.objectExists(ctx, layout.TilePath(level, index, p))
+		},
+		ReadTile:  s.getTile,
+		WriteTile: s.setTile,
+		EntryBundleExists: func(ctx context.Context, index uint64, p uint8) (bool, error) {
+			return s.objStore.objectExists(ctx, s.entriesPath(index, p))
+		},
+		ReadEntryBundle:  s.getEntryBundle,
+		WriteEntryBundle: s.setEntryBundle,
+	}
 }
 
 // integrateEntries appends the provided entries into the log starting at fromSeq.
@@ -1361,6 +1379,27 @@ func (s *gcsStorage) getObject(ctx context.Context, obj string) ([]byte, *gcs.Re
 	})
 }
 
+// objectExists reports whether the specified object exists.
+//
+// Unlike getObject, this only fetches the object's metadata, not its contents.
+func (s *gcsStorage) objectExists(ctx context.Context, obj string) (bool, error) {
+	return otel.Trace(ctx, "tessera.storage.gcp.objectExists", tracer, func(ctx context.Context, span trace.Span) (bool, error) {
+		if s.bucketPrefix != "" {
+			obj = filepath.Join(s.bucketPrefix, obj)
+		}
+
+		span.SetAttributes(objectPathKey.String(obj))
+
+		if _, err := s.gcsClient.Bucket(s.bucket).Object(obj).Attrs(ctx); err != nil {
+			if errors.Is(err, gcs.ErrObjectNotExist) {
+				return false, nil
+			}
+			return false, fmt.Errorf("objectExists: failed to get attributes of object %q in bucket %q: %w", obj, s.bucket, err)
+		}
+		return true, nil
+	})
+}
+
 // setObject stores the provided data in the specified object, optionally gated by a condition.
 //
 // cond can be used to specify preconditions for the write (e.g. write iff not exists, write iff
@@ -1680,7 +1719,15 @@ func (w *mirrorWriter) IntegratedSize(ctx context.Context) (uint64, error) {
 
 // UpdateCheckpoint atomically updates the local published checkpoint for the log mirror.
 func (w *mirrorWriter) UpdateCheckpoint(ctx context.Context, fn func(oldCP []byte) (newCP []byte, err error)) error {
-	_, err := w.seq.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+	// Read the integrated size before starting the PubCoord transaction: the Spanner client rejects nested
+	// transactions, and reading IntCoord within that transaction would make publishing contend with integration.
+	// A stale value is fine since the integrated size never shrinks and the resources it implies are immutable.
+	treeSize, err := w.IntegratedSize(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to read integrated size: %v", err)
+	}
+
+	_, err = w.seq.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 		if _, err := txn.ReadRowWithOptions(ctx, w.seq.table("PubCoord"), spanner.Key{0}, []string{"publishedAt"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE}); err != nil {
 			return fmt.Errorf("failed to lock PubCoord: %w", err)
 		}
@@ -1703,7 +1750,10 @@ func (w *mirrorWriter) UpdateCheckpoint(ctx context.Context, fn func(oldCP []byt
 			return fmt.Errorf("checkpoint size %d exceeds maximum supported size %d", newSize, int64(math.MaxInt64))
 		}
 
-		// TODO: Ensure partial tiles and entry bundles for the new checkpoint exist.
+		// Ensure that all the partial resources implied by the new size are present.
+		if err := storage.EnsureGeometry(ctx, w.logStore.partialResourceIO(), newSize, treeSize); err != nil {
+			return fmt.Errorf("failed to ensure geometry: %w", err)
+		}
 
 		if err := w.logStore.setCheckpoint(ctx, newCP); err != nil {
 			return fmt.Errorf("failed to set checkpoint: %w", err)
