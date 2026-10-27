@@ -388,6 +388,72 @@ func TestTileRoundtrip(t *testing.T) {
 	}
 }
 
+// TestReadTileNotExist checks that LogReader.ReadTile falls back to the full
+// tile if the requested partial tile is absent (e.g. because it was garbage
+// collected after the tree grew), and returns os.ErrNotExist if neither exists.
+func TestReadTileNotExist(t *testing.T) {
+	ctx := t.Context()
+	s := &logResourceStore{
+		objStore: newMemObjStore(),
+	}
+	lr := &LogReader{lrs: *s}
+
+	const level, index = 0, 1
+	wantTile := makeTile(t, layout.TileWidth)
+	tRaw, err := wantTile.MarshalText()
+	if err != nil {
+		t.Fatalf("Failed to marshal tile: %v", err)
+	}
+	// Only the full tile is stored.
+	if err := s.setTile(ctx, level, index, 0, tRaw); err != nil {
+		t.Fatalf("setTile: %v", err)
+	}
+
+	for _, test := range []struct {
+		name    string
+		index   uint64
+		p       uint8
+		wantErr error
+	}{
+		{
+			name:  "full tile present",
+			index: index,
+		},
+		{
+			name:  "partial tile absent, full tile present",
+			index: index,
+			p:     20,
+		},
+		{
+			name:    "full tile absent",
+			index:   index + 1,
+			wantErr: os.ErrNotExist,
+		},
+		{
+			name:    "partial and full tile absent",
+			index:   index + 1,
+			p:       20,
+			wantErr: os.ErrNotExist,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := lr.ReadTile(ctx, level, test.index, test.p)
+			if test.wantErr != nil {
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("ReadTile(%d, %d, %d) = %v, want %v", level, test.index, test.p, err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ReadTile(%d, %d, %d): %v", level, test.index, test.p, err)
+			}
+			if !bytes.Equal(got, tRaw) {
+				t.Fatalf("ReadTile(%d, %d, %d) returned different data", level, test.index, test.p)
+			}
+		})
+	}
+}
+
 func makeBundle(t *testing.T, idx uint64, size int) []byte {
 	t.Helper()
 	r := &bytes.Buffer{}

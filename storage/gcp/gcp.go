@@ -562,13 +562,24 @@ func (s *logResourceStore) setTile(ctx context.Context, level, index uint64, par
 // getTile retrieves the raw tile from the provided location.
 //
 // The location to which the tile is written is defined by the tile layout spec.
+//
+// Returns a wrapped os.ErrNotExist if the tile does not exist.
 func (s *logResourceStore) getTile(ctx context.Context, level, index uint64, partial uint8) ([]byte, error) {
 	start := time.Now()
 
 	tPath := layout.TilePath(level, index, partial)
 	d, _, err := s.objStore.getObject(ctx, tPath)
 	opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("readTile")))
-	return d, err
+	if err != nil {
+		if errors.Is(err, gcs.ErrObjectNotExist) {
+			// Return the generic NotExist error so that higher levels can differentiate
+			// between this and other errors.
+			return nil, fmt.Errorf("%v: %w", tPath, os.ErrNotExist)
+		}
+		return nil, err
+	}
+
+	return d, nil
 }
 
 // getTiles returns the tiles with the given tile-coords for the specified log size.
