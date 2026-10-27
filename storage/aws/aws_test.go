@@ -150,6 +150,33 @@ func TestMySQLSequencerAssignEntries(t *testing.T) {
 	}
 }
 
+// TestMySQLSequencerKeepsIdleConnections checks that a sequencer created
+// without a maxIdleConns setting keeps connections for reuse, rather than
+// closing each one after use and opening a new one for the next query.
+func TestMySQLSequencerKeepsIdleConnections(t *testing.T) {
+	ctx := context.Background()
+	if canSkipMySQLTest(t, ctx) {
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
+		t.Skip("MySQL not available, skipping test")
+	}
+	mustDropTables(t, ctx)
+
+	seq, err := newMySQLSequencer(ctx, *mySQLURI, 1000, 0, 0)
+	if err != nil {
+		t.Fatalf("newMySQLSequencer: %v", err)
+	}
+	before := seq.dbPool.Stats().MaxIdleClosed
+	for range 10 {
+		var one int
+		if err := seq.dbPool.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
+			t.Fatalf("query: %v", err)
+		}
+	}
+	if closed := seq.dbPool.Stats().MaxIdleClosed - before; closed > 0 {
+		t.Errorf("%d of 10 sequential queries closed their connection instead of keeping it idle for reuse", closed)
+	}
+}
+
 func TestMySQLSequencerPushback(t *testing.T) {
 	ctx := context.Background()
 	if canSkipMySQLTest(t, ctx) {
