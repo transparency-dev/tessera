@@ -28,22 +28,30 @@ jobs:
         run: go test -v -race ./...
 
   test-aws-mysql:
-    env:
-      DB_DATABASE: test_tessera
-      DB_USER: root
-      DB_PASSWORD: root
-
     runs-on: ubuntu-latest
-    
+
+    services:
+      mysql:
+        # Keep in sync with the Aurora engine_version in deployment/modules/aws/storage/main.tf.
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: test_tessera
+        ports:
+          - 3306:3306
+        # Ping over TCP so the check only passes once the real server is up,
+        # not the socket-only temporary server used during init.
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Start MySQL
-        run: |
-          sudo /etc/init.d/mysql start
-          mysql -e "CREATE DATABASE IF NOT EXISTS $DB_DATABASE;" -u$DB_USER -p$DB_PASSWORD
       - name: Test with Go
         # Parallel tests are disabled for the MySQL test database to always be in a known state.
         run: go test -p=1 -v -race ./storage/aws/... -is_mysql_test_optional=false
