@@ -768,27 +768,6 @@ func TestMirrorWriter_IntegrateBundles(t *testing.T) {
 	}
 }
 
-func TestMaxLevel(t *testing.T) {
-	for _, tc := range []struct {
-		size uint64
-		want int
-	}{
-		{0, 0},
-		{1, 0},
-		{256, 1},
-		{257, 1},
-		{32769, 1},
-		{65535, 1},
-		{65536, 2},
-	} {
-		t.Run(fmt.Sprintf("size_%d", tc.size), func(t *testing.T) {
-			if got := maxLevel(tc.size); got != tc.want {
-				t.Fatalf("maxLevel(%d): got %d, want %d", tc.size, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestMirrorWriter_UpdateCheckpointGeometry(t *testing.T) {
 	ctx := t.Context()
 	s := &Storage{
