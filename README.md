@@ -224,7 +224,7 @@ For lifecycle states other than Appender mode, take a look at [Lifecycles](#life
 
 Here's an example of creating an `Appender` for the POSIX driver:
 ```go file=README_test.go region=construct_example
-	driver, _ := posix.New(ctx, "/tmp/mylog")
+	driver, _ := posix.New(ctx, posix.Config{Path: "/tmp/mylog"})
 	signer := createSigner()
 
 	appender, shutdown, reader, err := tessera.NewAppender(
@@ -233,7 +233,7 @@ Here's an example of creating an `Appender` for the POSIX driver:
 
 See the documentation for each driver implementation to understand the parameters that each takes.
 
-The final part of configuring Tessera is to set up the addition features that you want to use.
+The final part of configuring Tessera is to set up the additional features that you want to use.
 These optional libraries can be used to provide common log behaviours.
 See [Features](#features) after reading the rest of this section for more details.
 
@@ -253,7 +253,7 @@ Now the fun part - writing to the log!
 ```
 
 The `AppendOptions` allow Tessera behaviour to be tuned.
-Take a look at the methods named `With*` on the `AppendOptions` struct in the root package, e.g. [`WithBatching`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithBatching) to see the available options are how they should be used.
+Take a look at the methods named `With*` on the `AppendOptions` struct in the root package, e.g. [`WithBatching`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithBatching) to see the available options and how they should be used.
 
 > [!Tip]
 > If you know ahead of time how many entries you want to add (e.g. if you're writing an "off-line" or batch tool,
@@ -297,16 +297,16 @@ personality to never generate duplicates. This can allow for significantly cheap
 The antispam mechanism consists of two layers which sit in front of the underlying `Add` implementation of the storage:
 1. The first layer is an `InMemory` cache which keeps track of a configurable number of recently-added entries.
    If a recently-seen entry is spotted by the same application instance, this layer will short-circuit the addition
-   of the duplicate, and instead return and index previously assigned to this entry. Otherwise the requested entry is
+   of the duplicate, and instead return an index previously assigned to this entry. Otherwise the requested entry is
    passed on to the second layer.
 2. The second layer is a `Persistent` index of a hash of the entry to its assigned position in the log.
    Similarly to the first layer, this second layer will look for a record in its stored data which matches the incoming
    entry, and if such a record exists, it will short-circuit the addition of the duplicate entry and return a previous
    version's assigned position in the log.
 
-These layes are configured by the `WithAntispam` method of the
+These layers are configured by the `WithAntispam` method of the
 [AppendOptions](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithAntispam) and
-[MigrateOptions](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithAntispam).
+[MigrationOptions](https://pkg.go.dev/github.com/transparency-dev/tessera@main#MigrationOptions.WithAntispam).
 
 > [!Tip]
 > Persistent antispam is fairly expensive in terms of storage-compute, so should only be used where it is actually necessary.
@@ -372,7 +372,7 @@ See more details in the [Lifecycle Design: Appender](https://github.com/transpar
 This mode is used to migrate a log from one location to another.
 
 This is instantiated via [`tessera.NewMigrationTarget`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#NewMigrationTarget),
-and configured using the [`tessera.NewMigratonOptions`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#NewMigrationOptions) struct.
+and configured using the [`tessera.NewMigrationOptions`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#NewMigrationOptions) struct.
 
 > [!Tip]
 > This mode enables the migration of logs between different Tessera storage backends, e.g. you may wish to switch
@@ -385,7 +385,7 @@ and configured using the [`tessera.NewMigratonOptions`](https://pkg.go.dev/githu
 Binaries for migrating _into_ each of the storage implementations can be found at [./cmd/experimental/migrate/](./cmd/experimental/migrate/).
 These binaries take the URL of a remote tiled log, and copy it into the target location.
 These binaries ought to be sufficient for most use-cases.
-Users that need to write their own migration binary should use the provided binaries as a reference codelab.
+Users that need to write their own migration binary should use the provided binaries as a reference.
 
 See more details in the [Lifecycle Design: Migration](https://github.com/transparency-dev/tessera/blob/main/docs/design/lifecycle.md#migration).
 
@@ -402,7 +402,7 @@ The instantiated `Appender` allows its background processes to keep running, ens
 Determining when this is complete can be done by inspecting the databases or via the OpenTelemetry metrics which instrument this code;
 once the next-available sequence number and published checkpoint size have converged and remain stable, the log is in a quiescent state.
 
-A quiescent log using GCP, AWS, or POSIX that is now permanently read-only can be made cheaper to operate. The implementations no longer need any running binaries running Tessera code. Any databases created for this log (i.e. the sequencing tables, or antispam) can be deleted. The read-path can be served directly from the storage buckets (for GCP, AWS) or via a standard HTTP file server (for POSIX).
+A quiescent log using GCP, AWS, or POSIX that is now permanently read-only can be made cheaper to operate. There is no longer any need to run a Tessera-based binary (e.g. your personality) to serve the read-only traffic. Any databases created for this log (i.e. the sequencing tables, or antispam) can be deleted. The read-path can be served directly from the storage buckets (for GCP, AWS) or via a standard HTTP file server (for POSIX).
 
 ### Deleting a Log
 
@@ -443,6 +443,7 @@ Tessera builds upon the hard work, experience, and lessons from many _many_ folk
 transparency ecosystems over the years.
 
 [tlog-tiles API]: https://c2sp.org/tlog-tiles
+[tlog-tiles]: https://c2sp.org/tlog-tiles
 [Static CT API]: https://c2sp.org/static-ct-api
 [Trillian v1]: https://github.com/google/trillian
 [#575]: https://github.com/transparency-dev/tessera/issues/575
