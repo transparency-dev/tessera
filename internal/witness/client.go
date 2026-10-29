@@ -17,6 +17,7 @@
 package witness
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -218,7 +219,14 @@ func (wg *WitnessGateway) CosignCheckpoint(ctx context.Context, cp []byte, cpSiz
 					slog.ErrorContext(ctx, "WitnessGateway: failed to update witness", slog.String("url", w.url), slog.Any("error", err))
 					return err
 				}
-				cpWithSig := append(slices.Clone(cp), sig...)
+				// Open the witness's signatures over the checkpoint's body alone: the log's own
+				// signatures on cp would otherwise be reported below as unknown signatures from
+				// the witness.
+				body := cp
+				if i := bytes.LastIndex(cp, []byte("\n\n")); i >= 0 {
+					body = cp[:i+2]
+				}
+				cpWithSig := append(slices.Clone(body), sig...)
 				n, err := note.Open(cpWithSig, note.VerifierList(w.verifiers...))
 				if err != nil {
 					slog.ErrorContext(ctx, "WitnessGateway: invalid signature(s) from witness", slog.String("url", w.url), slog.Any("error", err))
