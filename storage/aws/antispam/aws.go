@@ -35,7 +35,7 @@ import (
 	"github.com/transparency-dev/tessera/internal/otel"
 	"go.opentelemetry.io/otel/trace"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 const (
@@ -74,6 +74,11 @@ type AntispamOpts struct {
 	PushbackMaxOutstanding uint64
 	MaxOpenConns           int
 	MaxIdleConns           int
+
+	// DB will be used to interact with MySQL. If unset, Tessera will open one using the
+	// dsn parameter to NewAntispam, MaxOpenConns and MaxIdleConns. If set, it must be
+	// connected to the database named by dsn, and it will never be closed by Tessera.
+	DB *sql.DB
 }
 
 type AntispamStorage struct {
@@ -107,6 +112,13 @@ func NewAntispam(ctx context.Context, dsn string, opts AntispamOpts) (*AntispamS
 		opts.PushbackThreshold = DefaultPushbackThreshold
 	}
 
+	if opts.DB != nil {
+		if err := checkDatabase(ctx, opts.DB, dsn); err != nil {
+			return nil, err
+		}
+		return newAntispam(ctx, opts.DB, opts)
+	}
+
 	dbPool, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MySQL db: %v", err)
@@ -118,7 +130,12 @@ func NewAntispam(ctx context.Context, dsn string, opts AntispamOpts) (*AntispamS
 	if opts.MaxIdleConns >= 0 {
 		dbPool.SetMaxIdleConns(opts.MaxIdleConns)
 	}
+	return newAntispam(ctx, dbPool, opts)
+}
 
+// newAntispam returns an antispam driver which uses the provided database handle
+// for its MySQL connections.
+func newAntispam(ctx context.Context, dbPool *sql.DB, opts AntispamOpts) (*AntispamStorage, error) {
 	if err := dbPool.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping MySQL db: %v", err)
 	}
@@ -135,6 +152,24 @@ func NewAntispam(ctx context.Context, dsn string, opts AntispamOpts) (*AntispamS
 		return nil, fmt.Errorf("schema is not compatible with this version of the Tessera library: %v", err)
 	}
 	return r, nil
+}
+
+// checkDatabase returns an error unless db is connected to the database named by dsn.
+// A pool connected to another database would otherwise keep a separate, and so
+// incomplete, record of the log's entries, and fail to detect duplicates.
+func checkDatabase(ctx context.Context, db *sql.DB, dsn string) error {
+	cfg, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return fmt.Errorf("failed to parse DSN: %v", err)
+	}
+	var got sql.NullString
+	if err := db.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&got); err != nil {
+		return fmt.Errorf("failed to read the database of the provided DB: %v", err)
+	}
+	if got.String != cfg.DBName {
+		return fmt.Errorf("provided DB is connected to database %q, want %q", got.String, cfg.DBName)
+	}
+	return nil
 }
 
 func (s *AntispamStorage) initDB(ctx context.Context) error {
