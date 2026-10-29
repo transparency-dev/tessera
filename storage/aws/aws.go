@@ -894,6 +894,8 @@ func integrate(ctx context.Context, fromSeq uint64, lh [][]byte, lrs *logResourc
 type mySQLSequencer struct {
 	dbPool         *sql.DB
 	maxOutstanding uint64
+	// consumeTx begins consumeEntries' transactions; see readCommittedConsume.
+	consumeTx *sql.TxOptions
 }
 
 // newMySQLSequencer returns a new mysqlSequencer struct which uses the provided
@@ -926,7 +928,35 @@ func newMySQLSequencer(ctx context.Context, dsn string, maxOutstanding uint64, m
 	if err := r.checkDataCompatibility(ctx); err != nil {
 		return nil, fmt.Errorf("schema is not compatible with this version of the Tessera library: %v", err)
 	}
+	r.consumeTx = r.readCommittedConsume(ctx)
 	return r, nil
+}
+
+// readCommittedConsume returns the options consumeEntries' transactions run
+// with: READ COMMITTED where MySQL allows writes at that level.
+//
+// consumeEntries keeps its transaction open while it writes tiles and bundles
+// to object storage. At MySQL's default isolation level, REPEATABLE READ, its
+// SELECT ... FOR UPDATE on Seq also locks the gap after the last batch it
+// reads, so a batch that assignEntries inserts meanwhile waits for those
+// writes, and fails when they take longer than defaultAssignEntriesTimeout.
+// READ COMMITTED locks only the rows read, and the lock on IntCoord's row
+// still keeps integrations one at a time. But MySQL refuses writes at READ
+// COMMITTED when it logs statements to its binary log (error 1665), so there,
+// and wherever the binary log settings cannot be read, integration keeps the
+// default.
+func (s *mySQLSequencer) readCommittedConsume(ctx context.Context) *sql.TxOptions {
+	var logBin bool
+	var format string
+	if err := s.dbPool.QueryRowContext(ctx, "SELECT @@log_bin, @@binlog_format").Scan(&logBin, &format); err != nil {
+		slog.WarnContext(ctx, "Cannot read MySQL's binary log settings, so integration runs at the default isolation level: entries added while it writes to object storage wait for it", slog.Any("error", err))
+		return nil
+	}
+	if logBin && strings.EqualFold(format, "STATEMENT") {
+		slog.WarnContext(ctx, "MySQL logs statements to its binary log (binlog_format=STATEMENT), so integration runs at the default isolation level: entries added while it writes to object storage wait for it. ROW or MIXED avoids that.")
+		return nil
+	}
+	return &sql.TxOptions{Isolation: sql.LevelReadCommitted}
 }
 
 // checkDataCompatibility compares the Tessera library SchemaCompatibilityVersion with the one stored in the
@@ -1162,7 +1192,7 @@ func (s *mySQLSequencer) assignEntries(ctx context.Context, entries []*tessera.E
 //
 // Returns true if some entries were consumed as a weak signal that there may be further entries waiting to be consumed.
 func (s *mySQLSequencer) consumeEntries(ctx context.Context, limit uint64, f consumeFunc, forceUpdate bool) (bool, error) {
-	tx, err := s.dbPool.BeginTx(ctx, nil)
+	tx, err := s.dbPool.BeginTx(ctx, s.consumeTx)
 	if err != nil {
 		return false, fmt.Errorf("failed to begin Tx: %v", err)
 	}
