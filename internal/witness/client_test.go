@@ -19,12 +19,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -239,6 +241,100 @@ func TestWitnessGateway(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestWitnessGatewayReportsUnknownWitnessSigs checks that the gateway reports, as unknown
+// signatures from a witness, only signatures the witness returned that its verifiers don't
+// know, and never the log's own signatures on the checkpoint.
+func TestWitnessGatewayReportsUnknownWitnessSigs(t *testing.T) {
+	const logSignedCheckpointSize = 9
+	logSignedCheckpoint, cp := loadCheckpoint(t, logSignedCheckpointSize)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/wit1/add-checkpoint":
+			_, _ = w.Write(sigForSigner(t, cp, wit1Skey))
+		case "/wit_multi/add-checkpoint":
+			_, _ = w.Write(append(sigForSigner(t, cp, wit1Skey), sigForSigner(t, cp, wit2Skey)...))
+		default:
+			t.Errorf("Unknown case: %s", r.URL.String())
+		}
+	}))
+	defer ts.Close()
+	baseURL := mustURL(t, ts.URL)
+	wit1Verifier, err := f_note.NewVerifierForCosignatureV1(wit1Vkey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		desc         string
+		path         string
+		wantReported []string
+	}{
+		{
+			desc: "witness returns only its known signature",
+			path: "wit1",
+		},
+		{
+			desc:         "witness returns a signature with an unknown key",
+			path:         "wit_multi",
+			wantReported: []string{"Wit2"},
+		},
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			reports := &unknownSigReports{}
+			old := slog.Default()
+			slog.SetDefault(slog.New(reports))
+			t.Cleanup(func() { slog.SetDefault(old) })
+
+			g, err := witness.NewGateway(t.Context(), witness.Options{
+				HTTPClient: ts.Client(),
+				Witnesses:  []witness.Witness{{URL: baseURL.JoinPath(test.path), Verifiers: []note.Verifier{wit1Verifier}}},
+				FetchTiles: testLogTileFetcher,
+			})
+			if err != nil {
+				t.Fatalf("NewGateway() error: %v", err)
+			}
+			if _, n := collectSigs(t, g.CosignCheckpoint(t.Context(), logSignedCheckpoint, logSignedCheckpointSize)); n != 1 {
+				t.Fatalf("got signatures from %d witnesses, want 1", n)
+			}
+			if got := reports.get(); !slices.Equal(got, test.wantReported) {
+				t.Errorf("reported unknown signatures from %q, want %q", got, test.wantReported)
+			}
+		})
+	}
+}
+
+// unknownSigReports is an slog.Handler which records the key name of each signature the
+// witness gateway reports as unknown.
+type unknownSigReports struct {
+	mu    sync.Mutex
+	names []string
+}
+
+func (h *unknownSigReports) Enabled(context.Context, slog.Level) bool { return true }
+func (h *unknownSigReports) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *unknownSigReports) WithGroup(string) slog.Handler            { return h }
+
+func (h *unknownSigReports) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != "WitnessGateway: invalid signature from witness" {
+		return nil
+	}
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "name" {
+			h.mu.Lock()
+			h.names = append(h.names, a.Value.String())
+			h.mu.Unlock()
+		}
+		return true
+	})
+	return nil
+}
+
+func (h *unknownSigReports) get() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.names)
 }
 
 func exactly(x int32) func(actual int32) error {
