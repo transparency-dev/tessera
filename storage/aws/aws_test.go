@@ -150,6 +150,45 @@ func TestMySQLSequencerAssignEntries(t *testing.T) {
 	}
 }
 
+// TestMySQLSequencerIdleConnections checks that a sequencer created without a
+// maxIdleConns setting keeps connections for reuse, rather than closing each one
+// after use and opening a new one for the next query, and that a negative
+// maxIdleConns keeps none.
+func TestMySQLSequencerIdleConnections(t *testing.T) {
+	ctx := context.Background()
+	if canSkipMySQLTest(t, ctx) {
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
+		t.Skip("MySQL not available, skipping test")
+	}
+	mustDropTables(t, ctx)
+
+	for _, test := range []struct {
+		desc         string
+		maxIdleConns int
+		wantClosed   int64
+	}{
+		{desc: "unset keeps idle connections", maxIdleConns: 0, wantClosed: 0},
+		{desc: "negative keeps none", maxIdleConns: -1, wantClosed: 10},
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			seq, err := newMySQLSequencer(ctx, *mySQLURI, 1000, 0, test.maxIdleConns)
+			if err != nil {
+				t.Fatalf("newMySQLSequencer: %v", err)
+			}
+			before := seq.dbPool.Stats().MaxIdleClosed
+			for range 10 {
+				var one int
+				if err := seq.dbPool.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
+					t.Fatalf("query: %v", err)
+				}
+			}
+			if closed := seq.dbPool.Stats().MaxIdleClosed - before; closed != test.wantClosed {
+				t.Errorf("%d of 10 sequential queries closed their connection, want %d", closed, test.wantClosed)
+			}
+		})
+	}
+}
+
 func TestMySQLSequencerPushback(t *testing.T) {
 	ctx := context.Background()
 	if canSkipMySQLTest(t, ctx) {
