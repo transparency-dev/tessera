@@ -364,3 +364,34 @@ func BenchmarkAwait(b *testing.B) {
 		_, _, _ = a.Await(b.Context(), f)
 	}
 }
+
+// TestAwait_noReadsWhileIdle checks that the PublicationAwaiter reads the
+// checkpoint only while an Await call is waiting for one.
+func TestAwait_noReadsWhileIdle(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var reads atomic.Int64
+		readCheckpoint := func(_ context.Context) ([]byte, error) {
+			reads.Add(1)
+			return []byte("origin\n3\nqINS1GRFhWHwdkUeqLEoP4yEMkTBBzxBkGwGQlVlVcs=\n"), nil
+		}
+		awaiter := NewPublicationAwaiter(t.Context(), readCheckpoint, 10*time.Millisecond)
+
+		time.Sleep(time.Second)
+		if n := reads.Load(); n != 0 {
+			t.Errorf("read the checkpoint %d times in 1s with nothing waiting, want 0", n)
+		}
+
+		if _, _, err := awaiter.Await(t.Context(), func() (Index, error) { return Index{Index: 2}, nil }); err != nil {
+			t.Fatalf("Await: %v", err)
+		}
+		after := reads.Load()
+		if after == 0 {
+			t.Errorf("Await returned without the checkpoint being read")
+		}
+
+		time.Sleep(time.Second)
+		if n := reads.Load() - after; n != 0 {
+			t.Errorf("read the checkpoint %d times in the 1s after Await returned, want 0", n)
+		}
+	})
+}
