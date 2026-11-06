@@ -297,6 +297,11 @@ type witnessClient struct {
 	client wc.Witness
 	// verifiers are verifiers for the signature(s) returned by the witness.
 	verifiers []note.Verifier
+
+	// mu is held for the whole of an update, and guards oldSize.
+	// An update may still be running when the next one starts: CosignCheckpoint returns cosignatures
+	// as they arrive, and the caller can stop reading them once its policy is met.
+	mu sync.Mutex
 	// oldSize is the size of the checkpoint that the log thinks that the witness last signed.
 	// This can be zero, in which case the tlog-witness protocol discovery mechanism is used to determine the old size.
 	oldSize uint64
@@ -314,6 +319,12 @@ func names(w []note.Verifier) []string {
 }
 
 func (w *witnessClient) update(ctx context.Context, cp []byte, cpSize uint64, fetchProof func(ctx context.Context, from, to uint64) ([][]byte, error)) ([]byte, error) {
+	// Updates to a witness run one at a time, so that each starts from the size the last one left.
+	// If an older update gets the lock after a newer one, its fetchProof fails, as oldSize is then
+	// larger than its checkpoint, so it can't set oldSize back.
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	const maxUpdateRetries = 3
 	// Set InitialInterval low so that we handle catching up after StatusConflict/ErrCheckpointStale quickly.
 	// But ramp up quickly to avoid DoSing witnesses.
