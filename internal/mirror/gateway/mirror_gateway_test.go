@@ -56,8 +56,7 @@ func TestGateway(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts := tessera.NewAppendOptions().
-				WithCheckpointInterval(100 * time.Millisecond).
-				WithCheckpointRepublishInterval(100 * time.Millisecond)
+				WithCheckpointInterval(100 * time.Millisecond)
 
 			testLog, shutdown := testonly.NewTestLog(t, opts)
 			defer func() {
