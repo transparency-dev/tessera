@@ -25,7 +25,7 @@ jobs:
           go-version: ${{ matrix.go-version }}
 
       - name: Run tests
-        run: go test -v -race ./...
+        run: go test -race ./...
 
   test-aws-mysql:
     runs-on: ubuntu-latest
@@ -54,4 +54,4 @@ jobs:
           persist-credentials: false
       - name: Test with Go
         # Parallel tests are disabled for the MySQL test database to always be in a known state.
-        run: go test -p=1 -v -race ./storage/aws/... -is_mysql_test_optional=false
+        run: go test -p=1 -race ./storage/aws/... -is_mysql_test_optional=false
