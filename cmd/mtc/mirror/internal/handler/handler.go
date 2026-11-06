@@ -30,9 +30,6 @@ import (
 )
 
 const (
-	// maxOriginLen is the maximum length of a valid log origin.
-	// This value comes from the MLDSA cosigner spec.
-	maxOriginLen = 255
 	// maxTicketSize is the maximum length of a tlog-mirror ticket.
 	maxTicketSize = 1<<16 - 1
 )
@@ -233,19 +230,19 @@ func (a *addEntriesRequest) NextPackage() (*tessera.MirrorPackage, error) {
 // Returns a struct which represents the request, and provides streaming access to the entry packages.
 func parseAddEntriesPreamble(r io.Reader) (*addEntriesRequest, error) {
 	// SPEC: The request body MUST ... contain the following values, concatenated:
-	//         2 bytes, encoding a big-endian uint16: log_origin_size
+	//         1 byte, encoding a uint8: log_origin_size
 	//         log_origin_size bytes, containing the log origin: log_origin
 	//         8 bytes, encoding a big-endian uint64: upload_start
 	//         8 bytes, encoding a big-endian uint64: upload_end
 	//         2 bytes, encoding a big-endian uint16: ticket_size
 	//         ticket_size bytes, containing an opaque ticket value, described below
 	//         A sequence of entry packages
-	var logOriginSize uint16
+	var logOriginSize uint8
 	if err := binary.Read(r, binary.BigEndian, &logOriginSize); err != nil {
 		return nil, err
 	}
-	if logOriginSize > maxOriginLen {
-		return nil, errors.New("log origin too long")
+	if logOriginSize == 0 {
+		return nil, errors.New("log origin is empty")
 	}
 	logOrigin := make([]byte, logOriginSize)
 	if _, err := io.ReadFull(r, logOrigin); err != nil {
