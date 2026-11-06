@@ -475,6 +475,171 @@ func TestWitnessReusesProofs(t *testing.T) {
 	}
 }
 
+// TestWitnessGatewayUnreadUpdates checks, under -race, that the gateway can send out the next
+// checkpoint while a witness's update for the previous one hasn't been read. A log whose policy
+// is met by either of two witnesses stops reading at the first cosignature.
+func TestWitnessGatewayUnreadUpdates(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, checkpoint, ok := bytes.Cut(body, []byte("\n\n"))
+		if !ok {
+			t.Errorf("expected two newlines in body, got: %q", body)
+			return
+		}
+		_, _, n, err := log.ParseCheckpoint(checkpoint, logVerifier.Name(), logVerifier)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		switch r.URL.Path {
+		case "/wit1/add-checkpoint":
+			_, _ = w.Write(sigForSigner(t, n.Text, wit1Skey))
+		case "/wit2/add-checkpoint":
+			_, _ = w.Write(sigForSigner(t, n.Text, wit2Skey))
+		default:
+			t.Errorf("Unknown case: %s", r.URL.String())
+		}
+	}))
+	defer ts.Close()
+	baseURL := mustURL(t, ts.URL)
+	wit1Verifier, err := f_note.NewVerifierForCosignatureV1(wit1Vkey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wit2Verifier, err := f_note.NewVerifierForCosignatureV1(wit2Vkey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := witness.NewGateway(t.Context(), witness.Options{
+		HTTPClient: ts.Client(),
+		Witnesses: []witness.Witness{
+			{URL: baseURL.JoinPath("wit1"), Verifiers: []note.Verifier{wit1Verifier}},
+			{URL: baseURL.JoinPath("wit2"), Verifiers: []note.Verifier{wit2Verifier}},
+		},
+		FetchTiles: testLogTileFetcher,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var unread []<-chan []byte
+	for size := 1; size < 10; size++ {
+		logSignedCheckpoint, _ := loadCheckpoint(t, size)
+		sigs := g.CosignCheckpoint(t.Context(), logSignedCheckpoint, uint64(size))
+		if _, ok := <-sigs; !ok {
+			t.Fatalf("size %d: got no signatures", size)
+		}
+		unread = append(unread, sigs)
+		// Give the other witness's update time to finish, as a log's checkpoint interval does.
+		time.Sleep(10 * time.Millisecond)
+	}
+	for i, sigs := range unread {
+		if _, n := collectSigs(t, sigs); n != 1 {
+			t.Errorf("size %d: got %d more signatures, want 1", i+1, n)
+		}
+	}
+}
+
+func TestWitnessGatewayLateUpdate(t *testing.T) {
+	// The old and checkpoint sizes of each request that wit2 receives, in order.
+	type request struct{ old, size uint64 }
+	var (
+		mu       sync.Mutex
+		requests []request
+	)
+	held := make(chan struct{})
+	release := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		head, checkpoint, ok := bytes.Cut(body, []byte("\n\n"))
+		if !ok {
+			t.Errorf("expected two newlines in body, got: %q", body)
+			return
+		}
+		var old uint64
+		if _, err := fmt.Sscanf(string(head), "old %d", &old); err != nil {
+			t.Errorf("parsing old size from %q: %v", head, err)
+			return
+		}
+		cp, _, n, err := log.ParseCheckpoint(checkpoint, logVerifier.Name(), logVerifier)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		switch r.URL.Path {
+		case "/wit1/add-checkpoint":
+			_, _ = w.Write(sigForSigner(t, n.Text, wit1Skey))
+		case "/wit2/add-checkpoint":
+			mu.Lock()
+			requests = append(requests, request{old: old, size: cp.Size})
+			mu.Unlock()
+			// Hold wit2's first update until the next checkpoint has gone out.
+			if cp.Size == 1 {
+				close(held)
+				<-release
+			}
+			_, _ = w.Write(sigForSigner(t, n.Text, wit2Skey))
+		default:
+			t.Errorf("Unknown case: %s", r.URL.String())
+		}
+	}))
+	defer ts.Close()
+	baseURL := mustURL(t, ts.URL)
+	wit1Verifier, err := f_note.NewVerifierForCosignatureV1(wit1Vkey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wit2Verifier, err := f_note.NewVerifierForCosignatureV1(wit2Vkey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := witness.NewGateway(t.Context(), witness.Options{
+		HTTPClient: ts.Client(),
+		Witnesses: []witness.Witness{
+			{URL: baseURL.JoinPath("wit1"), Verifiers: []note.Verifier{wit1Verifier}},
+			{URL: baseURL.JoinPath("wit2"), Verifiers: []note.Verifier{wit2Verifier}},
+		},
+		FetchTiles: testLogTileFetcher,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp1, _ := loadCheckpoint(t, 1)
+	cp2, _ := loadCheckpoint(t, 2)
+	cp3, _ := loadCheckpoint(t, 3)
+
+	// Send checkpoint 2 while wit2's update for checkpoint 1 is still running, so that update finishes late.
+	sigs1 := g.CosignCheckpoint(t.Context(), cp1, 1)
+	<-held
+	sigs2 := g.CosignCheckpoint(t.Context(), cp2, 2)
+	time.Sleep(10 * time.Millisecond)
+	close(release)
+	for i, sigs := range []<-chan []byte{sigs1, sigs2} {
+		if _, n := collectSigs(t, sigs); n != 2 {
+			t.Errorf("size %d: got %d signatures, want 2", i+1, n)
+		}
+	}
+	if _, n := collectSigs(t, g.CosignCheckpoint(t.Context(), cp3, 3)); n != 2 {
+		t.Errorf("size 3: got %d signatures, want 2", n)
+	}
+
+	// Each update must start from the size the last one left, and the late update mustn't set it back.
+	want := []request{{old: 0, size: 1}, {old: 1, size: 2}, {old: 2, size: 3}}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(requests, want) {
+		t.Errorf("wit2 got requests (old, size) %v, want %v", requests, want)
+	}
+}
+
 func loadCheckpoint(t *testing.T, size int) (signed []byte, unsigned string) {
 	t.Helper()
 	path := fmt.Sprintf("../../testdata/log/checkpoint.%d", size)
