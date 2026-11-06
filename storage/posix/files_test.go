@@ -38,6 +38,8 @@ import (
 
 func TestGarbageCollect(t *testing.T) {
 	ctx := t.Context()
+	appCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	batchSize := uint64(60000)
 	integrateEvery := uint64(31343)
 
@@ -59,7 +61,7 @@ func TestGarbageCollect(t *testing.T) {
 		s:           s,
 		entriesPath: opts.EntriesPath(),
 	}
-	appender, lr, err := s.newAppender(ctx, logStorage, opts)
+	appender, lr, err := s.newAppender(appCtx, logStorage, opts)
 	if err != nil {
 		t.Fatalf("Appender: %v", err)
 	}
@@ -113,6 +115,9 @@ func TestGarbageCollect(t *testing.T) {
 		}
 	}
 
+	// Stop background appender jobs before running fsck and TempDir cleanup.
+	cancel()
+
 	// And finally, for good measure, assert that all the resources implied by the log's checkpoint
 	// are present.
 	f := fsck.New(vk.Name(), vk, lr, defaultMerkleLeafHasher, fsck.Opts{N: 1})
@@ -149,6 +154,8 @@ func TestGarbageCollectOption(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := t.Context()
+			appCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
 
 			s := &Storage{
 				cfg: Config{
@@ -172,7 +179,7 @@ func TestGarbageCollectOption(t *testing.T) {
 				s:           s,
 				entriesPath: opts.EntriesPath(),
 			}
-			appender, lr, err := s.newAppender(ctx, logStorage, opts)
+			appender, lr, err := s.newAppender(appCtx, logStorage, opts)
 			if err != nil {
 				t.Fatalf("Appender: %v", err)
 			}
@@ -239,6 +246,9 @@ func TestGarbageCollectOption(t *testing.T) {
 					t.Errorf("Did not find expected partial: %s", k)
 				}
 			}
+
+			// Stop background appender jobs before running fsck and TempDir cleanup.
+			cancel()
 
 			// And finally, for good measure, assert that all the resources implied by the log's checkpoint
 			// are present.

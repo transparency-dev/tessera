@@ -46,13 +46,16 @@ func NewTestLog(t *testing.T, opts *tessera.AppendOptions) (*TestLog, func(conte
 	}
 
 	root := t.TempDir()
-	driver, err := posix.New(t.Context(), posix.Config{Path: root})
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	driver, err := posix.New(ctx, posix.Config{Path: root})
 	if err != nil {
 		t.Fatalf("posix.New: %v", err)
 	}
 
 	opts.WithCheckpointSigner(s)
-	a, shutdown, lr, err := tessera.NewAppender(t.Context(), driver, opts)
+	a, shutdown, lr, err := tessera.NewAppender(ctx, driver, opts)
 	if err != nil {
 		t.Fatalf("NewAppender: %v", err)
 	}
@@ -64,7 +67,10 @@ func NewTestLog(t *testing.T, opts *tessera.AppendOptions) (*TestLog, func(conte
 		Appender:    a,
 	}
 
-	return r, shutdown
+	return r, func(sCtx context.Context) error {
+		defer cancel()
+		return shutdown(sCtx)
+	}
 }
 
 // TestLog represents an ephemeral POSIX log instance intended for use in tests.
