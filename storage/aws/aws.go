@@ -132,6 +132,9 @@ type sequencer interface {
 
 	// garbageCollect coordinates the removal of unneeded partial tiles/entry bundles for the provided tree size, up to a maximum number of deletes per invocation.
 	garbageCollect(ctx context.Context, treeSize uint64, maxDeletes uint, removePrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) error
+
+	// close releases the sequencer's resources. Nothing may use the sequencer after it.
+	close() error
 }
 
 // consumeFunc is the signature of a function which can consume entries from the sequencer.
@@ -220,7 +223,15 @@ func (s *Storage) Appender(ctx context.Context, opts *tessera.AppendOptions) (*t
 }
 
 // newAppender creates and initialises an Appender struct with the provided underlying storage implementations.
-func (s *Storage) newAppender(ctx context.Context, o objStore, seq sequencer, opts *tessera.AppendOptions) (*Appender, tessera.LogReader, error) {
+//
+// The Appender owns seq: newAppender closes it if it fails, and otherwise the Appender closes it
+// once ctx is done and its background jobs have returned.
+func (s *Storage) newAppender(ctx context.Context, o objStore, seq sequencer, opts *tessera.AppendOptions) (_ *Appender, _ tessera.LogReader, err error) {
+	defer func() {
+		if err != nil {
+			_ = seq.close()
+		}
+	}()
 	if opts.CheckpointInterval() < minCheckpointInterval {
 		return nil, nil, fmt.Errorf("requested CheckpointInterval (%v) is less than minimum permitted %v", opts.CheckpointInterval(), minCheckpointInterval)
 	}
@@ -267,14 +278,25 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq sequencer, op
 	}
 
 	// Kick off go-routine which handles the integration of entries.
-	go r.integrateEntriesJob(ctx)
+	r.jobs.Go(func() { r.integrateEntriesJob(ctx) })
 
 	// Kick off go-routine which handles the publication of checkpoints.
-	go r.publishCheckpointJob(ctx, opts.CheckpointInterval(), opts.CheckpointRepublishInterval(), opts.CheckpointPublicationTimeout())
+	r.jobs.Go(func() {
+		r.publishCheckpointJob(ctx, opts.CheckpointInterval(), opts.CheckpointRepublishInterval(), opts.CheckpointPublicationTimeout())
+	})
 
 	if i := opts.GarbageCollectionInterval(); i > 0 {
-		go r.garbageCollectorJob(ctx, i)
+		r.jobs.Go(func() { r.garbageCollectorJob(ctx, i) })
 	}
+
+	// Once ctx is done the appender is finished, and its jobs return: then close the sequencer.
+	go func() {
+		<-ctx.Done()
+		r.jobs.Wait()
+		if err := seq.close(); err != nil {
+			slog.WarnContext(ctx, "Failed to close the MySQL sequencer", slog.Any("error", err))
+		}
+	}()
 
 	return r, r.logStore, nil
 }
@@ -290,6 +312,9 @@ type Appender struct {
 
 	treeUpdated     chan struct{}
 	entriesAssigned chan struct{}
+
+	// jobs tracks the background jobs, which return once the appender's context is done.
+	jobs sync.WaitGroup
 }
 
 // integrateEntriesJob periodically appends newly sequenced entries to the log.
@@ -916,6 +941,7 @@ func newMySQLSequencer(ctx context.Context, dsn string, maxOutstanding uint64, m
 	}
 
 	if err := dbPool.Ping(); err != nil {
+		_ = dbPool.Close()
 		return nil, fmt.Errorf("failed to ping MySQL db: %v", err)
 	}
 
@@ -925,9 +951,11 @@ func newMySQLSequencer(ctx context.Context, dsn string, maxOutstanding uint64, m
 	}
 
 	if err := r.initDB(ctx); err != nil {
+		_ = dbPool.Close()
 		return nil, fmt.Errorf("failed to initDB: %v", err)
 	}
 	if err := r.checkDataCompatibility(ctx); err != nil {
+		_ = dbPool.Close()
 		return nil, fmt.Errorf("schema is not compatible with this version of the Tessera library: %v", err)
 	}
 	return r, nil
@@ -1282,6 +1310,11 @@ func (s *mySQLSequencer) nextIndex(ctx context.Context) (uint64, error) {
 	}
 
 	return nextSeq, nil
+}
+
+// close closes the sequencer's connection pool.
+func (s *mySQLSequencer) close() error {
+	return s.dbPool.Close()
 }
 
 // publishCheckpoint checks when the last checkpoint was published, and if it was more than minAge ago, calls the provided

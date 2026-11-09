@@ -126,6 +126,7 @@ func NewAntispam(ctx context.Context, dsn string, opts AntispamOpts) (*AntispamS
 	}
 
 	if err := dbPool.Ping(); err != nil {
+		_ = dbPool.Close()
 		return nil, fmt.Errorf("failed to ping MySQL db: %v", err)
 	}
 
@@ -135,12 +136,22 @@ func NewAntispam(ctx context.Context, dsn string, opts AntispamOpts) (*AntispamS
 	}
 
 	if err := r.initDB(ctx); err != nil {
+		_ = dbPool.Close()
 		return nil, fmt.Errorf("failed to initDB: %v", err)
 	}
 	if err := r.checkDataCompatibility(ctx); err != nil {
+		_ = dbPool.Close()
 		return nil, fmt.Errorf("schema is not compatible with this version of the Tessera library: %v", err)
 	}
 	return r, nil
+}
+
+// Close closes the antispam's connection pool.
+//
+// Call it once nothing uses the antispam: after the appender it was given to has been shut down,
+// and that appender's context is done.
+func (s *AntispamStorage) Close() error {
+	return s.dbPool.Close()
 }
 
 func (s *AntispamStorage) initDB(ctx context.Context) error {
