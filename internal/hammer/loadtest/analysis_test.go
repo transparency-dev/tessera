@@ -15,6 +15,11 @@
 package loadtest
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -62,4 +67,46 @@ func (s *treeSizeState) setSize(size uint64) {
 	s.mux.Lock()
 	defer s.mux.Unlock()
 	s.size = size
+}
+
+// TestHammerAnalyser_ReportsEveryError checks that errorLoop logs each error
+// it receives, including one whose message differs from the error before it.
+func TestHammerAnalyser_ReportsEveryError(t *testing.T) {
+	var out lockedBuffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&out, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ha := NewHammerAnalyser(func() uint64 { return 0 })
+	go ha.errorLoop(ctx)
+	ha.ErrChan <- errors.New("first error")
+	ha.ErrChan <- errors.New("second error")
+
+	// errorLoop reports what it has gathered once a second.
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if s := out.String(); strings.Contains(s, "first error") && strings.Contains(s, "second error") {
+			return
+		}
+	}
+	t.Fatalf("want both errors reported, got:\n%s", out.String())
+}
+
+// lockedBuffer is a bytes.Buffer which is safe for concurrent use.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
