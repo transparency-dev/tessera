@@ -269,8 +269,8 @@ func (c *Client) streamEntries(ctx context.Context, origin string, uploadStart, 
 		_ = pw.Close()
 	}()
 
-	// 2 bytes, encoding a big-endian uint16: log_origin_size
-	if err := binary.Write(gw, binary.BigEndian, uint16(len(origin))); err != nil {
+	// 1 byte, encoding a uint8: log_origin_size
+	if err := binary.Write(gw, binary.BigEndian, uint8(len(origin))); err != nil {
 		_ = pw.CloseWithError(err)
 		return
 	}
@@ -452,9 +452,9 @@ func parseOrigin(cp []byte) (string, error) {
 		return "", errors.New("invalid checkpoint: missing origin line")
 	}
 
-	// 2 bytes, encoding a big-endian uint16: log_origin_size
-	if len(originBytes) > math.MaxUint16 {
-		return "", fmt.Errorf("invalid checkpoint: origin length %d exceeds max uint16 (%d)", len(originBytes), math.MaxUint16)
+	// 1 byte, encoding a uint8: log_origin_size
+	if len(originBytes) > math.MaxUint8 {
+		return "", fmt.Errorf("invalid checkpoint: origin length %d exceeds max uint8 (%d)", len(originBytes), math.MaxUint8)
 	}
 
 	return string(originBytes), nil
