@@ -137,7 +137,8 @@ type sequencer interface {
 	// publishCheckpoint coordinates the publication of new checkpoints based on the current integrated tree.
 	publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(ctx context.Context, size uint64, root []byte) error) (time.Time, error)
 	// garbageCollect coordinates the removal of unneeded partial tiles/entry bundles for the provided tree size, up to a maximum number of deletes per invocation.
-	garbageCollect(ctx context.Context, treeSize uint64, maxDeletes uint, removePrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) error
+	// Returns true if the limit was reached, i.e. there may be more full bundles left to collect.
+	garbageCollect(ctx context.Context, treeSize uint64, maxDeletes uint, removePrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) (bool, error)
 }
 
 // consumeFunc is the signature of a function which can consume entries from the sequencer and integrate
@@ -442,6 +443,7 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 	defer t.Stop()
 
 	// Entirely arbitrary number.
+	// This bounds the work done by a single call to garbageCollect, not by each tick of the job.
 	maxBundlesPerRun := uint(100)
 
 	for {
@@ -466,8 +468,14 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 				return fmt.Errorf("failed to parse published checkpoint: %v", err)
 			}
 
-			if err := a.sequencer.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStore.objStore.deleteObjectsWithPrefix, a.logStore.entriesPath); err != nil {
-				return fmt.Errorf("garbageCollect failed: %v", err)
+			// Keep collecting while there's a backlog, until we run out of time.
+			for more := true; more; {
+				if more, err = a.sequencer.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStore.objStore.deleteObjectsWithPrefix, a.logStore.entriesPath); err != nil {
+					return fmt.Errorf("garbageCollect failed: %v", err)
+				}
+				if more && ctx.Err() != nil {
+					return ctx.Err()
+				}
 			}
 			return nil
 		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
@@ -1301,10 +1309,13 @@ func (s *spannerCoordinator) publishCheckpoint(ctx context.Context, minStaleActi
 //
 // Uses the `GCCoord` table to ensure that only one binary is actively garbage collecting at any given time, and to track progress so that we don't
 // needlessly attempt to GC over regions which have already been cleaned.
-func (s *spannerCoordinator) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint, deleteWithPrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) error {
+//
+// Returns true if collection stopped because the limit was reached, i.e. there may be more full bundles left to collect.
+func (s *spannerCoordinator) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint, deleteWithPrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) (bool, error) {
 	// number of concurrent GCS deletes to perform while collecting garbage.
 	const numWorkers = 1
 
+	more := false
 	_, err := s.dbPool.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 		row, err := txn.ReadRowWithOptions(ctx, s.table("GCCoord"), spanner.Key{0}, []string{"fromSize"}, &spanner.ReadOptions{LockHint: spannerpb.ReadRequest_LOCK_HINT_EXCLUSIVE})
 		if err != nil {
@@ -1316,6 +1327,8 @@ func (s *spannerCoordinator) garbageCollect(ctx context.Context, treeSize uint64
 		}
 		fromSize := uint64(fs)
 
+		// The transaction function may be retried, so reset any state from a previous attempt.
+		more = false
 		if fromSize == treeSize {
 			return nil
 		}
@@ -1329,7 +1342,11 @@ func (s *spannerCoordinator) garbageCollect(ctx context.Context, treeSize uint64
 			for ri := range layout.Range(fromSize, treeSize-fromSize, treeSize) {
 				// Only known-full bundles are in-scope for GC, so exit if the current bundle is partial or
 				// we've reached our limit of chunks.
-				if ri.Partial > 0 || d > maxBundles {
+				if ri.Partial > 0 {
+					break
+				}
+				if d >= maxBundles {
+					more = true
 					break
 				}
 
@@ -1377,7 +1394,10 @@ func (s *spannerCoordinator) garbageCollect(ctx context.Context, treeSize uint64
 
 		return nil
 	}, spanner.TransactionOptions{TransactionTag: "tessera.op=garbageCollect"})
-	return err
+	if err != nil {
+		return false, err
+	}
+	return more, nil
 }
 
 // isLastLeafInParent returns true if a tile with the provided index is the final child node of a

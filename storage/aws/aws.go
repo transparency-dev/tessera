@@ -131,7 +131,8 @@ type sequencer interface {
 	publishCheckpoint(ctx context.Context, minStaleActive, minStaleRepub time.Duration, f func(ctx context.Context, size uint64, root []byte) error) (time.Time, error)
 
 	// garbageCollect coordinates the removal of unneeded partial tiles/entry bundles for the provided tree size, up to a maximum number of deletes per invocation.
-	garbageCollect(ctx context.Context, treeSize uint64, maxDeletes uint, removePrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) error
+	// Returns true if the limit was reached, i.e. there may be more full bundles left to collect.
+	garbageCollect(ctx context.Context, treeSize uint64, maxDeletes uint, removePrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) (bool, error)
 }
 
 // consumeFunc is the signature of a function which can consume entries from the sequencer.
@@ -369,6 +370,7 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 	defer t.Stop()
 
 	// Entirely arbitrary number.
+	// This bounds the work done by a single call to garbageCollect, not by each tick of the job.
 	maxBundlesPerRun := uint(100)
 
 	for {
@@ -393,8 +395,14 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 				return fmt.Errorf("failed to parse published checkpoint: %v", err)
 			}
 
-			if err := a.sequencer.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStore.objStore.deleteObjectsWithPrefix, a.logStore.entriesPath); err != nil {
-				return fmt.Errorf("garbageCollect failed: %v", err)
+			// Keep collecting while there's a backlog, until we run out of time.
+			for more := true; more; {
+				if more, err = a.sequencer.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStore.objStore.deleteObjectsWithPrefix, a.logStore.entriesPath); err != nil {
+					return fmt.Errorf("garbageCollect failed: %v", err)
+				}
+				if more && ctx.Err() != nil {
+					return ctx.Err()
+				}
 			}
 			return nil
 		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
@@ -1388,12 +1396,14 @@ func (s *mySQLSequencer) publishCheckpoint(ctx context.Context, minStaleActive, 
 //
 // Uses the `GCCoord` table to ensure that only one binary is actively garbage collecting at any given time, and to track progress so that we don't
 // needlessly attempt to GC over regions which have already been cleaned.
-func (s *mySQLSequencer) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint, deleteWithPrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) error {
+//
+// Returns true if collection stopped because the limit was reached, i.e. there may be more full bundles left to collect.
+func (s *mySQLSequencer) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint, deleteWithPrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) (bool, error) {
 	// number of concurrent S3 deletes to perform while collecting garbage.
 	const numWorkers = 5
 	tx, err := s.dbPool.Begin()
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() {
 		if tx != nil {
@@ -1403,14 +1413,15 @@ func (s *mySQLSequencer) garbageCollect(ctx context.Context, treeSize uint64, ma
 	pRow := tx.QueryRowContext(ctx, "SELECT fromSize FROM GCCoord WHERE id = ? FOR UPDATE", 0)
 	var fromSize uint64
 	if err := pRow.Scan(&fromSize); err != nil {
-		return fmt.Errorf("failed to parse publishedAt: %v", err)
+		return false, fmt.Errorf("failed to parse publishedAt: %v", err)
 	}
 
 	if fromSize == treeSize {
-		return nil
+		return false, nil
 	}
 
 	d := uint(0)
+	more := false
 	work := make(chan string, maxBundles*3)
 
 	eg := errgroup.Group{}
@@ -1419,7 +1430,11 @@ func (s *mySQLSequencer) garbageCollect(ctx context.Context, treeSize uint64, ma
 		for ri := range layout.Range(fromSize, treeSize-fromSize, treeSize) {
 			// Only known-full bundles are in-scope for for GC, so exit if the current bundle is partial or
 			// we've reached our limit of chunks.
-			if ri.Partial > 0 || d > maxBundles {
+			if ri.Partial > 0 {
+				break
+			}
+			if d >= maxBundles {
+				more = true
 				break
 			}
 
@@ -1456,18 +1471,18 @@ func (s *mySQLSequencer) garbageCollect(ctx context.Context, treeSize uint64, ma
 		})
 	}
 	if err := eg.Wait(); err != nil {
-		return fmt.Errorf("failed to delete one or more objects: %v", err)
+		return false, fmt.Errorf("failed to delete one or more objects: %v", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, "UPDATE GCCoord SET fromSize=? WHERE id=?", fromSize, 0); err != nil {
-		return err
+		return false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		return false, err
 	}
 	tx = nil
 
-	return nil
+	return more, nil
 }
 
 // isLastLeafInParent returns true if a tile with the provided index is the final child node of a
