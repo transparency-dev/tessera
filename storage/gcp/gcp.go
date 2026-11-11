@@ -1345,7 +1345,7 @@ func (s *spannerCoordinator) garbageCollect(ctx context.Context, treeSize uint64
 				if ri.Partial > 0 {
 					break
 				}
-				if d > maxBundles {
+				if d >= maxBundles {
 					more = true
 					break
 				}
