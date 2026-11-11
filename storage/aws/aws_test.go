@@ -573,6 +573,65 @@ func TestPublishTree(t *testing.T) {
 	}
 }
 
+func TestGarbageCollectLimit(t *testing.T) {
+	ctx := t.Context()
+	if canSkipMySQLTest(t, ctx) {
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
+		t.Skip("MySQL not available, skipping test")
+	}
+	// Clean tables in case there's already something in there.
+	mustDropTables(t, ctx)
+
+	s, err := newMySQLSequencer(ctx, *mySQLURI, 1, 0, 0)
+	if err != nil {
+		t.Fatalf("newMySQLSequencer: %v", err)
+	}
+	defer func() {
+		if err := s.dbPool.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}()
+
+	const (
+		maxBundles = 10
+		// Enough bundles that a few passes are needed, ending part way through a pass.
+		numBundles = 3*(maxBundles+1) + 5
+	)
+	treeSize := uint64(numBundles * layout.EntryBundleWidth)
+
+	m := newMemObjStore()
+	entriesPath := layout.EntriesPath
+	// Leave a partial entry bundle and partial tile above each bundle.
+	for i := range uint64(numBundles) {
+		m.mem[entriesPath(i, 0)+".p/1"] = []byte("partial")
+		m.mem[layout.TilePath(0, i, 0)+".p/1"] = []byte("partial")
+	}
+
+	passes := 0
+	for more := true; more; passes++ {
+		var err error
+		if more, err = s.garbageCollect(ctx, treeSize, maxBundles, m.deleteObjectsWithPrefix, entriesPath); err != nil {
+			t.Fatalf("garbageCollect: %v", err)
+		}
+		if passes > numBundles {
+			t.Fatalf("garbageCollect still reports more work after %d passes", passes)
+		}
+	}
+	if passes < 2 {
+		t.Errorf("garbage collection completed in %d pass(es), want the limit of %d bundles to force more", passes, maxBundles)
+	}
+	for _, k := range m.keys() {
+		if strings.Contains(k, ".p/") {
+			t.Errorf("Found unwanted partial: %s", k)
+		}
+	}
+
+	// Nothing left to do.
+	if more, err := s.garbageCollect(ctx, treeSize, maxBundles, m.deleteObjectsWithPrefix, entriesPath); err != nil || more {
+		t.Errorf("garbageCollect on collected tree = %v, %v, want false, nil", more, err)
+	}
+}
+
 func TestGarbageCollect(t *testing.T) {
 	ctx := t.Context()
 	if canSkipMySQLTest(t, ctx) {
@@ -639,7 +698,7 @@ func TestGarbageCollect(t *testing.T) {
 		}
 
 		t.Logf("Running GC at size  %d", size)
-		if err := s.garbageCollect(ctx, size, 1000, m.deleteObjectsWithPrefix, appender.logStore.entriesPath); err != nil {
+		if _, err := s.garbageCollect(ctx, size, 1000, m.deleteObjectsWithPrefix, appender.logStore.entriesPath); err != nil {
 			t.Fatalf("garbageCollect: %v", err)
 		}
 		t.Logf("GC complete at size  %d", size)
