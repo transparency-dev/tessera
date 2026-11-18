@@ -428,7 +428,7 @@ func (fm *fakeMirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_ = gr.Close()
 		}()
 
-		var originLen uint16
+		var originLen uint8
 		if err := binary.Read(gr, binary.BigEndian, &originLen); err != nil {
 			fm.handleReadError(err, "failed to read origin length", w)
 			return
@@ -1077,8 +1077,8 @@ func TestParseOrigin(t *testing.T) {
 			wantErr:    true,
 		},
 		{
-			name:       "origin exceeds max uint16",
-			checkpoint: append(bytes.Repeat([]byte("a"), math.MaxUint16+1), []byte("\n100\n")...),
+			name:       "origin exceeds max uint8",
+			checkpoint: append(bytes.Repeat([]byte("a"), math.MaxUint8+1), []byte("\n100\n")...),
 			wantErr:    true,
 		},
 	}
@@ -1125,8 +1125,8 @@ func TestSyncInvalidCheckpoint(t *testing.T) {
 			checkpoint: []byte("\n100\n"),
 		},
 		{
-			desc:       "origin line exceeds max uint16",
-			checkpoint: append(bytes.Repeat([]byte("a"), math.MaxUint16+1), []byte("\n100\n")...),
+			desc:       "origin line exceeds max uint8",
+			checkpoint: append(bytes.Repeat([]byte("a"), math.MaxUint8+1), []byte("\n100\n")...),
 		},
 	}
 
