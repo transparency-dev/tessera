@@ -63,7 +63,7 @@ type AntispamOpts struct {
 	// PushbackThreshold allows configuration of when to start responding to Add requests with pushback due to
 	// the antispam follower falling too far behind.
 	//
-	// When the antispam follower is at least this many entries behind the size of the locally integrated tree,
+	// When the antispam follower is more than this many entries behind the size of the locally integrated tree,
 	// the antispam decorator will return tessera.ErrPushback for every Add request.
 	PushbackThreshold uint
 
