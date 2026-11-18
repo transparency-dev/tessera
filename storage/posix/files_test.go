@@ -171,6 +171,12 @@ func TestGarbageCollectLimit(t *testing.T) {
 	if len(passes) < 2 {
 		t.Fatalf("garbage collection completed in %d pass(es), want the limit of %d bundles to force more", len(passes), maxBundles)
 	}
+	// Every pass but the last must stop at the limit.
+	for i, from := range passes[:len(passes)-1] {
+		if want := uint64(i+1) * maxBundles * layout.EntryBundleWidth; from != want {
+			t.Errorf("pass %d collected up to %d, want %d (passes: %v)", i, from, want, passes)
+		}
+	}
 	if got := passes[len(passes)-1]; got != treeSize {
 		t.Errorf("garbage collected up to %d, want %d (passes: %v)", got, treeSize, passes)
 	}
