@@ -468,21 +468,28 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 				return fmt.Errorf("failed to parse published checkpoint: %v", err)
 			}
 
-			// Keep collecting while there's a backlog, until we run out of time.
-			for more := true; more; {
-				if more, err = a.sequencer.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStore.objStore.deleteObjectsWithPrefix, a.logStore.entriesPath); err != nil {
-					return fmt.Errorf("garbageCollect failed: %v", err)
-				}
-				if more && ctx.Err() != nil {
-					return ctx.Err()
-				}
-			}
-			return nil
+			return a.garbageCollectBacklog(ctx, pubSize, maxBundlesPerRun)
 		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
 			slog.WarnContext(ctx, "garbageCollectTask failed", slog.Any("error", err))
 		}
 	}
 
+}
+
+// garbageCollectBacklog garbage collects up to pubSize, calling garbageCollect repeatedly (each call
+// bounded by maxBundlesPerRun) until there is no backlog left or ctx is done.
+func (a *Appender) garbageCollectBacklog(ctx context.Context, pubSize uint64, maxBundlesPerRun uint) error {
+	// Keep collecting while there's a backlog, until we run out of time.
+	for more := true; more; {
+		var err error
+		if more, err = a.sequencer.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStore.objStore.deleteObjectsWithPrefix, a.logStore.entriesPath); err != nil {
+			return fmt.Errorf("garbageCollect failed: %v", err)
+		}
+		if more && ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 // init ensures that the storage represents a log in a valid state.
