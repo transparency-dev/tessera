@@ -188,15 +188,11 @@ func TestGarbageCollectLimit(t *testing.T) {
 	}
 }
 
-// TestGarbageCollectorJobDrainsBacklog exercises the job itself, rather than garbageCollect directly,
-// with a backlog much larger than a single garbageCollect call will handle (see #1239).
-func TestGarbageCollectorJobDrainsBacklog(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	const (
-		numBundles = 400
-		interval   = time.Second
-	)
+// TestGarbageCollectBacklogDrains exercises garbageCollectBacklog (the body of each job tick), rather than
+// garbageCollect directly, with a backlog much larger than a single garbageCollect call will handle (see #1239).
+func TestGarbageCollectBacklogDrains(t *testing.T) {
+	ctx := t.Context()
+	const numBundles = 400
 	treeSize := uint64(numBundles * layout.EntryBundleWidth)
 
 	s := &Storage{cfg: Config{Path: t.TempDir()}}
@@ -226,24 +222,15 @@ func TestGarbageCollectorJobDrainsBacklog(t *testing.T) {
 	}
 
 	a := &appender{s: s, logStorage: &logResourceStorage{s: s, entriesPath: entriesPath}}
-	go a.garbageCollectorJob(ctx, interval)
-
-	// A single tick must clear the whole backlog, so everything must be done well before the second tick.
-	deadline := time.Now().Add(2*interval - 100*time.Millisecond)
-	for {
-		from, err := s.readGCState()
-		if err != nil {
-			t.Fatalf("readGCState: %v", err)
-		}
-		if from == treeSize {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("garbage collected up to %d of %d before the second tick, want the whole backlog from a single tick", from, treeSize)
-		}
-		time.Sleep(20 * time.Millisecond)
+	// A single tick's worth of work must clear the whole backlog, even though each garbageCollect call is bounded to 100 bundles.
+	if err := a.garbageCollectBacklog(ctx, 100); err != nil {
+		t.Fatalf("garbageCollectBacklog: %v", err)
 	}
-	cancel()
+	if from, err := s.readGCState(); err != nil {
+		t.Fatalf("readGCState: %v", err)
+	} else if from != treeSize {
+		t.Fatalf("garbage collected up to %d of %d, want the whole backlog", from, treeSize)
+	}
 
 	partials, err := findAllPartialDirs(t, s.cfg.Path)
 	if err != nil {
