@@ -804,28 +804,35 @@ func (a *appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 			ctx, cancel := context.WithTimeout(ctx, defaultGCTimeout)
 			defer cancel()
 
-			// Figure out the size of the latest published checkpoint - we can't be removing partial tiles implied by
-			// that checkpoint just because we've done an integration and know about a larger (but as yet unpublished)
-			// checkpoint!
-			pubSize, err := a.publishedSize(ctx)
-			if err != nil {
-				return err
-			}
-
-			// Keep collecting while there's a backlog, until we run out of time.
-			for more := true; more; {
-				if more, err = a.s.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStorage.entriesPath); err != nil {
-					return err
-				}
-				if more && ctx.Err() != nil {
-					return ctx.Err()
-				}
-			}
-			return nil
+			return a.garbageCollectBacklog(ctx, maxBundlesPerRun)
 		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
 			slog.WarnContext(ctx, "GarbageCollect failed", slog.Any("error", err))
 		}
 	}
+}
+
+// garbageCollectBacklog garbage collects up to the size of the latest published checkpoint, calling
+// garbageCollect repeatedly (each call bounded by maxBundlesPerRun) until there is no backlog left
+// or ctx is done.
+func (a *appender) garbageCollectBacklog(ctx context.Context, maxBundlesPerRun uint) error {
+	// Figure out the size of the latest published checkpoint - we can't be removing partial tiles implied by
+	// that checkpoint just because we've done an integration and know about a larger (but as yet unpublished)
+	// checkpoint!
+	pubSize, err := a.publishedSize(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Keep collecting while there's a backlog, until we run out of time.
+	for more := true; more; {
+		if more, err = a.s.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStorage.entriesPath); err != nil {
+			return err
+		}
+		if more && ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 // gcState represents a snapshot of how much of the log tree has been garbage collected.
