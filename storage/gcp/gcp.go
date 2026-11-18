@@ -30,6 +30,7 @@ package gcp
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/binary"
 	"encoding/gob"
@@ -84,6 +85,7 @@ const (
 	ckptContType     = "text/plain; charset=utf-8"
 	logCacheControl  = "max-age=604800,immutable"
 	ckptCacheControl = "no-cache"
+	gzipContEnc      = "gzip"
 
 	DefaultIntegrationSizeLimit = 5 * 4096
 
@@ -1407,7 +1409,14 @@ func (s *gcsStorage) getObject(ctx context.Context, obj string) ([]byte, *gcs.Re
 			return nil, nil, fmt.Errorf("getObject: failed to create reader for object %q in bucket %q: %w", obj, s.bucket, err)
 		}
 
-		d, err := io.ReadAll(r)
+		var src io.Reader = r
+		// The gRPC client, unlike the HTTP one, doesn't decompress gzipped objects.
+		if r.Attrs.ContentEncoding == gzipContEnc && !r.Attrs.Decompressed {
+			if src, err = gzip.NewReader(r); err != nil {
+				return nil, nil, fmt.Errorf("failed to read %q: %v", obj, err)
+			}
+		}
+		d, err := io.ReadAll(src)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to read %q: %v", obj, err)
 		}

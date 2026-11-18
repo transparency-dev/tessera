@@ -16,6 +16,7 @@ package gcp
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -47,6 +48,7 @@ import (
 	"github.com/transparency-dev/tessera/fsck"
 	storage "github.com/transparency-dev/tessera/storage/internal"
 	"golang.org/x/mod/sumdb/note"
+	"google.golang.org/api/option"
 )
 
 func init() {
@@ -1328,6 +1330,49 @@ func TestObjectExists(t *testing.T) {
 			}
 			if got != test.want {
 				t.Errorf("objectExists(%q) = %t, want %t", test.obj, got, test.want)
+			}
+		})
+	}
+}
+
+// TestGetObjectGzip checks that gzipped objects are read back uncompressed
+// whether or not the GCS client decompresses them.
+func TestGetObjectGzip(t *testing.T) {
+	want := []byte("bundle-bytes")
+	var stored bytes.Buffer
+	zw := gzip.NewWriter(&stored)
+	if _, err := zw.Write(want); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Like the fake in TestSetObjectBucketPrefixIdempotentRecovery, this pins
+	// the cloud.google.com/go/storage client's HTTP JSON-API wire shape.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(stored.Bytes())
+	}))
+	defer srv.Close()
+	t.Setenv("STORAGE_EMULATOR_HOST", strings.TrimPrefix(srv.URL, "http://"))
+
+	for name, transport := range map[string]*http.Transport{
+		"decompressed by client":     {},                         // Like the HTTP GCS client.
+		"not decompressed by client": {DisableCompression: true}, // Like the gRPC GCS client.
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, err := gcs.NewClient(t.Context(), gcs.WithJSONReads(), option.WithHTTPClient(&http.Client{Transport: transport}))
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			s := &gcsStorage{gcsClient: c, bucket: "test-bucket"}
+			got, _, err := s.getObject(t.Context(), "obj")
+			if err != nil {
+				t.Fatalf("getObject: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("getObject = %q, want %q", got, want)
 			}
 		})
 	}
