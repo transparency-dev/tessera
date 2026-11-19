@@ -790,6 +790,7 @@ func (a *appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 	defer t.Stop()
 
 	// Entirely arbitrary number.
+	// This bounds the work done by a single call to garbageCollect, not by each tick of the job.
 	maxBundlesPerRun := uint(100)
 
 	for {
@@ -803,19 +804,35 @@ func (a *appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 			ctx, cancel := context.WithTimeout(ctx, defaultGCTimeout)
 			defer cancel()
 
-			// Figure out the size of the latest published checkpoint - we can't be removing partial tiles implied by
-			// that checkpoint just because we've done an integration and know about a larger (but as yet unpublished)
-			// checkpoint!
-			pubSize, err := a.publishedSize(ctx)
-			if err != nil {
-				return err
-			}
-
-			return a.s.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStorage.entriesPath)
+			return a.garbageCollectBacklog(ctx, maxBundlesPerRun)
 		}, trace.WithAttributes(otel.PeriodicKey.Bool(true))); err != nil {
 			slog.WarnContext(ctx, "GarbageCollect failed", slog.Any("error", err))
 		}
 	}
+}
+
+// garbageCollectBacklog garbage collects up to the size of the latest published checkpoint, calling
+// garbageCollect repeatedly (each call bounded by maxBundlesPerRun) until there is no backlog left
+// or ctx is done.
+func (a *appender) garbageCollectBacklog(ctx context.Context, maxBundlesPerRun uint) error {
+	// Figure out the size of the latest published checkpoint - we can't be removing partial tiles implied by
+	// that checkpoint just because we've done an integration and know about a larger (but as yet unpublished)
+	// checkpoint!
+	pubSize, err := a.publishedSize(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Keep collecting while there's a backlog, until we run out of time.
+	for more := true; more; {
+		if more, err = a.s.garbageCollect(ctx, pubSize, maxBundlesPerRun, a.logStorage.entriesPath); err != nil {
+			return err
+		}
+		if more && ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 // gcState represents a snapshot of how much of the log tree has been garbage collected.
@@ -858,11 +875,14 @@ func (s *Storage) readGCState() (uint64, error) {
 	return gs.FromSize, nil
 }
 
-func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint, entriesPath func(uint64, uint8) string) error {
+// garbageCollect removes up to maxBundles unneeded partial entry bundles (and any unneeded partial tiles which sit above them in the tree).
+//
+// Returns true if collection stopped because the limit was reached, i.e. there may be more full bundles left to collect.
+func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundles uint, entriesPath func(uint64, uint8) string) (bool, error) {
 	// Lock the gc location:
 	unlock, err := s.lockFile(ctx, gcStateLock)
 	if err != nil {
-		return fmt.Errorf("lockFile(%s): %v", gcStateLock, err)
+		return false, fmt.Errorf("lockFile(%s): %v", gcStateLock, err)
 	}
 	defer func() {
 		if err := unlock(); err != nil {
@@ -872,29 +892,34 @@ func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundle
 
 	fromSize, err := s.readGCState()
 	if err != nil {
-		return fmt.Errorf("readGCState: %v", err)
+		return false, fmt.Errorf("readGCState: %v", err)
 	}
 
 	if fromSize == treeSize {
 		// Nothing to do, nothing done.
-		return nil
+		return false, nil
 	}
 
 	d := uint(0)
+	more := false
 	// GC the tree in "vertical" chunks defined by entry bundles.
 	for ri := range layout.Range(fromSize, treeSize-fromSize, treeSize) {
 		// Only known-full bundles are in-scope for GC, so exit if the current bundle is partial or
 		// we've reached our limit of chunks.
-		if ri.Partial > 0 || d > maxBundles {
+		if ri.Partial > 0 {
+			break
+		}
+		if d >= maxBundles {
+			more = true
 			break
 		}
 
 		// GC any partial versions of the entry bundle itself and the tile which sits immediately above it.
 		if err := s.removeDirAll(entriesPath(ri.Index, 0) + ".p/"); err != nil {
-			return err
+			return false, err
 		}
 		if err := s.removeDirAll(layout.TilePath(0, ri.Index, 0) + ".p/"); err != nil {
-			return err
+			return false, err
 		}
 		fromSize += uint64(ri.N)
 		d++
@@ -909,15 +934,15 @@ func (s *Storage) garbageCollect(ctx context.Context, treeSize uint64, maxBundle
 			pL, pIdx = pL+1, pIdx>>layout.TileHeight
 			// GC any partial versions of the parent tile.
 			if err := s.removeDirAll(layout.TilePath(pL, pIdx, 0) + ".p/"); err != nil {
-				return err
+				return false, err
 			}
 
 		}
 	}
 	if err := s.writeGCState(fromSize); err != nil {
-		return fmt.Errorf("writeGCState: %v", err)
+		return false, fmt.Errorf("writeGCState: %v", err)
 	}
-	return nil
+	return more, nil
 }
 
 // isLastLeafInParent returns true if a tile with the provided index is the final child node of a

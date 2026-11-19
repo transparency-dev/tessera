@@ -573,6 +573,143 @@ func TestPublishTree(t *testing.T) {
 	}
 }
 
+func TestGarbageCollectLimit(t *testing.T) {
+	ctx := t.Context()
+	if canSkipMySQLTest(t, ctx) {
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
+		t.Skip("MySQL not available, skipping test")
+	}
+	// Clean tables in case there's already something in there.
+	mustDropTables(t, ctx)
+
+	s, err := newMySQLSequencer(ctx, *mySQLURI, 1, 0, 0)
+	if err != nil {
+		t.Fatalf("newMySQLSequencer: %v", err)
+	}
+	defer func() {
+		if err := s.dbPool.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}()
+
+	const (
+		maxBundles = 10
+		// Enough bundles that a few passes are needed, ending part way through a pass.
+		numBundles = 3*(maxBundles+1) + 5
+	)
+	treeSize := uint64(numBundles * layout.EntryBundleWidth)
+
+	m := newMemObjStore()
+	entriesPath := layout.EntriesPath
+	// Leave a partial entry bundle and partial tile above each bundle.
+	for i := range uint64(numBundles) {
+		m.mem[entriesPath(i, 0)+".p/1"] = []byte("partial")
+		m.mem[layout.TilePath(0, i, 0)+".p/1"] = []byte("partial")
+	}
+
+	// Count the entry bundles removed by each call, so we can check that every call stops at exactly the limit.
+	var mu sync.Mutex
+	var bundles int
+	deleteWithPrefix := func(ctx context.Context, prefix string) error {
+		if strings.HasPrefix(prefix, "tile/entries/") {
+			mu.Lock()
+			bundles++
+			mu.Unlock()
+		}
+		return m.deleteObjectsWithPrefix(ctx, prefix)
+	}
+
+	passes := 0
+	for more := true; more; passes++ {
+		var err error
+		bundles = 0
+		if more, err = s.garbageCollect(ctx, treeSize, maxBundles, deleteWithPrefix, entriesPath); err != nil {
+			t.Fatalf("garbageCollect: %v", err)
+		}
+		if more && bundles != maxBundles {
+			t.Errorf("pass %d collected %d bundles, want exactly %d", passes, bundles, maxBundles)
+		}
+		if !more && bundles > maxBundles {
+			t.Errorf("final pass %d collected %d bundles, want at most %d", passes, bundles, maxBundles)
+		}
+		if passes > numBundles {
+			t.Fatalf("garbageCollect still reports more work after %d passes", passes)
+		}
+	}
+	if passes < 2 {
+		t.Errorf("garbage collection completed in %d pass(es), want the limit of %d bundles to force more", passes, maxBundles)
+	}
+	for _, k := range m.keys() {
+		if strings.Contains(k, ".p/") {
+			t.Errorf("Found unwanted partial: %s", k)
+		}
+	}
+
+	// Nothing left to do.
+	if more, err := s.garbageCollect(ctx, treeSize, maxBundles, m.deleteObjectsWithPrefix, entriesPath); err != nil || more {
+		t.Errorf("garbageCollect on collected tree = %v, %v, want false, nil", more, err)
+	}
+}
+
+// countingSequencer counts the calls made to garbageCollect.
+type countingSequencer struct {
+	sequencer
+	calls int
+}
+
+func (c *countingSequencer) garbageCollect(ctx context.Context, treeSize uint64, maxDeletes uint, removePrefix func(ctx context.Context, prefix string) error, entriesPath func(uint64, uint8) string) (bool, error) {
+	c.calls++
+	return c.sequencer.garbageCollect(ctx, treeSize, maxDeletes, removePrefix, entriesPath)
+}
+
+// TestGarbageCollectBacklog checks that garbageCollectBacklog keeps calling garbageCollect until the backlog is cleared.
+func TestGarbageCollectBacklog(t *testing.T) {
+	ctx := t.Context()
+	if canSkipMySQLTest(t, ctx) {
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
+		t.Skip("MySQL not available, skipping test")
+	}
+	// Clean tables in case there's already something in there.
+	mustDropTables(t, ctx)
+
+	s, err := newMySQLSequencer(ctx, *mySQLURI, 1, 0, 0)
+	if err != nil {
+		t.Fatalf("newMySQLSequencer: %v", err)
+	}
+	defer func() {
+		if err := s.dbPool.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}()
+
+	const (
+		maxBundles = 10
+		numBundles = 3*maxBundles + 5
+	)
+	treeSize := uint64(numBundles * layout.EntryBundleWidth)
+
+	m := newMemObjStore()
+	entriesPath := layout.EntriesPath
+	for i := range uint64(numBundles) {
+		m.mem[entriesPath(i, 0)+".p/1"] = []byte("partial")
+		m.mem[layout.TilePath(0, i, 0)+".p/1"] = []byte("partial")
+	}
+
+	cs := &countingSequencer{sequencer: s}
+	a := &Appender{sequencer: cs, logStore: &logResourceStore{objStore: m, entriesPath: entriesPath}}
+	if err := a.garbageCollectBacklog(ctx, treeSize, maxBundles); err != nil {
+		t.Fatalf("garbageCollectBacklog: %v", err)
+	}
+	if want := (numBundles + maxBundles - 1) / maxBundles; cs.calls != want {
+		t.Errorf("garbageCollect called %d times, want %d", cs.calls, want)
+	}
+	for _, k := range m.keys() {
+		if strings.Contains(k, ".p/") {
+			t.Errorf("Found unwanted partial: %s", k)
+		}
+	}
+}
+
 func TestGarbageCollect(t *testing.T) {
 	ctx := t.Context()
 	if canSkipMySQLTest(t, ctx) {
@@ -639,7 +776,7 @@ func TestGarbageCollect(t *testing.T) {
 		}
 
 		t.Logf("Running GC at size  %d", size)
-		if err := s.garbageCollect(ctx, size, 1000, m.deleteObjectsWithPrefix, appender.logStore.entriesPath); err != nil {
+		if _, err := s.garbageCollect(ctx, size, 1000, m.deleteObjectsWithPrefix, appender.logStore.entriesPath); err != nil {
 			t.Fatalf("garbageCollect: %v", err)
 		}
 		t.Logf("GC complete at size  %d", size)
