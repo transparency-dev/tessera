@@ -18,6 +18,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -240,6 +242,51 @@ func TestAntispamFollowerErrorBeforeStream(t *testing.T) {
 	time.Sleep(1500 * time.Millisecond)
 
 	cancel()
+}
+
+// TestAntispamClose checks that Close releases the database, so it can be opened again in the
+// same process, and stops the antispam's goroutines and Badger's.
+func TestAntispamClose(t *testing.T) {
+	dir := t.TempDir()
+	before := antispamGoroutines()
+	for i := range 3 {
+		as, err := NewAntispam(t.Context(), dir, AntispamOpts{CompactionInterval: time.Millisecond})
+		if err != nil {
+			t.Fatalf("NewAntispam, opening %d: %v", i+1, err)
+		}
+		time.Sleep(10 * time.Millisecond) // let compaction run
+		if err := as.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		got := antispamGoroutines()
+		if got == before {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d antispam and Badger goroutines running after Close, want %d", got, before)
+		}
+	}
+}
+
+// antispamGoroutines returns the number of goroutines started by NewAntispam, or running in
+// Badger and its cache.
+func antispamGoroutines() int {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			count := 0
+			for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+				if strings.Contains(g, "github.com/dgraph-io/") || strings.Contains(g, "storage/posix/antispam.NewAntispam") {
+					count++
+				}
+			}
+			return count
+		}
+		buf = make([]byte, 2*len(buf))
+	}
 }
 
 type failingLogReader struct {

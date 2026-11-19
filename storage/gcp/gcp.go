@@ -250,24 +250,30 @@ func (s *Storage) Appender(ctx context.Context, opts *tessera.AppendOptions) (*t
 		bucketPrefix: s.cfg.BucketPrefix,
 	}
 
-	var err error
-	if s.cfg.SpannerClient == nil {
-		s.cfg.SpannerClient, err = spanner.NewClient(ctx, s.cfg.Spanner)
+	spannerClient, closeClient := s.cfg.SpannerClient, func() {}
+	if spannerClient == nil {
+		var err error
+		spannerClient, err = spanner.NewClient(ctx, s.cfg.Spanner)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to connect to Spanner: %v", err)
 		}
+		// This appender created the client, so it closes it.
+		closeClient = spannerClient.Close
 	}
 	table := func(t string) string {
 		return s.cfg.SpannerTablePrefix + t
 	}
-	if err := initDB(ctx, s.cfg.Spanner, s.cfg.SpannerClient, table); err != nil {
+	if err := initDB(ctx, s.cfg.Spanner, spannerClient, table); err != nil {
+		closeClient()
 		return nil, nil, fmt.Errorf("failed to verify/init Spanner schema: %v", err)
 	}
 
-	seq, err := newSpannerCoordinator(ctx, s.cfg.SpannerClient, table, uint64(opts.PushbackMaxOutstanding()))
+	seq, err := newSpannerCoordinator(ctx, spannerClient, table, uint64(opts.PushbackMaxOutstanding()))
 	if err != nil {
+		closeClient()
 		return nil, nil, fmt.Errorf("failed to create Spanner coordinator: %v", err)
 	}
+	seq.closeClient = closeClient
 
 	a, lr, err := s.newAppender(ctx, gs, seq, opts)
 	if err != nil {
@@ -279,7 +285,15 @@ func (s *Storage) Appender(ctx context.Context, opts *tessera.AppendOptions) (*t
 }
 
 // newAppender creates and initialises a tessera.Appender struct with the provided underlying storage implementations.
-func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoordinator, opts *tessera.AppendOptions) (*Appender, tessera.LogReader, error) {
+//
+// The Appender owns seq: newAppender closes it if it fails, and otherwise the Appender closes it
+// once ctx is done and its background jobs have returned.
+func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoordinator, opts *tessera.AppendOptions) (_ *Appender, _ tessera.LogReader, err error) {
+	defer func() {
+		if err != nil {
+			seq.close()
+		}
+	}()
 	if opts.CheckpointInterval() < minCheckpointInterval {
 		return nil, nil, fmt.Errorf("requested CheckpointInterval (%v) is less than minimum permitted %v", opts.CheckpointInterval(), minCheckpointInterval)
 	}
@@ -314,7 +328,6 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoord
 		},
 		nextIndex: a.sequencer.nextIndex,
 	}
-	var err error
 	a.newCP, err = opts.CheckpointPublisherContext(ctx, reader, s.cfg.HTTPClient)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create checkpoint publisher: %v", err)
@@ -324,11 +337,20 @@ func (s *Storage) newAppender(ctx context.Context, o objStore, seq *spannerCoord
 		return nil, nil, fmt.Errorf("failed to initialise log storage: %v", err)
 	}
 
-	go a.integrateEntriesJob(ctx)
-	go a.publishCheckpointJob(ctx, opts.CheckpointInterval(), opts.CheckpointRepublishInterval(), opts.CheckpointPublicationTimeout())
+	a.jobs.Go(func() { a.integrateEntriesJob(ctx) })
+	a.jobs.Go(func() {
+		a.publishCheckpointJob(ctx, opts.CheckpointInterval(), opts.CheckpointRepublishInterval(), opts.CheckpointPublicationTimeout())
+	})
 	if i := opts.GarbageCollectionInterval(); i > 0 {
-		go a.garbageCollectorJob(ctx, i)
+		a.jobs.Go(func() { a.garbageCollectorJob(ctx, i) })
 	}
+
+	// Once ctx is done the appender is finished, and its jobs return: then close the coordinator.
+	go func() {
+		<-ctx.Done()
+		a.jobs.Wait()
+		seq.close()
+	}()
 
 	return a, reader, nil
 }
@@ -344,6 +366,9 @@ type Appender struct {
 
 	cpUpdated       chan struct{}
 	entriesAssigned chan struct{}
+
+	// jobs tracks the background jobs, which return once the appender's context is done.
+	jobs sync.WaitGroup
 }
 
 // Add is the entrypoint for adding entries to a sequencing log.
@@ -812,6 +837,8 @@ func (a *Appender) updateEntryBundles(ctx context.Context, fromSeq uint64, entri
 // a durable and thread/multi-process safe sequencer.
 type spannerCoordinator struct {
 	dbPool *spanner.Client
+	// closeClient, if set, closes dbPool. It's set only when Tessera created dbPool.
+	closeClient func()
 	// table returns the provided table name with the configured table prefix, if any, prepended.
 	table          func(string) string
 	maxOutstanding uint64
@@ -833,6 +860,13 @@ func newSpannerCoordinator(ctx context.Context, dbPool *spanner.Client, table fu
 		return nil, fmt.Errorf("schema is not compatible with this version of the Tessera library: %v", err)
 	}
 	return r, nil
+}
+
+// close closes the coordinator's Spanner client, if Tessera created it.
+func (s *spannerCoordinator) close() {
+	if s.closeClient != nil {
+		s.closeClient()
+	}
 }
 
 // initDB ensures that the coordination DB is initialised correctly.

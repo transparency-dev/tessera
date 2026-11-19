@@ -200,6 +200,54 @@ func TestAntispamSharedClientWrongDatabase(t *testing.T) {
 	}
 }
 
+// TestAntispamClose checks that Close closes a Spanner client that NewAntispam created, and leaves
+// open one that was passed in.
+func TestAntispamClose(t *testing.T) {
+	const db = "projects/p/instances/i/databases/d"
+	read := func(c *spanner.Client) error {
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		_, err := c.Single().ReadRow(ctx, "FollowCoord", spanner.Key{0}, []string{"nextIdx"})
+		return err
+	}
+	t.Run("its own client", func(t *testing.T) {
+		closeDB := newSpannerDB(t)
+		defer closeDB()
+		as, err := NewAntispam(t.Context(), db, AntispamOpts{})
+		if err != nil {
+			t.Fatalf("NewAntispam: %v", err)
+		}
+		if err := read(as.dbPool); err != nil {
+			t.Fatalf("read before Close: %v", err)
+		}
+		if err := as.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if err := read(as.dbPool); err == nil {
+			t.Error("read after Close succeeded, want the client closed")
+		}
+	})
+	t.Run("a client passed in", func(t *testing.T) {
+		closeDB := newSpannerDB(t)
+		defer closeDB()
+		c, err := spanner.NewClient(t.Context(), db)
+		if err != nil {
+			t.Fatalf("spanner.NewClient: %v", err)
+		}
+		defer c.Close()
+		as, err := NewAntispam(t.Context(), db, AntispamOpts{SpannerClient: c})
+		if err != nil {
+			t.Fatalf("NewAntispam: %v", err)
+		}
+		if err := as.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if err := read(c); err != nil {
+			t.Errorf("read with the caller's client after Close: %v, want it still open", err)
+		}
+	})
+}
+
 func TestAntispamPushbackRecovers(t *testing.T) {
 	for _, test := range []struct {
 		name       string
