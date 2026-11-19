@@ -53,9 +53,9 @@ into any other API, this strategy will lose a lot of the read scaling that Tesse
 
 ## Status
 
-Tessera is generally available and production ready (since the
-[Beta release](https://github.com/transparency-dev/tessera/releases/tag/v0.2.0); see
-[releases](https://github.com/transparency-dev/tessera/releases) for stable versions).
+Tessera is generally available and production ready as of
+[v1.0.0](https://github.com/transparency-dev/tessera/releases/tag/v1.0.0) (see
+[releases](https://github.com/transparency-dev/tessera/releases) for the latest version).
 See the table below for details.
 
 ### Storage drivers
