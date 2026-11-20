@@ -69,7 +69,9 @@ func (s *Storage) ReadLandmarks(ctx context.Context) ([]byte, time.Time, error) 
 	return data, info.ModTime(), nil
 }
 
-// UpdateLandmarks executes fn and writes any updated landmarks data.
+// UpdateLandmarks executes fn and writes landmarks data.
+// If fn returns nil, no write is performed and the existing modification time is returned.
+// If fn returns unchanged content, the file's modification time is refreshed via os.Chtimes.
 // Runs under an advisory file lock to ensure distinct tasks are serialized.
 func (s *Storage) UpdateLandmarks(ctx context.Context, fn func(old []byte, oldModTime time.Time) ([]byte, error)) (time.Time, error) {
 	unlock, err := lockFile(ctx, s.lockPath)
@@ -86,21 +88,30 @@ func (s *Storage) UpdateLandmarks(ctx context.Context, fn func(old []byte, oldMo
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return time.Time{}, fmt.Errorf("read landmarks for update: %w", err)
 	}
+	exists := err == nil
 
 	newData, err := fn(oldData, oldModTime)
 	if err != nil {
 		return time.Time{}, err
 	}
-
-	if bytes.Equal(oldData, newData) && len(oldData) > 0 {
-		slog.DebugContext(ctx, "skipping landmarks write because contents are unchanged", slog.String("path", s.path))
+	if newData == nil {
+		slog.DebugContext(ctx, "skipping landmarks write since update returned nil", slog.String("path", s.path))
 		return oldModTime, nil
 	}
 
-	if err := overwrite(s.path, newData); err != nil {
-		return time.Time{}, err
+	if exists && bytes.Equal(oldData, newData) {
+		now := time.Now()
+		if err := os.Chtimes(s.path, now, now); err != nil {
+			return time.Time{}, fmt.Errorf("failed to update landmark mtime: %v", err)
+		}
+		slog.DebugContext(ctx, "refreshed landmarks modification time", slog.String("path", s.path))
+	} else {
+		if err := overwrite(s.path, newData); err != nil {
+			return time.Time{}, err
+		}
+		slog.DebugContext(ctx, "wrote landmarks file", slog.String("path", s.path))
 	}
-	slog.DebugContext(ctx, "wrote landmarks file", slog.String("path", s.path))
+
 	info, err := os.Stat(s.path)
 	// In case the write succeeded but we then fail to read mod time, use the
 	// current time as a proxy.
