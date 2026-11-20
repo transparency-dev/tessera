@@ -120,11 +120,12 @@ func TestWitnessGateway(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		desc             string
-		witnesses        []witness.Witness
-		wantSigs         int
-		wantErr          bool
-		wantWitnessCalls func(actual int32) error
+		desc               string
+		witnesses          []witness.Witness
+		wantSigs           int
+		wantUnverifiedSigs int
+		wantErr            bool
+		wantWitnessCalls   func(actual int32) error
 	}{
 		{
 			desc:             "no witnesses",
@@ -163,10 +164,11 @@ func TestWitnessGateway(t *testing.T) {
 			wantWitnessCalls: exactly(1),
 		},
 		{
-			desc:             "one witness with two keys (one unknown)",
-			witnesses:        []witness.Witness{{URL: witMulti1URL, Verifiers: []note.Verifier{witMulti1Verifier}}},
-			wantSigs:         1,
-			wantWitnessCalls: exactly(1),
+			desc:               "one witness with two keys (one unknown)",
+			witnesses:          []witness.Witness{{URL: witMulti1URL, Verifiers: []note.Verifier{witMulti1Verifier}}},
+			wantSigs:           1,
+			wantUnverifiedSigs: 1,
+			wantWitnessCalls:   exactly(1),
 		},
 		{
 			desc: "two witnesses with same URL but different keys",
@@ -231,8 +233,8 @@ func TestWitnessGateway(t *testing.T) {
 			if got := len(n.Sigs) - 1; got != test.wantSigs {
 				t.Errorf("wanted %d sigs but got %d", test.wantSigs, got)
 			}
-			if len(n.UnverifiedSigs) > 0 {
-				t.Fatalf("Accepted unverified witness sig(s): %+v", n.UnverifiedSigs)
+			if got := len(n.UnverifiedSigs); got != test.wantUnverifiedSigs {
+				t.Fatalf("wanted %d unverified witness sig(s), got %d: %+v", test.wantUnverifiedSigs, got, n.UnverifiedSigs)
 			}
 			if test.wantWitnessCalls != nil {
 				if err := test.wantWitnessCalls(witCalls.Load()); err != nil {
@@ -317,7 +319,7 @@ func (h *unknownSigReports) WithAttrs([]slog.Attr) slog.Handler       { return h
 func (h *unknownSigReports) WithGroup(string) slog.Handler            { return h }
 
 func (h *unknownSigReports) Handle(_ context.Context, r slog.Record) error {
-	if r.Message != "WitnessGateway: invalid signature from witness" {
+	if r.Message != "WitnessGateway: unknown signature from witness" {
 		return nil
 	}
 	r.Attrs(func(a slog.Attr) bool {
