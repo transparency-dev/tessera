@@ -37,6 +37,11 @@ The main non-goal is to support transparency logs using anything other than the 
 While it is possible to deploy a custom personality in front of Tessera that adapts the tlog-tiles API
 into any other API, this strategy will lose a lot of the read scaling that Tessera is designed for.
 
+> [!IMPORTANT]
+> If you run or build with Tessera, please subscribe to
+> [tessera-announce@lists.transparency.dev](https://lists.transparency.dev/mailman3/postorius/lists/tessera-announce.lists.transparency.dev/)
+> for important announcements and release notifications.
+
 ## Table of Contents
 
 - [Status](#status)
@@ -435,7 +440,8 @@ This repo is licensed under the Apache 2.0 license, see [LICENSE](/LICENSE) for 
 ## Contact
 
 - Slack: https://transparency-dev.slack.com/ ([invitation](https://transparency.dev/slack/))
-- Mailing list: https://groups.google.com/forum/#!forum/trillian-transparency
+- Announcements mailing list: [tessera-announce@lists.transparency.dev](https://lists.transparency.dev/mailman3/postorius/lists/tessera-announce.lists.transparency.dev/) (important announcements and release notifications)
+- Discussion mailing list: https://groups.google.com/forum/#!forum/trillian-transparency
 
 ## Acknowledgements
 
