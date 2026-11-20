@@ -30,8 +30,9 @@ import (
 )
 
 // NewPublicationAwaiter provides a PublicationAwaiter that can be cancelled
-// using the provided context. The PublicationAwaiter will poll every `pollPeriod`
-// to fetch checkpoints using the `readCheckpoint` function.
+// using the provided context. While an Await call is waiting, the
+// PublicationAwaiter will poll every `pollPeriod` to fetch checkpoints using the
+// `readCheckpoint` function.
 func NewPublicationAwaiter(ctx context.Context, readCheckpoint func(ctx context.Context) ([]byte, error), pollPeriod time.Duration) *PublicationAwaiter {
 	a := &PublicationAwaiter{
 		c: sync.NewCond(&sync.Mutex{}),
@@ -65,6 +66,10 @@ type PublicationAwaiter struct {
 	size       uint64
 	checkpoint []byte
 	err        error
+
+	// waiting counts the Await calls blocked waiting for a checkpoint. The poll
+	// loop only reads checkpoints while it is non-zero.
+	waiting int
 }
 
 // Await blocks until the IndexFuture is resolved, and this new index has been
@@ -87,6 +92,8 @@ func (a *PublicationAwaiter) Await(ctx context.Context, future IndexFuture) (Ind
 		span.AddEvent("Waiting for tree growth")
 		a.c.L.Lock()
 		defer a.c.L.Unlock()
+		a.waiting++
+		defer func() { a.waiting-- }()
 		if a.preWaitSignaller != nil {
 			a.preWaitSignaller <- struct{}{}
 		}
@@ -113,9 +120,9 @@ func (a *PublicationAwaiter) Await(ctx context.Context, future IndexFuture) (Ind
 
 // pollLoop MUST be called in a goroutine when constructing a PublicationAwaiter
 // and will run continually until its context is cancelled. It wakes up every
-// `pollPeriod`, requests the latest checkpoint from the log, parses the tree
-// size, and releases all clients that were blocked on an index smaller than
-// this tree size.
+// `pollPeriod` and, if any client is waiting, requests the latest checkpoint
+// from the log, parses the tree size, and releases all clients that were blocked
+// on an index smaller than this tree size.
 func (a *PublicationAwaiter) pollLoop(ctx context.Context, readCheckpoint func(ctx context.Context) ([]byte, error), pollPeriod time.Duration) {
 	var (
 		cp     []byte
@@ -134,6 +141,13 @@ func (a *PublicationAwaiter) pollLoop(ctx context.Context, readCheckpoint func(c
 				cp, cpSize, cpErr = nil, 0, ctx.Err()
 				ctxDone = true
 			case <-time.After(pollPeriod):
+				a.c.L.Lock()
+				idle := a.waiting == 0
+				a.c.L.Unlock()
+				if idle {
+					// Nothing is waiting for a checkpoint, so there is no need to read one.
+					return false, nil
+				}
 				span.AddEvent("tessera.wake")
 				cp, cpErr = readCheckpoint(ctx)
 				switch {
