@@ -113,7 +113,7 @@ func mustDropTables(t *testing.T, ctx context.Context) {
 		}
 	}()
 
-	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS `Seq`, `SeqCoord`, `IntCoord`, `PubCoord`, `GCCoord`"); err != nil {
+	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS `Seq`, `SeqCoord`, `IntCoord`, `PubCoord`, `GCCoord`, `Tessera`"); err != nil {
 		t.Fatalf("failed to drop all tables: %v", err)
 	}
 }
@@ -302,6 +302,133 @@ func TestMySQLSequencerRoundTrip(t *testing.T) {
 	}
 	if !more {
 		t.Errorf("more: false, expected true")
+	}
+}
+
+func TestMySQLSequencerAssignEntriesBatchSplitting(t *testing.T) {
+	ctx := t.Context()
+	if canSkipMySQLTest(t, ctx) {
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
+		t.Skip("MySQL not available, skipping test")
+	}
+
+	const (
+		entrySize = 10 << 10
+		// tenEntries is a batch size limit which has room for exactly 10 entries; the per-entry allowance
+		// covers the few bytes of suffix and length prefix added to each entry's data, and its leaf hash.
+		tenEntries = 10 * (entrySize + 64)
+	)
+
+	for _, test := range []struct {
+		name         string
+		maxBatchSize int
+		numEntries   int
+		wantRows     int
+	}{
+		{
+			name:         "all entries fit in one row",
+			maxBatchSize: 1 << 20,
+			numEntries:   50,
+			wantRows:     1,
+		}, {
+			name:         "entries split across rows",
+			maxBatchSize: tenEntries,
+			numEntries:   200,
+			wantRows:     20,
+		}, {
+			name:         "final row is partially filled",
+			maxBatchSize: tenEntries,
+			numEntries:   25,
+			wantRows:     3,
+		}, {
+			// Entries larger than the limit must still be stored, in a row of their own.
+			name:         "entries larger than limit get a row each",
+			maxBatchSize: entrySize / 2,
+			numEntries:   5,
+			wantRows:     5,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Clean tables in case there's already something in there.
+			mustDropTables(t, ctx)
+
+			seq, err := newMySQLSequencer(ctx, *mySQLURI, uint64(test.numEntries+1), 0, 0)
+			if err != nil {
+				t.Fatalf("newMySQLSequencer: %v", err)
+			}
+			seq.seqTableMaxBatchByteSize = test.maxBatchSize
+			t.Cleanup(func() {
+				_ = seq.dbPool.Close()
+			})
+
+			var entries []*tessera.Entry
+			var wantEntries []storage.SequencedEntry
+			for i := range test.numEntries {
+				eData := fmt.Appendf(make([]byte, entrySize), "entry-%d", i)
+				e := tessera.NewEntry(eData)
+				entries = append(entries, e)
+
+				// Use a separate entry so the MarshalBundleData below doesn't set index on our to-be-appended entry above.
+				wantEntry := tessera.NewEntry(eData)
+				wantEntries = append(wantEntries, storage.SequencedEntry{
+					BundleData: wantEntry.MarshalBundleData(uint64(i)),
+					LeafHash:   wantEntry.LeafHash(),
+				})
+			}
+
+			if err := seq.assignEntries(ctx, entries); err != nil {
+				t.Fatalf("assignEntries: %v", err)
+			}
+			for i, e := range entries {
+				if got, want := *e.Index(), uint64(i); got != want {
+					t.Errorf("entry %d got index %d, want %d", i, got, want)
+				}
+			}
+
+			var gotRows int
+			if err := seq.dbPool.QueryRowContext(ctx, "SELECT COUNT(*) FROM Seq").Scan(&gotRows); err != nil {
+				t.Fatalf("Failed to count rows in Seq table: %v", err)
+			}
+			if gotRows != test.wantRows {
+				t.Errorf("got %d rows in Seq table, want %d", gotRows, test.wantRows)
+			}
+			if got, err := seq.nextIndex(ctx); err != nil {
+				t.Fatalf("nextIndex: %v", err)
+			} else if want := uint64(test.numEntries); got != want {
+				t.Errorf("nextIndex = %d, want %d", got, want)
+			}
+
+			// Verify that all entries are present, contiguous, and in order by consuming them.
+			var gotEntries []storage.SequencedEntry
+			f := func(_ context.Context, fromSeq uint64, batch []storage.SequencedEntry) ([]byte, error) {
+				if want := uint64(len(gotEntries)); fromSeq != want {
+					return nil, fmt.Errorf("f called with fromSeq %d, want %d", fromSeq, want)
+				}
+				gotEntries = append(gotEntries, batch...)
+				return fmt.Appendf(nil, "root<%d>", len(gotEntries)), nil
+			}
+			// Consume fewer rows at a time than were written so that reading part of a split batch is covered too.
+			for len(gotEntries) < test.numEntries {
+				more, err := seq.consumeEntries(ctx, 3, f, false)
+				if err != nil {
+					t.Fatalf("consumeEntries: %v", err)
+				}
+				if !more {
+					t.Fatalf("consumeEntries: more = false but only seen %d/%d entries", len(gotEntries), test.numEntries)
+				}
+			}
+			if !reflect.DeepEqual(gotEntries, wantEntries) {
+				t.Error("consumed entries differ from the entries assigned")
+			}
+
+			// Assert there are no more entries to be consumed.
+			wantNoEntries := func(_ context.Context, from uint64, _ []storage.SequencedEntry) ([]byte, error) {
+				return nil, fmt.Errorf("unexpected call to consume func, should be no remaining entries to consume (from %d)", from)
+			}
+			if _, err := seq.consumeEntries(ctx, 10, wantNoEntries, false); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
