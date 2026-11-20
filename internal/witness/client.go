@@ -235,13 +235,17 @@ func (wg *WitnessGateway) CosignCheckpoint(ctx context.Context, cp []byte, cpSiz
 				// Let the operator know if we encountered any unknown signatures, they may need to update policy if e.g. the witness is rolling its key.
 				if len(n.UnverifiedSigs) > 0 {
 					for _, uv := range n.UnverifiedSigs {
-						slog.ErrorContext(ctx, "WitnessGateway: invalid signature from witness", slog.String("url", w.url), slog.String("name", uv.Name), slog.String("keyhash", fmt.Sprintf("%x", uv.Hash)))
+						slog.WarnContext(ctx, "WitnessGateway: unknown signature from witness", slog.String("url", w.url), slog.String("name", uv.Name), slog.String("keyhash", fmt.Sprintf("%x", uv.Hash)))
 					}
 				}
-				// Ensure we only return known verified signatures
+				// Include both verified signatures and well-formed signatures from unknown keys
+				// (e.g. a new key returned during a witness key rotation before the log's policy is updated).
 				rSig := make([]byte, 0, len(sig))
 				for _, s := range n.Sigs {
 					rSig = fmt.Appendf(rSig, "— %s %s\n", s.Name, s.Base64)
+				}
+				for _, uv := range n.UnverifiedSigs {
+					rSig = fmt.Appendf(rSig, "— %s %s\n", uv.Name, uv.Base64)
 				}
 				out <- rSig
 				return nil
