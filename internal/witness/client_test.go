@@ -265,6 +265,10 @@ func TestWitnessGatewayReportsUnknownWitnessSigs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wit2Verifier, err := f_note.NewVerifierForCosignatureV1(wit2Vkey)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, test := range []struct {
 		desc         string
@@ -298,18 +302,36 @@ func TestWitnessGatewayReportsUnknownWitnessSigs(t *testing.T) {
 			if _, n := collectSigs(t, g.CosignCheckpoint(t.Context(), logSignedCheckpoint, logSignedCheckpointSize)); n != 1 {
 				t.Fatalf("got signatures from %d witnesses, want 1", n)
 			}
-			if got := reports.get(); !slices.Equal(got, test.wantReported) {
-				t.Errorf("reported unknown signatures from %q, want %q", got, test.wantReported)
+			gotReports := reports.get()
+			gotNames := make([]string, 0, len(gotReports))
+			for _, r := range gotReports {
+				gotNames = append(gotNames, r.name)
+				if r.cpSize != logSignedCheckpointSize {
+					t.Errorf("reported cpSize = %d, want %d", r.cpSize, logSignedCheckpointSize)
+				}
+				reconstructed := fmt.Sprintf("%s\n— %s %s\n", cp, r.name, r.signature)
+				if _, err := note.Open([]byte(reconstructed), note.VerifierList(wit2Verifier)); err != nil {
+					t.Errorf("logged unknown signature failed to verify: %v", err)
+				}
+			}
+			if !slices.Equal(gotNames, test.wantReported) {
+				t.Errorf("reported unknown signatures from %q, want %q", gotNames, test.wantReported)
 			}
 		})
 	}
 }
 
-// unknownSigReports is an slog.Handler which records the key name of each signature the
+type unknownSigReport struct {
+	name      string
+	cpSize    uint64
+	signature string
+}
+
+// unknownSigReports is an slog.Handler which records details of each signature the
 // witness gateway reports as unknown.
 type unknownSigReports struct {
-	mu    sync.Mutex
-	names []string
+	mu      sync.Mutex
+	reports []unknownSigReport
 }
 
 func (h *unknownSigReports) Enabled(context.Context, slog.Level) bool { return true }
@@ -317,24 +339,31 @@ func (h *unknownSigReports) WithAttrs([]slog.Attr) slog.Handler       { return h
 func (h *unknownSigReports) WithGroup(string) slog.Handler            { return h }
 
 func (h *unknownSigReports) Handle(_ context.Context, r slog.Record) error {
-	if r.Message != "WitnessGateway: invalid signature from witness" {
+	if r.Level != slog.LevelWarn || r.Message != "WitnessGateway: unknown signature from witness" {
 		return nil
 	}
+	var rep unknownSigReport
 	r.Attrs(func(a slog.Attr) bool {
-		if a.Key == "name" {
-			h.mu.Lock()
-			h.names = append(h.names, a.Value.String())
-			h.mu.Unlock()
+		switch a.Key {
+		case "name":
+			rep.name = a.Value.String()
+		case "cpSize":
+			rep.cpSize = a.Value.Uint64()
+		case "signature":
+			rep.signature = a.Value.String()
 		}
 		return true
 	})
+	h.mu.Lock()
+	h.reports = append(h.reports, rep)
+	h.mu.Unlock()
 	return nil
 }
 
-func (h *unknownSigReports) get() []string {
+func (h *unknownSigReports) get() []unknownSigReport {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return slices.Clone(h.names)
+	return slices.Clone(h.reports)
 }
 
 func exactly(x int32) func(actual int32) error {
