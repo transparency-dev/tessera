@@ -16,14 +16,19 @@ package gcp
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"log"
 	"log/slog"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -47,6 +52,7 @@ import (
 	"github.com/transparency-dev/tessera/fsck"
 	storage "github.com/transparency-dev/tessera/storage/internal"
 	"golang.org/x/mod/sumdb/note"
+	"google.golang.org/api/option"
 )
 
 func init() {
@@ -842,7 +848,7 @@ func TestPublishTree(t *testing.T) {
 				t.Fatalf("publishTree: %v", err)
 			}
 			cpOld := []byte("bananas")
-			if err := m.setObject(ctx, layout.CheckpointPath, cpOld, nil, "", ""); err != nil {
+			if err := m.setObject(ctx, layout.CheckpointPath, cpOld, nil, "", "", ""); err != nil {
 				t.Fatalf("setObject(bananas): %v", err)
 			}
 			updatesSeen := 0
@@ -1115,12 +1121,14 @@ func expectedPartialPrefixes(size uint64, entriesPath func(uint64, uint8) string
 
 type memObjStore struct {
 	sync.RWMutex
-	mem map[string][]byte
+	mem     map[string][]byte
+	contEnc map[string]string
 }
 
 func newMemObjStore() *memObjStore {
 	return &memObjStore{
-		mem: make(map[string][]byte),
+		mem:     make(map[string][]byte),
+		contEnc: make(map[string]string),
 	}
 }
 
@@ -1144,7 +1152,7 @@ func (m *memObjStore) objectExists(_ context.Context, obj string) (bool, error) 
 }
 
 // TODO(phboneff): add content type tests
-func (m *memObjStore) setObject(_ context.Context, obj string, data []byte, cond *gcs.Conditions, _, _ string) error {
+func (m *memObjStore) setObject(_ context.Context, obj string, data []byte, cond *gcs.Conditions, _, _, contEnc string) error {
 	m.Lock()
 	defer m.Unlock()
 
@@ -1158,6 +1166,7 @@ func (m *memObjStore) setObject(_ context.Context, obj string, data []byte, cond
 		}
 	}
 	m.mem[obj] = data
+	m.contEnc[obj] = contEnc
 	return nil
 }
 
@@ -1252,7 +1261,7 @@ func TestSetObjectBucketPrefixIdempotentRecovery(t *testing.T) {
 	}()
 
 	s := &gcsStorage{gcsClient: c, bucket: bucket, bucketPrefix: prefix}
-	err = s.setObject(ctx, objName, data, &gcs.Conditions{DoesNotExist: true}, "application/octet-stream", "")
+	err = s.setObject(ctx, objName, data, &gcs.Conditions{DoesNotExist: true}, "application/octet-stream", "", "")
 	mu.Lock()
 	got := gotReadObj
 	mu.Unlock()
@@ -1330,6 +1339,152 @@ func TestObjectExists(t *testing.T) {
 				t.Errorf("objectExists(%q) = %t, want %t", test.obj, got, test.want)
 			}
 		})
+	}
+}
+
+// TestGetObjectGzip checks that gzipped objects are read back uncompressed
+// whether or not the GCS client decompresses them.
+func TestGetObjectGzip(t *testing.T) {
+	want := []byte("bundle-bytes")
+	var stored bytes.Buffer
+	zw := gzip.NewWriter(&stored)
+	if _, err := zw.Write(want); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Like the fake in TestSetObjectBucketPrefixIdempotentRecovery, this pins
+	// the cloud.google.com/go/storage client's HTTP JSON-API wire shape.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(stored.Bytes())
+	}))
+	defer srv.Close()
+	t.Setenv("STORAGE_EMULATOR_HOST", strings.TrimPrefix(srv.URL, "http://"))
+
+	for name, transport := range map[string]*http.Transport{
+		"decompressed by client":     {},                         // Like the HTTP GCS client.
+		"not decompressed by client": {DisableCompression: true}, // Like the gRPC GCS client.
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, err := gcs.NewClient(t.Context(), gcs.WithJSONReads(), option.WithHTTPClient(&http.Client{Transport: transport}))
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			s := &gcsStorage{gcsClient: c, bucket: "test-bucket"}
+			got, _, err := s.getObject(t.Context(), "obj")
+			if err != nil {
+				t.Fatalf("getObject: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("getObject = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestFullBundleGzipped checks that full entry bundles are stored gzipped, and
+// that writing one again is idempotent.
+func TestFullBundleGzipped(t *testing.T) {
+	ctx := t.Context()
+	want := makeBundle(t, 0, 0)
+
+	// Like the fake in TestSetObjectBucketPrefixIdempotentRecovery, this pins
+	// the cloud.google.com/go/storage client's HTTP JSON-API wire shape.
+	var mu sync.Mutex
+	var obj struct {
+		ContentEncoding string
+		content         []byte
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.Method == http.MethodGet:
+			w.Header().Set("Content-Encoding", obj.ContentEncoding)
+			_, _ = w.Write(obj.content)
+		case obj.content != nil:
+			// Conditional write: object already exists, precondition fails.
+			w.WriteHeader(http.StatusPreconditionFailed)
+		default:
+			// Multipart upload: the object's JSON metadata, followed by its content.
+			_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err != nil {
+				t.Errorf("ParseMediaType: %v", err)
+			}
+			mr := multipart.NewReader(r.Body, params["boundary"])
+			meta, err := mr.NextPart()
+			if err != nil {
+				t.Errorf("NextPart: %v", err)
+				return
+			}
+			if err := json.NewDecoder(meta).Decode(&obj); err != nil {
+				t.Errorf("Decode: %v", err)
+			}
+			content, err := mr.NextPart()
+			if err != nil {
+				t.Errorf("NextPart: %v", err)
+				return
+			}
+			if obj.content, err = io.ReadAll(content); err != nil {
+				t.Errorf("ReadAll: %v", err)
+			}
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("STORAGE_EMULATOR_HOST", strings.TrimPrefix(srv.URL, "http://"))
+
+	// This client doesn't decompress, like the gRPC GCS client.
+	hc := &http.Client{Transport: &http.Transport{DisableCompression: true}}
+	c, err := gcs.NewClient(ctx, gcs.WithJSONReads(), option.WithHTTPClient(hc))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	s := &logResourceStore{
+		objStore:    &gcsStorage{gcsClient: c, bucket: "test-bucket"},
+		entriesPath: layout.EntriesPath,
+	}
+	// The second write fails its precondition, but is idempotent as the bundle is unchanged.
+	for range 2 {
+		if err := s.setEntryBundle(ctx, 0, 0, want); err != nil {
+			t.Fatalf("setEntryBundle: %v", err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if obj.ContentEncoding != "gzip" {
+		t.Fatalf("got Content-Encoding %q, want gzip", obj.ContentEncoding)
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(obj.content))
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	got, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("stored bundle differs from the one written")
+	}
+}
+
+// TestPartialBundleNotGzipped checks that partial entry bundles are stored uncompressed:
+// binaries which can't read gzip extend them as-is, and would otherwise corrupt the log.
+func TestPartialBundleNotGzipped(t *testing.T) {
+	m := newMemObjStore()
+	s := &logResourceStore{
+		objStore:    m,
+		entriesPath: layout.EntriesPath,
+	}
+	if err := s.setEntryBundle(t.Context(), 0, 20, makeBundle(t, 0, 20)); err != nil {
+		t.Fatalf("setEntryBundle: %v", err)
+	}
+	if got := m.contEnc[layout.EntriesPath(0, 20)]; got != "" {
+		t.Fatalf("got Content-Encoding %q, want none", got)
 	}
 }
 
@@ -1502,7 +1657,7 @@ func TestMirrorWriter_UpdateCheckpoint(t *testing.T) {
 				t.Fatalf("IntegrateBundles: %v", err)
 			}
 			if test.publishedCP != nil {
-				if err := m.setObject(ctx, layout.CheckpointPath, test.publishedCP, nil, "", ""); err != nil {
+				if err := m.setObject(ctx, layout.CheckpointPath, test.publishedCP, nil, "", "", ""); err != nil {
 					t.Fatalf("setObject: %v", err)
 				}
 			}
