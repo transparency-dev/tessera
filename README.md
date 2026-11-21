@@ -53,21 +53,23 @@ into any other API, this strategy will lose a lot of the read scaling that Tesse
 
 ## Status
 
-Tessera is under active development, and is considered production ready since the
-[Beta release](https://github.com/transparency-dev/tessera/releases/tag/v0.2.0).
+Tessera is generally available and production ready as of
+[v1.0.0](https://github.com/transparency-dev/tessera/releases/tag/v1.0.0) (see
+[releases](https://github.com/transparency-dev/tessera/releases) for the latest version).
 See the table below for details.
 
 ### Storage drivers
 
-| Driver                  | Appender | Migration | Antispam | Garbage Collection |
-| ----------------------- | :------: | :-------: | :------: | :----------------: |
-| Amazon Web Services     |    ✅    |     ⚠️    |    ✅    |          ✅        |
-| Google Cloud Platform   |    ✅    |     ⚠️    |    ✅    |          ✅        |
-| POSIX filesystem        |    ✅    |     ⚠️    |    ✅    |          ✅        |
+| Driver                  | Appender | Migration | Mirror | Antispam | Garbage Collection |
+| ----------------------- | :------: | :-------: | :----: | :------: | :----------------: |
+| Amazon Web Services     |    ✅    |     ⚠️    |   ❌   |    ✅    |          ✅        |
+| Google Cloud Platform   |    ✅    |     ⚠️    |   ⚠️   |    ✅    |          ✅        |
+| POSIX filesystem        |    ✅    |     ⚠️    |   ⚠️   |    ✅    |          ✅        |
 
 
 > [!Note]
-> Please get in touch if you are interested in using any of the features or drivers held back in BETA above.
+> Features marked `⚠️` are in beta or experimental and may be subject to change.
+> Please get in touch if you are interested in using any of the features marked `⚠️` or `❌` above.
 
 Users of GCP, AWS, and POSIX are welcome to try the relevant [Getting Started](#getting-started) guide.
 
@@ -109,7 +111,7 @@ This section introduces concepts and terms that will be used throughout the user
 
 ### Sequencing
 
-When data is added to a log, it is first stored in memory for some period (this can be controlled via the [batching options](https://pkg.go.dev/github.com/transparency-dev/tessera#WithBatching)).
+When data is added to a log, it is first stored in memory for some period (this can be controlled via the [batching options](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithBatching)).
 If the process dies in this state, the entry will be lost.
 
 Once a batch of entries is processed by the sequencer, the new data will transition from a volatile state to one where it is durably assigned an index.
@@ -134,13 +136,14 @@ Once this process has been completed, a new entry will:
 
 Publishing is a background process that creates a new Checkpoint for the latest tree.
 This background process runs periodically (configurable via
-[WithCheckpointInterval](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithCheckpointInterval)
+[WithCheckpointInterval](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithCheckpointInterval),
+[WithCheckpointRepublishInterval](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithCheckpointRepublishInterval),
 and
-[WithCheckpointRepublishInterval](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithCheckpointRepublishInterval))
+[WithCheckpointPublicationTimeout](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithCheckpointPublicationTimeout))
 and performs the following steps:
-  1. Create a new Checkpoint and sign it with the signer provided by [WithCheckpointSigner](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithCheckpointSigner)
-  2. Contact witnesses and collect enough cosignatures to satisfy any witness policy configured by [WithWitnessPolicy](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithWitnessPolicy)
-  3. If the witness policy is satisfied, make this new Checkpoint publicly available
+  1. Create a new Checkpoint and sign it with the signer(s) provided by [WithCheckpointSigner](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithCheckpointSigner)
+  2. Contact witnesses to collect cosignatures satisfying any witness policy configured by [WithWitnessPolicy](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithWitnessPolicy), and push entries to mirrors to satisfy any mirror policy configured by [WithMirrorPolicy](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithMirrorPolicy)
+  3. If the configured policies are satisfied, make this new Checkpoint publicly available
 
 An entry is considered published once it is committed to by a published Checkpoint (i.e. a published Checkpoint's size is larger than the entry's assigned index).
 Due to the nature of append-only logs, all Checkpoints issued after this point will also commit to inclusion of this entry.
@@ -329,12 +332,24 @@ Configuring the witnesses is done by defining a witness policy using [`github.co
 
 The configured policy is passed to the `Appender` lifecycle options using
 [`AppendOptions#WithWitnessPolicy`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithWitnessPolicy).
-(For backwards compatibility, [`AppendOptions#WithWitnesses`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithWitnesses) is also supported with legacy `WitnessGroup`s).
+(For backwards compatibility, the deprecated [`AppendOptions#WithWitnesses`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithWitnesses) is also supported with legacy `WitnessGroup`s).
 If this option is not set, no witnessing will be configured.
 
 > [!Note]
 > If the policy cannot be satisfied then no checkpoint will be published.
 > It is up to the log operator to ensure that a satisfiable policy is configured, and that the requested publishing rate is acceptable to the configured witnesses.
+
+### Mirroring
+
+> [!WARNING]
+> Mirroring support is experimental, under active development, and currently excluded from the SemVer policy.
+
+Personalities in `Appender` mode can configure Tessera to push log entries and checkpoints to [C2SP tlog-mirror][tlog-mirror] servers and collect mirror cosignatures before publishing a checkpoint.
+
+As with witnessing, mirrors are configured using [`github.com/transparency-dev/formats/policy`](https://pkg.go.dev/github.com/transparency-dev/formats/policy) (following the [C2SP tlog-policy specification](https://c2sp.org/tlog-policy)) and passed to [`AppendOptions#WithMirrorPolicy`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#AppendOptions.WithMirrorPolicy) along with [`MirroringOptions`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#MirroringOptions).
+If this option is not set, no mirroring will be performed.
+
+See [./cmd/conformance/posix/](./cmd/conformance/posix/#mirroring) for an example of configuring mirroring on a personality, and [./client/mirror/](./client/mirror/) for the experimental `tlog-mirror` client.
 
 ### Synchronous Publication
 
@@ -350,6 +365,10 @@ Tessera utilizes the standard Go `log/slog` package for structured logging. By d
 
 Personalities and operators of the log can customize how these logs are handled by configuring the default `slog.Handler`. For example, operators deploying to Google Cloud can set up an `slog.Handler` that automatically correlates logs with [OpenTelemetry distributed traces](https://cloud.google.com/logging/docs/structured-logging) using the context-aware properties from the incoming `http.Request`. The example programs in `/cmd/` provide reference initializations of these handlers for their respective environments.
 
+### Log Verification (`fsck`)
+
+Tessera provides [`cmd/fsck`](./cmd/fsck/) (and the underlying [`fsck`](./fsck/) package) for verifying the integrity of any HTTP-accessible [tlog-tiles][] log. It checks the log's checkpoint against all tiles and entry bundles implied by the tree size.
+
 ## Lifecycles
 
 ### Appender
@@ -361,6 +380,9 @@ This mode is instantiated via [`tessera.NewAppender`](https://pkg.go.dev/github.
 configured using the [`tessera.NewAppendOptions`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#NewAppendOptions) struct.
 
 This is described above in [Constructing the Appender](#constructing-the-appender).
+
+To shut down an `Appender` cleanly, call the returned `shutdown` function before cancelling the context passed to `NewAppender` (configurable via [`WithShutdownTimeout`](https://pkg.go.dev/github.com/transparency-dev/tessera#AppendOptions.WithShutdownTimeout)).
+This waits for in-flight sequenced entries to be integrated, committed to by a published checkpoint, and processed by any configured followers (such as antispam).
 
 Note that entries are limited to 64KB in size by the [tlog-tiles][] spec, with the exception that when Tessera is configured for use
 with Static CT via the `WithCTLayout` option, entries are then limited to 256KB.
@@ -388,6 +410,19 @@ These binaries ought to be sufficient for most use-cases.
 Users that need to write their own migration binary should use the provided binaries as a reference.
 
 See more details in the [Lifecycle Design: Migration](https://github.com/transparency-dev/tessera/blob/main/docs/design/lifecycle.md#migration).
+
+### Mirror Target
+
+> [!WARNING]
+> The `MirrorTarget` lifecycle and MTC binaries are experimental, under active development, and currently excluded from the SemVer policy.
+
+This mode is used to operate a [C2SP tlog-mirror][tlog-mirror] target that receives entry bundles and subtree consistency proofs from a source log, verifies and integrates them into local storage, and cosigns checkpoints and subtrees.
+
+This is instantiated via [`tessera.NewMirrorTarget`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#NewMirrorTarget),
+and configured using the [`tessera.NewMirrorOptions`](https://pkg.go.dev/github.com/transparency-dev/tessera@main#NewMirrorOptions) struct.
+It is currently supported by the POSIX and GCP storage drivers.
+
+Reference implementations for running a `tlog-mirror` server (as well as experimental [Merkle Tree Certificates](https://datatracker.ietf.org/doc/html/draft-ietf-plants-merkle-tree-certs) log support) can be found in [./cmd/mtc/](./cmd/mtc/) and [./cmd/mtc/mirror/](./cmd/mtc/mirror/).
 
 ### Freezing a Log
 
@@ -444,6 +479,7 @@ transparency ecosystems over the years.
 
 [tlog-tiles API]: https://c2sp.org/tlog-tiles
 [tlog-tiles]: https://c2sp.org/tlog-tiles
+[tlog-mirror]: https://c2sp.org/tlog-mirror
 [Static CT API]: https://c2sp.org/static-ct-api
 [Trillian v1]: https://github.com/google/trillian
 [#575]: https://github.com/transparency-dev/tessera/issues/575
