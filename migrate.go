@@ -16,6 +16,7 @@ package tessera
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 
@@ -64,21 +65,26 @@ type bundle struct {
 func (c *copier) Copy(ctx context.Context, fromSize uint64, sourceSize uint64) error {
 	slog.InfoContext(ctx, "Starting copy", slog.Uint64("from", fromSize), slog.Uint64("to", sourceSize))
 
+	if cap(c.todo) == 0 {
+		return errors.New("numWorkers must be at least 1")
+	}
 	if fromSize > sourceSize {
 		return fmt.Errorf("from size %d > source size %d", fromSize, sourceSize)
 	}
 
-	go c.populateWork(ctx, fromSize, sourceSize)
+	eg, wctx := errgroup.WithContext(ctx)
+	eg.Go(func() error {
+		return c.populateWork(wctx, fromSize, sourceSize)
+	})
 
 	// Do the copying
-	eg := errgroup.Group{}
 	for range cap(c.todo) {
 		eg.Go(func() error {
-			return c.worker(ctx)
+			return c.worker(wctx)
 		})
 	}
 	if err := eg.Wait(); err != nil {
-		return fmt.Errorf("copy failed: %v", err)
+		return fmt.Errorf("copy failed: %w", err)
 	}
 
 	return nil
@@ -91,13 +97,25 @@ func (c *copier) BundlesCopied() uint64 {
 
 // populateWork sends entries to the `todo` work channel.
 // Each entry corresponds to an individual entryBundle which needs to be copied.
-func (m *copier) populateWork(ctx context.Context, from, treeSize uint64) {
+//
+// It returns an error if ctx is done before all entries are sent, so that Copy
+// doesn't report success for a partial copy.
+func (m *copier) populateWork(ctx context.Context, from, treeSize uint64) error {
 	slog.InfoContext(ctx, "Spans for entry range", slog.Uint64("from", from), slog.Uint64("to", treeSize))
 	defer close(m.todo)
 
 	for ri := range layout.Range(from, treeSize-from, treeSize) {
-		m.todo <- bundle{Index: ri.Index, Partial: ri.Partial}
+		// select picks randomly when both cases are ready, so check for cancellation first.
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
+		select {
+		case m.todo <- bundle{Index: ri.Index, Partial: ri.Partial}:
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
 	}
+	return nil
 }
 
 // worker undertakes work items from the `todo` channel.
@@ -106,6 +124,10 @@ func (m *copier) populateWork(ctx context.Context, from, treeSize uint64) {
 // deal with any transient errors which may occur.
 func (m *copier) worker(ctx context.Context) error {
 	for b := range m.todo {
+		// backoff.Retry always makes at least one attempt, so don't start one once ctx is done.
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
 		n, err := backoff.Retry(ctx, func() (uint64, error) {
 			d, err := m.getEntryBundle(ctx, b.Index, uint8(b.Partial))
 			if err != nil {
@@ -123,7 +145,10 @@ func (m *copier) worker(ctx context.Context) error {
 			backoff.WithMaxTries(10),
 			backoff.WithBackOff(backoff.NewExponentialBackOff()))
 		if err != nil {
-			slog.InfoContext(ctx, "Retry error", slog.Any("error", err))
+			// Once ctx is done, Retry returns context.Cause(ctx): another worker's error, or the caller's cause.
+			if ctx.Err() == nil {
+				slog.InfoContext(ctx, "Retry error", slog.Uint64("index", b.Index), slog.Any("error", err))
+			}
 			return err
 		}
 		m.bundlesCopied.Add(n)
