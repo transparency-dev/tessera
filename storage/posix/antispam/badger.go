@@ -178,9 +178,12 @@ func (d *AntispamStorage) index(ctx context.Context, h []byte) (*uint64, error) 
 		var hit bool
 		err := d.db.View(func(txn *badger.Txn) error {
 			item, err := txn.Get(h)
-			if err == badger.ErrKeyNotFound {
-				span.AddEvent("tessera.miss")
-				return nil
+			if err != nil {
+				if err == badger.ErrKeyNotFound {
+					span.AddEvent("tessera.miss")
+					return nil
+				}
+				return err
 			}
 			span.AddEvent("tessera.hit")
 			hit = true
