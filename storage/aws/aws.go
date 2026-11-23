@@ -79,6 +79,15 @@ const (
 	DefaultPushbackMaxOutstanding = 4096
 	DefaultIntegrationSizeLimit   = 5 * 4096
 
+	// defaultSeqTableMaxBatchByteSize is the default maximum byte size of a batch of entries to be written to
+	// the "v" column of a single row in the "Seq" table. Batches of entries larger than this are split across
+	// multiple rows.
+	//
+	// Each row is written with its own INSERT statement so must fit within MySQL's max_allowed_packet.
+	// This default value is chosen so as to leave plenty of headroom for serialisation overhead even with
+	// fairly conservative max_allowed_packet values like 16MiB.
+	defaultSeqTableMaxBatchByteSize = 8 << 20 // 8 MiB
+
 	// SchemaCompatibilityVersion represents the expected version (e.g. layout & serialisation) of stored data.
 	//
 	// A binary built with a given version of the Tessera library is compatible with stored data created by a different version
@@ -157,6 +166,8 @@ type Config struct {
 	// This can be used e.g. to store multiple logs in the same bucket.
 	BucketPrefix string
 	// DSN is the DSN of the MySQL instance to use.
+	// Avoid setting interpolateParams=true as this can inflate the wire size of data
+	// sent to MySQL leading to operational issues.
 	DSN string
 	// MaxOpenConns is the maximum number of open connections to the MySQL database.
 	// If zero or negative, the number of open connections is not limited.
@@ -406,6 +417,12 @@ func (a *Appender) garbageCollectorJob(ctx context.Context, i time.Duration) {
 
 // Add is the entrypoint for adding entries to a sequencing log.
 func (a *Appender) Add(ctx context.Context, e *tessera.Entry) tessera.IndexFuture {
+	// Reject entries which are too large to fit in the Seq table even as a single-entry batch.
+	if size := len(e.Data()); size > defaultSeqTableMaxBatchByteSize {
+		return func() (tessera.Index, error) {
+			return tessera.Index{}, fmt.Errorf("entry size %d exceeds maximum allowed %d", size, defaultSeqTableMaxBatchByteSize)
+		}
+	}
 	return a.queue.Add(ctx, e)
 }
 
@@ -897,6 +914,10 @@ func integrate(ctx context.Context, fromSeq uint64, lh [][]byte, lrs *logResourc
 type mySQLSequencer struct {
 	dbPool         *sql.DB
 	maxOutstanding uint64
+
+	// seqTableMaxBatchByteSize is the maximum byte size of a batch of entries to be written to the "v" column in a
+	// single row of the "Seq" table.
+	seqTableMaxBatchByteSize int
 }
 
 // newMySQLSequencer returns a new mysqlSequencer struct which uses the provided
@@ -920,8 +941,9 @@ func newMySQLSequencer(ctx context.Context, dsn string, maxOutstanding uint64, m
 	}
 
 	r := &mySQLSequencer{
-		dbPool:         dbPool,
-		maxOutstanding: maxOutstanding,
+		dbPool:                   dbPool,
+		maxOutstanding:           maxOutstanding,
+		seqTableMaxBatchByteSize: defaultSeqTableMaxBatchByteSize,
 	}
 
 	if err := r.initDB(ctx); err != nil {
@@ -1076,8 +1098,11 @@ func (s *mySQLSequencer) initDB(ctx context.Context) error {
 // Entries are allocated contiguous indices, in the order in which they appear in the entries parameter.
 // This is achieved by storing the passed-in entries in the Seq table in MySQL, keyed by the
 // index assigned to the first entry in the batch.
+//
+// If the passed-in entries are too large to be safely stored in a single row, they will be split
+// across multiple contiguous rows, all of which are committed within the same transaction.
 func (s *mySQLSequencer) assignEntries(ctx context.Context, entries []*tessera.Entry) error {
-	return otel.TraceErr(ctx, "tessera.storage.gcp.assignEntries", tracer, func(ctx context.Context, span trace.Span) error {
+	return otel.TraceErr(ctx, "tessera.storage.aws.assignEntries", tracer, func(ctx context.Context, span trace.Span) error {
 		start := time.Now()
 		defer func() {
 			opsHistogram.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(opNameKey.String("assignEntries")))
@@ -1121,29 +1146,58 @@ func (s *mySQLSequencer) assignEntries(ctx context.Context, entries []*tessera.E
 			return tessera.ErrPushbackIntegration
 		}
 
-		sequencedEntries := make([]storage.SequencedEntry, len(entries))
+		// Insert our newly sequenced entries into Seq, splitting them across multiple rows if necessary to
+		// keep the size of each individual row bounded.
+		var sequencedEntries []storage.SequencedEntry
+		currentBatchByteSize := 0
+		flushBatch := &bytes.Buffer{}
+		// batchStart is the sequence number assigned to the first entry in sequencedEntries.
+		batchStart := next
+		// flush writes sequencedEntries to a single row in the Seq table, and resets the batch variables.
+		flush := func() error {
+			// Reset our buffer for re-use, and ensure it's large enough to hold the batch with a bit of overhead for GOB encoding.
+			flushBatch.Reset()
+			flushBatch.Grow(currentBatchByteSize + 2048)
+			// Flatten the entries into a single slice of bytes which we can store in the Seq.v column.
+			if err := gob.NewEncoder(flushBatch).Encode(sequencedEntries); err != nil {
+				return fmt.Errorf("failed to serialise batch: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, "INSERT INTO Seq(id, seq, v) VALUES(?, ?, ?)", 0, batchStart, flushBatch.Bytes()); err != nil {
+				return fmt.Errorf("failed to insert into seq: %w", err)
+			}
+			batchStart += uint64(len(sequencedEntries))
+			sequencedEntries = nil
+			currentBatchByteSize = 0
+			return nil
+		}
+
 		// Assign provisional sequence numbers to entries.
 		// We need to do this here in order to support serialisations which include the log position.
 		for i, e := range entries {
-			sequencedEntries[i] = storage.SequencedEntry{
+			sequencedEntry := storage.SequencedEntry{
 				BundleData: e.MarshalBundleData(next + uint64(i)),
 				LeafHash:   e.LeafHash(),
 			}
-		}
+			entryByteSize := len(sequencedEntry.BundleData) + len(sequencedEntry.LeafHash)
 
-		// Flatten the entries into a single slice of bytes which we can store in the Seq.v column.
-		b := &bytes.Buffer{}
-		e := gob.NewEncoder(b)
-		if err := e.Encode(sequencedEntries); err != nil {
-			return fmt.Errorf("failed to serialise batch: %v", err)
+			// If adding this entry would make the batch too large, flush the batch as-is.
+			if len(sequencedEntries) > 0 && currentBatchByteSize+entryByteSize > s.seqTableMaxBatchByteSize {
+				if err := flush(); err != nil {
+					return err
+				}
+			}
+
+			sequencedEntries = append(sequencedEntries, sequencedEntry)
+			currentBatchByteSize += entryByteSize
 		}
-		data := b.Bytes()
+		// Insert the last batch of entries if there are any.
+		if len(sequencedEntries) > 0 {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
 		num := uint64(len(entries))
 
-		// Insert our newly sequenced batch of entries into Seq,
-		if _, err := tx.ExecContext(ctx, "INSERT INTO Seq(id, seq, v) VALUES(?, ?, ?)", 0, next, data); err != nil {
-			return fmt.Errorf("insert into seq: %v", err)
-		}
 		// and update the next-available sequence number row in SeqCoord.
 		if _, err := tx.ExecContext(ctx, "UPDATE SeqCoord SET next = ? WHERE ID = ?", next+num, 0); err != nil {
 			return fmt.Errorf("update seqcoord: %v", err)

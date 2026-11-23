@@ -38,7 +38,7 @@ The transactional storage is implemented with Aurora MySQL, and uses a schema wi
    assigns a sequence numbers to the entries using the following algorithm:
    In a transaction:
    1. selects next from `SeqCoord` with for update ← this blocks other FE from writing their pools, but only for a short duration.
-   1. Inserts batch of entries into `Seq` with key `SeqCoord.next`
+   1. Inserts batch of entries into `Seq` with key `SeqCoord.next` (batches may be split into multiple rows if necessary)
    1. Update `SeqCoord` with `next+=len(batch)`
 1. Newly sequenced entries are periodically appended to the tree:
    In a transaction:
