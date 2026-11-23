@@ -17,7 +17,6 @@ package tessera
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -109,14 +108,13 @@ type MigrationTarget struct {
 // process, or if, once all entries have been copied and integrated into the local tree, the local
 // root hash does not match the provided sourceRoot.
 func (mt *MigrationTarget) Migrate(ctx context.Context, numWorkers uint, sourceSize uint64, sourceRoot []byte, getEntries client.EntryBundleFetcherFunc) error {
-	if numWorkers == 0 {
-		return errors.New("numWorkers must be at least 1")
+	c, err := newCopier(numWorkers, mt.writer.SetEntryBundle, getEntries)
+	if err != nil {
+		return err
 	}
 
 	cctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-
-	c := newCopier(numWorkers, mt.writer.SetEntryBundle, getEntries)
 
 	fromSize, err := mt.writer.IntegratedSize(ctx)
 	if err != nil {

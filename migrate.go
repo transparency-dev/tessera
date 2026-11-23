@@ -30,12 +30,16 @@ import (
 
 type setEntryBundleFunc func(ctx context.Context, index uint64, partial uint8, bundle []byte) error
 
-func newCopier(numWorkers uint, setEntryBundle setEntryBundleFunc, getEntryBundle client.EntryBundleFetcherFunc) *copier {
+// newCopier returns a copier that copies up to numWorkers entry bundles concurrently.
+func newCopier(numWorkers uint, setEntryBundle setEntryBundleFunc, getEntryBundle client.EntryBundleFetcherFunc) (*copier, error) {
+	if numWorkers == 0 {
+		return nil, errors.New("numWorkers must be at least 1")
+	}
 	return &copier{
 		setEntryBundle: setEntryBundle,
 		getEntryBundle: getEntryBundle,
 		todo:           make(chan bundle, numWorkers),
-	}
+	}, nil
 }
 
 // copier controls the migration work.
@@ -65,9 +69,6 @@ type bundle struct {
 func (c *copier) Copy(ctx context.Context, fromSize uint64, sourceSize uint64) error {
 	slog.InfoContext(ctx, "Starting copy", slog.Uint64("from", fromSize), slog.Uint64("to", sourceSize))
 
-	if cap(c.todo) == 0 {
-		return errors.New("numWorkers must be at least 1")
-	}
 	if fromSize > sourceSize {
 		return fmt.Errorf("from size %d > source size %d", fromSize, sourceSize)
 	}

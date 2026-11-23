@@ -20,29 +20,14 @@ import (
 	"strings"
 	"testing"
 	"testing/synctest"
-	"time"
 
 	"github.com/transparency-dev/tessera/api/layout"
 )
 
-func TestCopier_ZeroWorkersReturnsError(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-		defer cancel()
-		setBundle := func(context.Context, uint64, uint8, []byte) error {
-			t.Fatal("setEntryBundle called with 0 workers")
-			return nil
-		}
-		getEntries := func(context.Context, uint64, uint8) ([]byte, error) {
-			t.Fatal("getEntryBundle called with 0 workers")
-			return nil, nil
-		}
-		c := newCopier(0, setBundle, getEntries)
-
-		if err := c.Copy(ctx, 0, 2*layout.EntryBundleWidth); err == nil {
-			t.Fatal("Copy() = nil, want error")
-		}
-	})
+func TestNewCopier_ZeroWorkersReturnsError(t *testing.T) {
+	if _, err := newCopier(0, nil, nil); err == nil {
+		t.Fatal("newCopier(0, ...) = nil error, want error")
+	}
 }
 
 func TestCopier_CallerCancelReturnsError(t *testing.T) {
@@ -56,7 +41,10 @@ func TestCopier_CallerCancelReturnsError(t *testing.T) {
 		cancel()
 		return []byte("bundle"), nil
 	}
-	c := newCopier(1, setBundle, getEntries)
+	c, err := newCopier(1, setBundle, getEntries)
+	if err != nil {
+		t.Fatalf("newCopier: %v", err)
+	}
 
 	if err := c.Copy(ctx, 0, 1000*layout.EntryBundleWidth); !errors.Is(err, context.Canceled) {
 		t.Errorf("Copy() = %v, want error wrapping %v", err, context.Canceled)
@@ -76,9 +64,12 @@ func TestCopier_WorkerErrorCancelsPopulateAndSiblings(t *testing.T) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		}
-		c := newCopier(2, setBundle, getEntries)
+		c, err := newCopier(2, setBundle, getEntries)
+		if err != nil {
+			t.Fatalf("newCopier: %v", err)
+		}
 
-		err := c.Copy(ctx, 0, 6*layout.EntryBundleWidth)
+		err = c.Copy(ctx, 0, 6*layout.EntryBundleWidth)
 		if err == nil || !strings.Contains(err.Error(), "fetch error") {
 			t.Errorf("Copy() = %v, want error containing %q", err, "fetch error")
 		}
