@@ -26,6 +26,7 @@ import (
 
 	"log/slog"
 
+	"github.com/transparency-dev/formats/log"
 	"github.com/transparency-dev/merkle/compact"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
@@ -112,13 +113,55 @@ func (f *Fsck) Check(ctx context.Context) error {
 
 	// Set up a stream of entry bundles from the log to be checked.
 
-	eg := errgroup.Group{}
+	// The context is cancelled as soon as any resource worker fails, or when we cancel it ourselves on the way out,
+	// which unblocks anything still trying to hand work to the (possibly no longer consumed) expectedResources channel.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	eg, ctx := errgroup.WithContext(ctx)
 
 	// Kick off resource comparing workers
 	for range f.opts.N {
 		eg.Go(f.fsckTree.resourceCheckWorker(ctx))
 	}
 
+	// Whatever happens while producing work, we must stop the workers and wait for them before returning.
+	produceErr := f.produce(ctx, cp)
+	if produceErr != nil && ctx.Err() == nil {
+		// The producer failed on its own account (rather than being told to stop), so tell the workers to give up.
+		cancel()
+		_ = eg.Wait()
+		return produceErr
+	}
+	// Signal that there will be no more resource checking jobs coming so workers can exit when the channel is drained.
+	close(f.fsckTree.expectedResources)
+
+	// Wait for all the work to be done.
+	if err := eg.Wait(); err != nil {
+		return fmt.Errorf("failed: %v", err)
+	}
+	if produceErr != nil {
+		// Stopped by the caller cancelling the context, rather than by a worker failure.
+		return produceErr
+	}
+
+	// Finally, check that the claimed root hash matches what we calculated.
+	gotRoot, err := f.fsckTree.GetRootHash()
+	switch {
+	case err != nil:
+		return fmt.Errorf("failed to calculate root: %v", err)
+	case !bytes.Equal(gotRoot, cp.Hash):
+		return fmt.Errorf("calculated root %x, but checkpoint claims %x", gotRoot, cp.Hash)
+	default:
+		slog.InfoContext(ctx, "Successfully fsck'd log", slog.Uint64("size", cp.Size), slog.String("rootb64", base64.StdEncoding.EncodeToString(gotRoot)), slog.String("roothex", fmt.Sprintf("%x", gotRoot)))
+	}
+
+	return nil
+}
+
+// produce streams the log's entry bundles, deriving the expected tile resources and queueing them for the workers.
+//
+// It returns early with an error if ctx is cancelled, which may be because a worker has failed.
+func (f *Fsck) produce(ctx context.Context, cp *log.Checkpoint) error {
 	trackBundle := func(ctx context.Context, idx uint64, p uint8) ([]byte, error) {
 		f.fsckTree.rangeTracker.Update(-1, idx, Fetching)
 		r, err := f.fetcher.ReadEntryBundle(ctx, idx, p)
@@ -138,7 +181,7 @@ func (f *Fsck) Check(ctx context.Context) error {
 			return fmt.Errorf("error while streaming bundles: %v", err)
 		}
 		f.fsckTree.rangeTracker.Update(-1, b.RangeInfo.Index, OK)
-		if err := f.fsckTree.AppendBundle(b.RangeInfo, b.Data); err != nil {
+		if err := f.fsckTree.AppendBundle(ctx, b.RangeInfo, b.Data); err != nil {
 			return fmt.Errorf("failure calling AppendBundle(%v): %v", b.RangeInfo, err)
 		}
 		if f.fsckTree.tree.End() >= cp.Size {
@@ -147,27 +190,7 @@ func (f *Fsck) Check(ctx context.Context) error {
 	}
 
 	// Ensure we see process any partial tiles too.
-	f.fsckTree.flushPartialTiles()
-	// Signal that there will be no more resource checking jobs coming so workers can exit when the channel is drained.
-	close(f.fsckTree.expectedResources)
-
-	// Wait for all the work to be done.
-	if err := eg.Wait(); err != nil {
-		return fmt.Errorf("failed: %v", err)
-	}
-
-	// Finally, check that the claimed root hash matches what we calculated.
-	gotRoot, err := f.fsckTree.GetRootHash()
-	switch {
-	case err != nil:
-		return fmt.Errorf("failed to calculate root: %v", err)
-	case !bytes.Equal(gotRoot, cp.Hash):
-		return fmt.Errorf("calculated root %x, but checkpoint claims %x", gotRoot, cp.Hash)
-	default:
-		slog.InfoContext(ctx, "Successfully fsck'd log", slog.Uint64("size", cp.Size), slog.String("rootb64", base64.StdEncoding.EncodeToString(gotRoot)), slog.String("roothex", fmt.Sprintf("%x", gotRoot)))
-	}
-
-	return nil
+	return f.fsckTree.flushPartialTiles(ctx)
 }
 
 // Checkpoint returns the raw checkpoint as bytes after the checkpoint was fetched.
@@ -258,7 +281,7 @@ type fsckTree struct {
 }
 
 // AppendBundle appends leaf hashes from the provided entry bundle.
-func (f *fsckTree) AppendBundle(ri layout.RangeInfo, data []byte) error {
+func (f *fsckTree) AppendBundle(ctx context.Context, ri layout.RangeInfo, data []byte) error {
 	if impliedSeq := ri.Index*layout.EntryBundleWidth + uint64(ri.First); impliedSeq != f.tree.End() {
 		return fmt.Errorf("bundle with implied sequence number %d but expected %d", impliedSeq, f.tree.End())
 	}
@@ -268,8 +291,17 @@ func (f *fsckTree) AppendBundle(ri layout.RangeInfo, data []byte) error {
 		return err
 	}
 	for i := ri.First; i < ri.First+ri.N; i++ {
-		if err := f.tree.Append(hs[i], f.visit); err != nil {
+		var sendErr error
+		visit := func(id compact.NodeID, h []byte) {
+			if sendErr == nil {
+				sendErr = f.visit(ctx, id, h)
+			}
+		}
+		if err := f.tree.Append(hs[i], visit); err != nil {
 			return err
+		}
+		if sendErr != nil {
+			return sendErr
 		}
 	}
 	return nil
@@ -283,10 +315,12 @@ func (f *fsckTree) GetRootHash() ([]byte, error) {
 }
 
 // visit is used to populate the derived tiles as we consume entries from the log we're checking.
-func (f *fsckTree) visit(id compact.NodeID, h []byte) {
+//
+// It returns an error if ctx is cancelled while waiting to queue a completed tile.
+func (f *fsckTree) visit(ctx context.Context, id compact.NodeID, h []byte) error {
 	// We're only storing the lowest level of hash in the tiles, so early-out in other cases.
 	if id.Level%layout.TileHeight != 0 {
-		return
+		return nil
 	}
 	tLevel, tIdx, hIdx := id.Level/layout.TileHeight, id.Index/layout.EntryBundleWidth, id.Index%layout.EntryBundleWidth
 	k := compact.NodeID{Level: tLevel, Index: tIdx}
@@ -306,33 +340,49 @@ func (f *fsckTree) visit(id compact.NodeID, h []byte) {
 			slog.ErrorContext(context.Background(), "Failed to marshal tile", slog.Any("error", err))
 			os.Exit(1)
 		}
-		f.expectedResources <- resource{
+		if err := f.queue(ctx, resource{
 			level:   uint64(tLevel),
 			index:   tIdx,
 			partial: uint8(len(t.Nodes)),
 			content: c,
+		}); err != nil {
+			return err
 		}
 		delete(f.pendingTiles, k)
+	}
+	return nil
+}
+
+// queue sends r to the workers, or returns the context's error if ctx is done first.
+func (f *fsckTree) queue(ctx context.Context, r resource) error {
+	select {
+	case f.expectedResources <- r:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
 // flushPartialTiles ensures that any remaining derived tiles, which due to the size of the tree are partial, are also flushed to the
 // expectedResources work queue.
-func (f *fsckTree) flushPartialTiles() {
+func (f *fsckTree) flushPartialTiles(ctx context.Context) error {
 	for k, t := range f.pendingTiles {
 		c, err := t.MarshalText()
 		if err != nil {
 			slog.ErrorContext(context.Background(), "Failed to marshal tile", slog.Any("error", err))
 			os.Exit(1)
 		}
-		f.expectedResources <- resource{
+		if err := f.queue(ctx, resource{
 			level:   uint64(k.Level),
 			index:   k.Index,
 			partial: uint8(len(t.Nodes)),
 			content: c,
+		}); err != nil {
+			return err
 		}
 		delete(f.pendingTiles, k)
 	}
+	return nil
 }
 
 var resourceWorkerID atomic.Uint32
@@ -343,7 +393,17 @@ func (f *fsckTree) resourceCheckWorker(ctx context.Context) func() error {
 	id := fmt.Sprintf("rc-worker-%d", resourceWorkerID.Add(1))
 
 	return func() error {
-		for r := range f.expectedResources {
+		for {
+			var r resource
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case rr, ok := <-f.expectedResources:
+				if !ok {
+					return nil
+				}
+				r = rr
+			}
 			f.rangeTracker.Update(int(r.level), r.index, Fetching)
 			data, err := f.fetcher.ReadTile(ctx, r.level, r.index, r.partial)
 			if err != nil {
@@ -363,7 +423,6 @@ func (f *fsckTree) resourceCheckWorker(ctx context.Context) func() error {
 			f.rangeTracker.Update(int(r.level), r.index, OK)
 			slog.DebugContext(ctx, "OK", slog.String("id", id), slog.String("p", p))
 		}
-		return nil
 	}
 }
 

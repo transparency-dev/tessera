@@ -20,6 +20,11 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
+
+	"github.com/transparency-dev/formats/log"
+	"github.com/transparency-dev/tessera/api/layout"
+	"golang.org/x/mod/sumdb/note"
 )
 
 func TestTrimFullToPartial(t *testing.T) {
@@ -105,4 +110,111 @@ func makeTile(n int) []byte {
 		r = append(r, h[:]...)
 	}
 	return r
+}
+
+// fakeLog is a log with a valid signed checkpoint and entry bundles, but whose tiles all fail to fetch or mismatch.
+type fakeLog struct {
+	cp      []byte
+	bundles map[uint64][]byte
+	tile    func() ([]byte, error)
+}
+
+func newFakeLog(t *testing.T, size uint64, v *note.Verifier) *fakeLog {
+	t.Helper()
+	skey, vkey, err := note.GenerateKey(nil, "fsck-test")
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	s, err := note.NewSigner(skey)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	if *v, err = note.NewVerifier(vkey); err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	cp, err := note.Sign(&note.Note{Text: string((&log.Checkpoint{Origin: "fsck-test", Size: size, Hash: make([]byte, sha256.Size)}).Marshal())}, s)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	l := &fakeLog{cp: cp, bundles: make(map[uint64][]byte)}
+	for i := range size {
+		h := sha256.Sum256(fmt.Appendf(nil, "leaf %d", i))
+		l.bundles[i/layout.EntryBundleWidth] = append(l.bundles[i/layout.EntryBundleWidth], h[:]...)
+	}
+	return l
+}
+
+func (l *fakeLog) ReadCheckpoint(_ context.Context) ([]byte, error) { return l.cp, nil }
+
+func (l *fakeLog) ReadTile(_ context.Context, _, _ uint64, _ uint8) ([]byte, error) { return l.tile() }
+
+func (l *fakeLog) ReadEntryBundle(_ context.Context, i uint64, _ uint8) ([]byte, error) {
+	return l.bundles[i], nil
+}
+
+// splitHashes is a bundle hasher for fakeLog's bundles, which are just concatenated leaf hashes.
+func splitHashes(b []byte) ([][]byte, error) {
+	var r [][]byte
+	for ; len(b) >= sha256.Size; b = b[sha256.Size:] {
+		r = append(r, b[:sha256.Size])
+	}
+	return r, nil
+}
+
+// TestCheckResourceFailure checks that Check returns an error, rather than deadlocking, when resource checks fail
+// while there are still many more resources to be queued.
+func TestCheckResourceFailure(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		n    uint
+		tile func() ([]byte, error)
+	}{
+		{name: "fetch error", n: 1, tile: func() ([]byte, error) { return nil, errors.New("boom") }},
+		{name: "mismatch", n: 1, tile: func() ([]byte, error) { return makeTile(256), nil }},
+		{name: "all workers fail", n: 4, tile: func() ([]byte, error) { return nil, errors.New("boom") }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var v note.Verifier
+			// Many more full tiles than the work queue can hold.
+			l := newFakeLog(t, 256*32, &v)
+			l.tile = test.tile
+			f := New("fsck-test", v, l, splitHashes, Opts{N: test.n})
+
+			done := make(chan error, 1)
+			go func() { done <- f.Check(t.Context()) }()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("Check succeeded, want error")
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("Check deadlocked after resource check failure")
+			}
+		})
+	}
+}
+
+// TestCheckCancelled checks that Check returns promptly when the context is cancelled while it is blocked queueing work.
+func TestCheckCancelled(t *testing.T) {
+	var v note.Verifier
+	l := newFakeLog(t, 256*32, &v)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	l.tile = func() ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	f := New("fsck-test", v, l, splitHashes, Opts{N: 1})
+
+	done := make(chan error, 1)
+	go func() { done <- f.Check(ctx) }()
+	time.AfterFunc(100*time.Millisecond, cancel)
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Check succeeded, want error")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Check did not return after context cancellation")
+	}
 }
