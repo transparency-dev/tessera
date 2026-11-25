@@ -108,14 +108,17 @@ type MigrationTarget struct {
 // process, or if, once all entries have been copied and integrated into the local tree, the local
 // root hash does not match the provided sourceRoot.
 func (mt *MigrationTarget) Migrate(ctx context.Context, numWorkers uint, sourceSize uint64, sourceRoot []byte, getEntries client.EntryBundleFetcherFunc) error {
+	c, err := newCopier(numWorkers, mt.writer.SetEntryBundle, getEntries)
+	if err != nil {
+		return err
+	}
+
 	cctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	c := newCopier(numWorkers, mt.writer.SetEntryBundle, getEntries)
-
 	fromSize, err := mt.writer.IntegratedSize(ctx)
 	if err != nil {
-		return fmt.Errorf("fetching integrated size failed: %v", err)
+		return fmt.Errorf("fetching integrated size failed: %w", err)
 	}
 	c.bundlesCopied.Store(fromSize / layout.EntryBundleWidth)
 
@@ -154,16 +157,16 @@ func (mt *MigrationTarget) Migrate(ctx context.Context, numWorkers uint, sourceS
 	}()
 
 	// go integrate
-	errG := errgroup.Group{}
+	errG, gctx := errgroup.WithContext(cctx)
 	errG.Go(func() error {
-		return c.Copy(cctx, fromSize, sourceSize)
+		return c.Copy(gctx, fromSize, sourceSize)
 	})
 
 	var calculatedRoot []byte
 	errG.Go(func() error {
-		r, err := mt.writer.AwaitIntegration(cctx, sourceSize)
+		r, err := mt.writer.AwaitIntegration(gctx, sourceSize)
 		if err != nil {
-			return fmt.Errorf("awaiting integration failed: %v", err)
+			return fmt.Errorf("awaiting integration failed: %w", err)
 		}
 		calculatedRoot = r
 		return nil
@@ -171,12 +174,12 @@ func (mt *MigrationTarget) Migrate(ctx context.Context, numWorkers uint, sourceS
 
 	for _, f := range mt.followers {
 		slog.InfoContext(ctx, "Starting follower", slog.String("name", f.Name()))
-		go f.Follow(cctx, mt.reader)
-		errG.Go(awaitFollower(cctx, f, sourceSize))
+		go f.Follow(gctx, mt.reader)
+		errG.Go(awaitFollower(gctx, f, sourceSize))
 	}
 
 	if err := errG.Wait(); err != nil {
-		return fmt.Errorf("migrate failed: %v", err)
+		return fmt.Errorf("migrate failed: %w", err)
 	}
 
 	if !bytes.Equal(calculatedRoot, sourceRoot) {
@@ -194,7 +197,7 @@ func awaitFollower(ctx context.Context, f Follower, i uint64) func() error {
 		for {
 			select {
 			case <-ctx.Done():
-				return nil
+				return context.Cause(ctx)
 			case <-time.After(time.Second):
 			}
 
