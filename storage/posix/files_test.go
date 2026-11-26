@@ -94,7 +94,7 @@ func TestGarbageCollect(t *testing.T) {
 		}
 
 		t.Logf("Running GC at size  %d", size)
-		if err := s.garbageCollect(ctx, size, 1000, appender.logStorage.entriesPath); err != nil {
+		if _, err := s.garbageCollect(ctx, size, 1000, appender.logStorage.entriesPath); err != nil {
 			t.Fatalf("garbageCollect: %v", err)
 		}
 
@@ -123,6 +123,127 @@ func TestGarbageCollect(t *testing.T) {
 	f := fsck.New(vk.Name(), vk, lr, defaultMerkleLeafHasher, fsck.Opts{N: 1})
 	if err := f.Check(ctx); err != nil {
 		t.Fatalf("FSCK failed: %v", err)
+	}
+}
+
+func TestGarbageCollectLimit(t *testing.T) {
+	ctx := t.Context()
+	const (
+		maxBundles = 10
+		// Enough bundles that a few passes are needed, ending part way through a pass.
+		numBundles = 3*(maxBundles+1) + 5
+	)
+	treeSize := uint64(numBundles * layout.EntryBundleWidth)
+
+	s := &Storage{cfg: Config{Path: t.TempDir()}}
+	if err := os.MkdirAll(filepath.Join(s.cfg.Path, stateDir), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	entriesPath := layout.EntriesPath
+	// Leave a partial entry bundle and partial tile above each bundle.
+	for i := range uint64(numBundles) {
+		for _, p := range []string{entriesPath(i, 0) + ".p/1", layout.TilePath(0, i, 0) + ".p/1"} {
+			p = filepath.Join(s.cfg.Path, p)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatalf("MkdirAll: %v", err)
+			}
+			if err := os.WriteFile(p, []byte("partial"), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+		}
+	}
+
+	var passes []uint64
+	for more := true; more; {
+		var err error
+		if more, err = s.garbageCollect(ctx, treeSize, maxBundles, entriesPath); err != nil {
+			t.Fatalf("garbageCollect: %v", err)
+		}
+		from, err := s.readGCState()
+		if err != nil {
+			t.Fatalf("readGCState: %v", err)
+		}
+		passes = append(passes, from)
+		if len(passes) > numBundles {
+			t.Fatalf("garbageCollect still reports more work after %d passes", len(passes))
+		}
+	}
+	if len(passes) < 2 {
+		t.Fatalf("garbage collection completed in %d pass(es), want the limit of %d bundles to force more", len(passes), maxBundles)
+	}
+	// Every pass but the last must stop at the limit.
+	for i, from := range passes[:len(passes)-1] {
+		if want := uint64(i+1) * maxBundles * layout.EntryBundleWidth; from != want {
+			t.Errorf("pass %d collected up to %d, want %d (passes: %v)", i, from, want, passes)
+		}
+	}
+	if got := passes[len(passes)-1]; got != treeSize {
+		t.Errorf("garbage collected up to %d, want %d (passes: %v)", got, treeSize, passes)
+	}
+	partials, err := findAllPartialDirs(t, s.cfg.Path)
+	if err != nil {
+		t.Fatalf("findAllPartialDirs: %v", err)
+	}
+	if len(partials) != 0 {
+		t.Errorf("%d partial dirs remain after garbage collection, want 0", len(partials))
+	}
+
+	// Nothing left to do.
+	if more, err := s.garbageCollect(ctx, treeSize, maxBundles, entriesPath); err != nil || more {
+		t.Errorf("garbageCollect on collected tree = %v, %v, want false, nil", more, err)
+	}
+}
+
+// TestGarbageCollectBacklogDrains exercises garbageCollectBacklog (the body of each job tick), rather than
+// garbageCollect directly, with a backlog much larger than a single garbageCollect call will handle (see #1239).
+func TestGarbageCollectBacklogDrains(t *testing.T) {
+	ctx := t.Context()
+	const numBundles = 400
+	treeSize := uint64(numBundles * layout.EntryBundleWidth)
+
+	s := &Storage{cfg: Config{Path: t.TempDir()}}
+	if err := os.MkdirAll(filepath.Join(s.cfg.Path, stateDir), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	entriesPath := layout.EntriesPath
+	for i := range uint64(numBundles) {
+		for _, p := range []string{entriesPath(i, 0) + ".p/1", layout.TilePath(0, i, 0) + ".p/1"} {
+			p = filepath.Join(s.cfg.Path, p)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatalf("MkdirAll: %v", err)
+			}
+			if err := os.WriteFile(p, []byte("partial"), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+		}
+	}
+	// The job only needs the size from the published checkpoint, which is not verified.
+	cpPath := filepath.Join(s.cfg.Path, layout.CheckpointPath)
+	if err := os.MkdirAll(filepath.Dir(cpPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	root := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	if err := os.WriteFile(cpPath, fmt.Appendf(nil, "example.com/log\n%d\n%s\n", treeSize, root), 0o644); err != nil {
+		t.Fatalf("WriteFile(checkpoint): %v", err)
+	}
+
+	a := &appender{s: s, logStorage: &logResourceStorage{s: s, entriesPath: entriesPath}}
+	// A single tick's worth of work must clear the whole backlog, even though each garbageCollect call is bounded to 100 bundles.
+	if err := a.garbageCollectBacklog(ctx, 100); err != nil {
+		t.Fatalf("garbageCollectBacklog: %v", err)
+	}
+	if from, err := s.readGCState(); err != nil {
+		t.Fatalf("readGCState: %v", err)
+	} else if from != treeSize {
+		t.Fatalf("garbage collected up to %d of %d, want the whole backlog", from, treeSize)
+	}
+
+	partials, err := findAllPartialDirs(t, s.cfg.Path)
+	if err != nil {
+		t.Fatalf("findAllPartialDirs: %v", err)
+	}
+	if len(partials) != 0 {
+		t.Errorf("%d partial dirs remain after garbage collection, want 0", len(partials))
 	}
 }
 
