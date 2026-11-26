@@ -111,19 +111,23 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 		return nil, fmt.Errorf("failed to open badger: %v", err)
 	}
 
+	gcCtx, stopGC := context.WithCancel(ctx)
 	r := &AntispamStorage{
-		opts: opts,
-		db:   db,
+		opts:   opts,
+		db:     db,
+		stopGC: stopGC,
+		gcDone: make(chan struct{}),
 	}
 
 	go func() {
+		defer close(r.gcDone)
 		// runsInTick tracks the number of GC runs per tick.
 		var runsInTick int64
 		ticker := time.NewTicker(opts.CompactionInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-gcCtx.Done():
 				return
 			case <-ticker.C:
 			}
@@ -158,10 +162,25 @@ func NewAntispam(ctx context.Context, badgerPath string, opts AntispamOpts) (*An
 	return r, nil
 }
 
+// Close stops the antispam's compaction, then closes its Badger database, which releases the
+// database's directory lock so that it can be opened again.
+//
+// Call it once nothing uses the antispam: after the appender it was given to has been shut down,
+// and that appender's context is done.
+func (s *AntispamStorage) Close() error {
+	s.stopGC()
+	<-s.gcDone
+	return s.db.Close()
+}
+
 type AntispamStorage struct {
 	opts AntispamOpts
 
 	db *badger.DB
+
+	// stopGC stops the compaction goroutine, which closes gcDone when it returns.
+	stopGC context.CancelFunc
+	gcDone chan struct{}
 
 	// pushBack is used to prevent the follower from getting too far underwater.
 	// Populate dynamically will set this to true/false based on how far behind the follower is from the

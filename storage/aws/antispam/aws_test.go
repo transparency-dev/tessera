@@ -20,6 +20,8 @@ import (
 	"database/sql"
 	"flag"
 	"os"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -227,6 +229,55 @@ func TestAntispamIdleConnections(t *testing.T) {
 				t.Errorf("%d of 10 sequential queries closed their connection, want %d", closed, test.wantClosed)
 			}
 		})
+	}
+}
+
+func TestAntispamClose(t *testing.T) {
+	ctx := t.Context()
+	if canSkipMySQLTest(t, ctx) {
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
+		t.Skip("MySQL not available, skipping test")
+	}
+	as, err := NewAntispam(ctx, *mySQLURI, AntispamOpts{})
+	if err != nil {
+		t.Fatalf("NewAntispam: %v", err)
+	}
+	if err := as.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := as.dbPool.PingContext(ctx); err == nil || !strings.Contains(err.Error(), "database is closed") {
+		t.Errorf("Ping after Close: %v, want the pool closed", err)
+	}
+}
+
+// TestNewAntispamClosesPoolOnFailure checks that NewAntispam closes the pool it opened when it
+// fails, as there is then nothing the caller could close.
+func TestNewAntispamClosesPoolOnFailure(t *testing.T) {
+	before := openPools()
+	for range 3 {
+		if _, err := NewAntispam(t.Context(), "root:root@tcp(127.0.0.1:1)/tessera", AntispamOpts{}); err == nil {
+			t.Fatal("NewAntispam succeeded with nothing listening")
+		}
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		got := openPools()
+		if got == before {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d pools open after 3 failures, want %d", got, before)
+		}
+	}
+}
+
+// openPools returns the number of open database/sql pools: each runs a connectionOpener goroutine.
+func openPools() int {
+	buf := make([]byte, 1<<20)
+	for {
+		if n := runtime.Stack(buf, true); n < len(buf) {
+			return strings.Count(string(buf[:n]), "database/sql.(*DB).connectionOpener(")
+		}
+		buf = make([]byte, 2*len(buf))
 	}
 }
 

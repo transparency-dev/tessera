@@ -34,6 +34,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -186,6 +187,122 @@ func TestMySQLSequencerIdleConnections(t *testing.T) {
 				t.Errorf("%d of 10 sequential queries closed their connection, want %d", closed, test.wantClosed)
 			}
 		})
+	}
+}
+
+// TestMySQLSequencerClosesPoolOnFailure checks that newMySQLSequencer closes the pool it opened
+// when it fails, as there is then nothing the caller could close.
+func TestMySQLSequencerClosesPoolOnFailure(t *testing.T) {
+	ctx := t.Context()
+	t.Run("unreachable", func(t *testing.T) {
+		before := openPools()
+		for range 3 {
+			if _, err := newMySQLSequencer(ctx, "root:root@tcp(127.0.0.1:1)/tessera", 1000, 0, 0); err == nil {
+				t.Fatal("newMySQLSequencer succeeded with nothing listening")
+			}
+		}
+		if got := waitForOpenPools(before); got != before {
+			t.Errorf("%d pools open after 3 failures, want %d", got, before)
+		}
+	})
+	t.Run("incompatible schema", func(t *testing.T) {
+		if canSkipMySQLTest(t, ctx) {
+			t.Skip("MySQL not available, skipping test")
+		}
+		mustDropTables(t, ctx)
+		seq, err := newMySQLSequencer(ctx, *mySQLURI, 1000, 0, 0)
+		if err != nil {
+			t.Fatalf("newMySQLSequencer: %v", err)
+		}
+		setVersion := func(v uint64) {
+			if _, err := seq.dbPool.ExecContext(context.Background(), "UPDATE Tessera SET compatibilityVersion = ? WHERE id = 0", v); err != nil {
+				t.Fatalf("set compatibilityVersion: %v", err)
+			}
+		}
+		setVersion(SchemaCompatibilityVersion + 1)
+		t.Cleanup(func() {
+			setVersion(SchemaCompatibilityVersion)
+			_ = seq.close()
+		})
+		before := openPools()
+		for range 3 {
+			if _, err := newMySQLSequencer(ctx, *mySQLURI, 1000, 0, 0); err == nil {
+				t.Fatal("newMySQLSequencer succeeded with an incompatible schema")
+			}
+		}
+		if got := waitForOpenPools(before); got != before {
+			t.Errorf("%d pools open after 3 failures, want %d", got, before)
+		}
+	})
+}
+
+// TestAppenderClosesSequencer checks that an appender closes its sequencer's pool once its
+// context is done, and when newAppender fails.
+func TestAppenderClosesSequencer(t *testing.T) {
+	ctx := t.Context()
+	if canSkipMySQLTest(t, ctx) {
+		slog.WarnContext(ctx, "MySQL not available, skipping", slog.String("name", t.Name()))
+		t.Skip("MySQL not available, skipping test")
+	}
+	mustDropTables(t, ctx)
+	sk, _ := mustGenerateKeys(t)
+
+	for _, test := range []struct {
+		desc     string
+		interval time.Duration
+		wantErr  bool
+	}{
+		{desc: "when its context is done", interval: time.Second},
+		{desc: "when newAppender fails", interval: minCheckpointInterval / 2, wantErr: true},
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			seq, err := newMySQLSequencer(ctx, *mySQLURI, 1000, 0, 0)
+			if err != nil {
+				t.Fatalf("newMySQLSequencer: %v", err)
+			}
+			actx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			opts := tessera.NewAppendOptions().WithCheckpointInterval(test.interval).WithCheckpointSigner(sk)
+			_, _, err = (&Storage{}).newAppender(actx, newMemObjStore(), seq, opts)
+			if gotErr := err != nil; gotErr != test.wantErr {
+				t.Fatalf("newAppender: %v, want error %v", err, test.wantErr)
+			}
+			if !test.wantErr {
+				if err := seq.dbPool.PingContext(ctx); err != nil {
+					t.Fatalf("Ping before the context is done: %v", err)
+				}
+				cancel()
+			}
+			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+				err := seq.dbPool.PingContext(ctx)
+				if err != nil && strings.Contains(err.Error(), "database is closed") {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("the sequencer's pool is still open: Ping returns %v", err)
+				}
+			}
+		})
+	}
+}
+
+// openPools returns the number of open database/sql pools: each runs a connectionOpener goroutine.
+func openPools() int {
+	buf := make([]byte, 1<<20)
+	for {
+		if n := runtime.Stack(buf, true); n < len(buf) {
+			return strings.Count(string(buf[:n]), "database/sql.(*DB).connectionOpener(")
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+}
+
+// waitForOpenPools waits up to 5 seconds for the number of open pools to fall to want, and returns it.
+func waitForOpenPools(want int) int {
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if got := openPools(); got <= want || time.Now().After(deadline) {
+			return got
+		}
 	}
 }
 

@@ -504,6 +504,61 @@ func makeTile(t *testing.T, size uint64) *api.HashTile {
 	return r
 }
 
+// TestAppenderClosesSpannerClient checks that an appender closes a Spanner client that Tessera
+// created once its context is done, and when newAppender fails, and leaves a caller's client open.
+func TestAppenderClosesSpannerClient(t *testing.T) {
+	ctx := t.Context()
+	sk, _ := mustGenerateKeys(t)
+
+	for _, test := range []struct {
+		desc      string
+		interval  time.Duration
+		ownClient bool
+		wantErr   bool
+	}{
+		{desc: "its own client, when its context is done", interval: minCheckpointInterval, ownClient: true},
+		{desc: "its own client, when newAppender fails", interval: minCheckpointInterval / 2, ownClient: true, wantErr: true},
+		{desc: "a caller's client", interval: minCheckpointInterval},
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			db, closeDB := newSpannerDB(t)
+			defer closeDB()
+			defer db.Close()
+			seq, err := newSpannerCoordinator(ctx, db, prefixTable(""), 1000)
+			if err != nil {
+				t.Fatalf("newSpannerCoordinator: %v", err)
+			}
+			closed := make(chan struct{})
+			if test.ownClient {
+				seq.closeClient = func() { close(closed) }
+			}
+			actx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			opts := tessera.NewAppendOptions().WithCheckpointInterval(test.interval).WithCheckpointSigner(sk)
+			a, _, err := (&Storage{}).newAppender(actx, newMemObjStore(), seq, opts)
+			if gotErr := err != nil; gotErr != test.wantErr {
+				t.Fatalf("newAppender: %v, want error %v", err, test.wantErr)
+			}
+			if !test.wantErr {
+				cancel()
+			}
+			if !test.ownClient {
+				a.jobs.Wait()
+				time.Sleep(100 * time.Millisecond)
+				if _, err := db.Single().ReadRow(ctx, "Tessera", spanner.Key{0}, []string{"compatibilityVersion"}); err != nil {
+					t.Errorf("read with the caller's client after the appender finished: %v, want it still open", err)
+				}
+				return
+			}
+			select {
+			case <-closed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the appender did not close its Spanner client")
+			}
+		})
+	}
+}
+
 func TestTileRoundtrip(t *testing.T) {
 	ctx := t.Context()
 	m := newMemObjStore()

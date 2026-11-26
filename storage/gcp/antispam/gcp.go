@@ -121,13 +121,14 @@ func NewAntispam(ctx context.Context, spannerDB string, opts AntispamOpts) (*Ant
 		return opts.SpannerTablePrefix + t
 	}
 
-	db := opts.SpannerClient
+	db, closeClient := opts.SpannerClient, func() {}
 	if db == nil {
 		var err error
 		db, err = spanner.NewClient(ctx, spannerDB)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to Spanner: %v", err)
 		}
+		closeClient = db.Close
 	}
 
 	// Skip the (slow, even when no-op) DDL if the schema is already present. Keep schemaInitialised in sync with this.
@@ -142,26 +143,37 @@ func NewAntispam(ctx context.Context, spannerDB string, opts AntispamOpts) (*Ant
 				{spanner.Insert(table("FollowCoord"), []string{"id", "nextIdx"}, []any{0, 0})},
 			},
 		); err != nil {
-			if opts.SpannerClient == nil {
-				db.Close()
-			}
+			closeClient()
 			return nil, fmt.Errorf("failed to create tables: %v", err)
 		}
 	}
 
 	r := &AntispamStorage{
-		opts:   opts,
-		dbPool: db,
-		table:  table,
+		opts:        opts,
+		dbPool:      db,
+		closeClient: closeClient,
+		table:       table,
 	}
 
 	return r, nil
+}
+
+// Close closes the antispam's Spanner client if NewAntispam created it. A client passed in
+// AntispamOpts.SpannerClient is left open.
+//
+// Call it once nothing uses the antispam: after the appender it was given to has been shut down,
+// and that appender's context is done.
+func (s *AntispamStorage) Close() error {
+	s.closeClient()
+	return nil
 }
 
 type AntispamStorage struct {
 	opts AntispamOpts
 
 	dbPool *spanner.Client
+	// closeClient closes dbPool if NewAntispam created it, and otherwise does nothing.
+	closeClient func()
 
 	// table returns the provided table name with the configured table prefix, if any,
 	// prepended - see AntispamOpts.SpannerTablePrefix.
