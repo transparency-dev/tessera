@@ -339,6 +339,397 @@ func TestAwait_noCheckpointRespectsContext(t *testing.T) {
 	})
 }
 
+// TestAwait_PollerShutdown covers the poll loop exiting while an Await is
+// blocked, after it has already exited, and while readCheckpoint is in-flight.
+func TestAwait_PollerShutdown(t *testing.T) {
+	t.Parallel()
+
+	t.Run("while blocked", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			pollCtx, stopPoller := context.WithCancel(t.Context())
+			defer stopPoller()
+
+			readCheckpoint := func(_ context.Context) ([]byte, error) {
+				return []byte("origin\n0\nhash\n\n"), nil
+			}
+			awaiter := NewPublicationAwaiter(pollCtx, readCheckpoint, 10*time.Millisecond)
+
+			errC := make(chan error, 1)
+			go func() {
+				_, _, err := awaiter.Await(t.Context(), func() (Index, error) {
+					return Index{Index: 5}, nil
+				})
+				errC <- err
+			}()
+
+			synctest.Wait()
+			stopPoller()
+
+			select {
+			case err := <-errC:
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("Await err = %v, want context.Canceled", err)
+				}
+			case <-time.After(time.Second):
+				t.Error("Await did not return after poller shutdown")
+			}
+		})
+	})
+
+	t.Run("after exit", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			pollCtx, stopPoller := context.WithCancel(t.Context())
+			readCheckpoint := func(_ context.Context) ([]byte, error) {
+				return []byte("origin\n0\nhash\n\n"), nil
+			}
+			awaiter := NewPublicationAwaiter(pollCtx, readCheckpoint, 10*time.Millisecond)
+
+			stopPoller()
+			synctest.Wait()
+
+			_, _, err := awaiter.Await(t.Context(), func() (Index, error) {
+				return Index{Index: 5}, nil
+			})
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("Await err = %v, want context.Canceled", err)
+			}
+		})
+	})
+
+	t.Run("cancel during in-flight read preserves newer checkpoint", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			pollCtx, stopPoller := context.WithCancel(t.Context())
+			inRead := make(chan struct{})
+			releaseRead := make(chan struct{})
+			cp10 := []byte("origin\n10\nqINS1GRFhWHwdkUeqLEoP4yEMkTBBzxBkGwGQlVlVcs=\n\n")
+
+			readCheckpoint := func(_ context.Context) ([]byte, error) {
+				close(inRead)
+				<-releaseRead
+				return cp10, nil
+			}
+			awaiter := NewPublicationAwaiter(pollCtx, readCheckpoint, 10*time.Millisecond)
+
+			err5 := make(chan error, 1)
+			err20 := make(chan error, 1)
+			go func() {
+				_, _, err := awaiter.Await(t.Context(), func() (Index, error) {
+					return Index{Index: 5}, nil
+				})
+				err5 <- err
+			}()
+			go func() {
+				_, _, err := awaiter.Await(t.Context(), func() (Index, error) {
+					return Index{Index: 20}, nil
+				})
+				err20 <- err
+			}()
+
+			<-inRead
+			stopPoller()
+			close(releaseRead)
+
+			if err := <-err5; err != nil {
+				t.Errorf("index 5 err = %v, want nil", err)
+			}
+			if err := <-err20; !errors.Is(err, context.Canceled) {
+				t.Errorf("index 20 err = %v, want context.Canceled", err)
+			}
+		})
+	})
+}
+
+// TestAwait_CancelWithLongPollPeriod ensures cancellation latency is decoupled
+// from the poll period.
+func TestAwait_CancelWithLongPollPeriod(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		awaiterCtx, stopPoller := context.WithCancel(t.Context())
+		defer stopPoller()
+
+		readCheckpoint := func(_ context.Context) ([]byte, error) {
+			return []byte("origin\n0\nhash\n\n"), nil
+		}
+		awaiter := NewPublicationAwaiter(awaiterCtx, readCheckpoint, time.Hour)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		errC := make(chan error, 1)
+		go func() {
+			_, _, err := awaiter.Await(ctx, func() (Index, error) {
+				return Index{Index: 5}, nil
+			})
+			errC <- err
+		}()
+
+		synctest.Wait()
+		cancel()
+
+		select {
+		case err := <-errC:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("Await err = %v, want context.Canceled", err)
+			}
+		case <-time.After(time.Second):
+			t.Error("Await did not return after context cancellation")
+		}
+	})
+}
+
+// TestAwait_AlreadyCancelledContext checks that an already-done caller context
+// always takes precedence over cached checkpoints and poller shutdown errors.
+func TestAwait_AlreadyCancelledContext(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ready checkpoint", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			pollCtx, stopPoller := context.WithCancel(t.Context())
+			defer stopPoller()
+
+			readCheckpoint := func(_ context.Context) ([]byte, error) {
+				return []byte("origin\n10\nqINS1GRFhWHwdkUeqLEoP4yEMkTBBzxBkGwGQlVlVcs=\n\n"), nil
+			}
+			awaiter := NewPublicationAwaiter(pollCtx, readCheckpoint, 10*time.Millisecond)
+			time.Sleep(25 * time.Millisecond)
+
+			reqCtx, cancelReq := context.WithTimeout(t.Context(), 10*time.Millisecond)
+			defer cancelReq()
+			time.Sleep(20 * time.Millisecond)
+
+			_, _, err := awaiter.Await(reqCtx, func() (Index, error) {
+				return Index{Index: 2}, nil
+			})
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("Await err = %v, want context.DeadlineExceeded", err)
+			}
+		})
+	})
+
+	t.Run("after poller shutdown", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			pollCtx, stopPoller := context.WithCancel(t.Context())
+			readCheckpoint := func(_ context.Context) ([]byte, error) {
+				return []byte("origin\n0\nhash\n\n"), nil
+			}
+			awaiter := NewPublicationAwaiter(pollCtx, readCheckpoint, 10*time.Millisecond)
+			stopPoller()
+			synctest.Wait()
+
+			reqCtx, cancelReq := context.WithTimeout(t.Context(), 10*time.Millisecond)
+			defer cancelReq()
+			time.Sleep(20 * time.Millisecond)
+
+			_, _, err := awaiter.Await(reqCtx, func() (Index, error) {
+				return Index{Index: 5}, nil
+			})
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("Await err = %v, want context.DeadlineExceeded", err)
+			}
+		})
+	})
+}
+
+// TestAwait_ConsecutiveErrors checks the two-consecutive-errors tolerance,
+// recovery across unchanged tree sizes, and fast-path preservation for already
+// published indices during transient poll errors.
+func TestAwait_ConsecutiveErrors(t *testing.T) {
+	t.Parallel()
+
+	err1 := errors.New("transient error 1")
+	err2 := errors.New("transient error 2")
+	err3 := errors.New("transient error 3")
+	cp2 := []byte("origin\n2\nqINS1GRFhWHwdkUeqLEoP4yEMkTBBzxBkGwGQlVlVcs=\n\n")
+	cp10 := []byte("origin\n10\nqINS1GRFhWHwdkUeqLEoP4yEMkTBBzxBkGwGQlVlVcs=\n\n")
+
+	t.Run("single error tolerated and streak resets on recovery", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			pollCtx, stopPoller := context.WithCancel(t.Context())
+			defer stopPoller()
+
+			var step atomic.Int32
+			readCheckpoint := func(_ context.Context) ([]byte, error) {
+				switch step.Add(1) {
+				case 1:
+					return cp2, nil
+				case 2:
+					return nil, err1
+				case 3:
+					return cp2, nil // recovery with unchanged tree size
+				case 4:
+					return nil, err2
+				default:
+					return cp10, nil
+				}
+			}
+			awaiter := NewPublicationAwaiter(pollCtx, readCheckpoint, 10*time.Millisecond)
+
+			_, cp, err := awaiter.Await(t.Context(), func() (Index, error) {
+				return Index{Index: 5}, nil
+			})
+			if err != nil {
+				t.Fatalf("Await err = %v, want nil", err)
+			}
+			if !bytes.Equal(cp, cp10) {
+				t.Errorf("Await cp = %q, want %q", cp, cp10)
+			}
+		})
+	})
+
+	t.Run("two consecutive errors fail", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			pollCtx, stopPoller := context.WithCancel(t.Context())
+			defer stopPoller()
+
+			var step atomic.Int32
+			readCheckpoint := func(_ context.Context) ([]byte, error) {
+				if step.Add(1) == 1 {
+					return nil, err1
+				}
+				return nil, err2
+			}
+			awaiter := NewPublicationAwaiter(pollCtx, readCheckpoint, 10*time.Millisecond)
+
+			_, _, err := awaiter.Await(t.Context(), func() (Index, error) {
+				return Index{Index: 5}, nil
+			})
+			if !errors.Is(err, err2) {
+				t.Errorf("Await err = %v, want %v", err, err2)
+			}
+		})
+	})
+
+	t.Run("arrive after two errors waits for next poll and recovers", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			pollCtx, stopPoller := context.WithCancel(t.Context())
+			defer stopPoller()
+
+			var step atomic.Int32
+			readCheckpoint := func(_ context.Context) ([]byte, error) {
+				switch step.Add(1) {
+				case 1:
+					return cp2, nil
+				case 2:
+					return nil, err1
+				case 3:
+					return nil, err2
+				case 4:
+					return cp2, nil // recovers with unchanged size
+				case 5:
+					return nil, err3 // single error tolerated
+				default:
+					return cp10, nil
+				}
+			}
+			awaiter := NewPublicationAwaiter(pollCtx, readCheckpoint, 10*time.Millisecond)
+			time.Sleep(35 * time.Millisecond) // polls 1..3 complete
+
+			_, cp, err := awaiter.Await(t.Context(), func() (Index, error) {
+				return Index{Index: 5}, nil
+			})
+			if err != nil {
+				t.Fatalf("Await err = %v, want nil", err)
+			}
+			if !bytes.Equal(cp, cp10) {
+				t.Errorf("Await cp = %q, want %q", cp, cp10)
+			}
+		})
+	})
+
+	t.Run("arrive after two errors fails on third", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			pollCtx, stopPoller := context.WithCancel(t.Context())
+			defer stopPoller()
+
+			var step atomic.Int32
+			readCheckpoint := func(_ context.Context) ([]byte, error) {
+				switch step.Add(1) {
+				case 1:
+					return nil, err1
+				case 2:
+					return nil, err2
+				default:
+					return nil, err3
+				}
+			}
+			awaiter := NewPublicationAwaiter(pollCtx, readCheckpoint, 10*time.Millisecond)
+			time.Sleep(25 * time.Millisecond)
+
+			_, _, err := awaiter.Await(t.Context(), func() (Index, error) {
+				return Index{Index: 5}, nil
+			})
+			if !errors.Is(err, err3) {
+				t.Errorf("Await err = %v, want %v", err, err3)
+			}
+		})
+	})
+
+	t.Run("already published index survives transient errors", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			pollCtx, stopPoller := context.WithCancel(t.Context())
+			defer stopPoller()
+
+			var step atomic.Int32
+			readCheckpoint := func(_ context.Context) ([]byte, error) {
+				if step.Add(1) == 1 {
+					return cp10, nil
+				}
+				return nil, err1
+			}
+			awaiter := NewPublicationAwaiter(pollCtx, readCheckpoint, 10*time.Millisecond)
+			time.Sleep(35 * time.Millisecond) // poll 1 succeeds, polls 2-3 fail
+
+			_, cp, err := awaiter.Await(t.Context(), func() (Index, error) {
+				return Index{Index: 5}, nil
+			})
+			if err != nil {
+				t.Fatalf("Await err = %v, want nil", err)
+			}
+			if !bytes.Equal(cp, cp10) {
+				t.Errorf("Await cp = %q, want %q", cp, cp10)
+			}
+		})
+	})
+}
+
+// TestAwait_BucketWraparound ensures waiters at indices beyond the bucket
+// window (numBuckets << bucketShift) wake cleanly and never miss publication.
+func TestAwait_BucketWraparound(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		pollCtx, stopPoller := context.WithCancel(t.Context())
+		defer stopPoller()
+
+		var size atomic.Uint64
+		readCheckpoint := func(_ context.Context) ([]byte, error) {
+			s := size.Add(200)
+			return fmt.Appendf(nil, "origin\n%d\nqINS1GRFhWHwdkUeqLEoP4yEMkTBBzxBkGwGQlVlVcs=\n\n", s), nil
+		}
+		awaiter := NewPublicationAwaiter(pollCtx, readCheckpoint, 10*time.Millisecond)
+
+		target := uint64(numBuckets<<bucketShift) + 50
+		i, _, err := awaiter.Await(t.Context(), func() (Index, error) {
+			return Index{Index: target}, nil
+		})
+		if err != nil {
+			t.Fatalf("Await err = %v, want nil", err)
+		}
+		if i.Index != target {
+			t.Errorf("Await index = %d, want %d", i.Index, target)
+		}
+	})
+}
+
 func BenchmarkAwait(b *testing.B) {
 	cpFormat := "origin/\n%d\nhash\n\nsig"
 	cpSize := atomic.Uint64{}
