@@ -134,7 +134,7 @@ func (a *HammerAnalyser) errorLoop(ctx context.Context) {
 			if es != lastErr && lastErrCount > 0 {
 				slog.WarnContext(ctx, "errors", slog.Int("count", lastErrCount), slog.String("lasterror", lastErr))
 				lastErr = es
-				lastErrCount = 0
+				lastErrCount = 1 // this error
 				continue
 			}
 			lastErr = es
